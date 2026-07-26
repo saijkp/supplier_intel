@@ -1,0 +1,241 @@
+"""
+api/app.py
+
+The web API layer wrapping supplier_intel's existing pipeline and
+query functions for a frontend (e.g. a Netlify-hosted UI) to call over
+HTTP. Everything here is a thin wrapper -- no business logic lives in
+this file; it all still lives in `pipeline/orchestrator.py` and
+`storage/repository.py`, exactly as before this layer existed. This
+file's only jobs are: HTTP routing, request validation, auth, and
+converting between raw SQLite rows and the Pydantic models in
+`api/models.py`.
+
+Auth: every route except `/health` requires a bearer token (see
+`api/auth.py`). CORS: configured from `ALLOWED_ORIGINS`, empty by
+default -- a browser-based frontend can't call this at all until its
+origin is explicitly added.
+
+Long-running operations: `POST /pipeline/jobs` returns immediately
+with a job id; the actual pipeline run happens in the background (see
+`api/jobs.py`) and the frontend polls `GET /pipeline/jobs/{id}` for
+status. A synchronous endpoint that blocked for the several minutes a
+full run with capability extraction can take would time out most
+HTTP clients and reverse proxies long before it finished.
+
+Running locally:
+    uvicorn api.app:app --reload
+
+Running on Railway: see the repository README for the exact start
+command and the persistent-volume setup this needs so SQLite survives
+redeploys.
+"""
+
+from __future__ import annotations
+
+import uuid
+from contextlib import asynccontextmanager
+from typing import Any, Dict, List, Optional
+
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
+
+from api.auth import require_api_token
+from api.jobs import run_pipeline_job
+from api.models import PipelineJobRequest, PipelineJobResponse, SupplierSearchResult
+from config.settings import ALLOWED_ORIGINS
+from storage.database import initialise_schema
+from storage.repository import SupplierRepository
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    initialise_schema()
+    yield
+
+
+app = FastAPI(
+    title="Supplier Intelligence API",
+    description="Search, verify, and enrich trailer-component suppliers.",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+
+def get_repo() -> SupplierRepository:
+    return SupplierRepository()
+
+
+def _to_search_result(row: Dict[str, Any]) -> SupplierSearchResult:
+    """Explicit field-by-field construction, not
+    `SupplierSearchResult.model_validate(row)` -- SQLite stores
+    booleans as 0/1 integers, and a couple of fields genuinely need
+    that coerced rather than trusting Pydantic's own type coercion to
+    happen to do the right thing here. See this module's own docstring
+    for the reasoning.
+    """
+    return SupplierSearchResult(
+        id=row["id"],
+        canonical_name=row["canonical_name"],
+        country=row.get("country"),
+        domain=row.get("domain"),
+        composite_score=row.get("composite_score"),
+        recommendation=row.get("recommendation"),
+        is_manufacturer=(
+            bool(row["is_manufacturer"]) if row.get("is_manufacturer") is not None else None
+        ),
+        primary_email=row.get("primary_email"),
+        primary_phone=row.get("primary_phone"),
+        contact_form_url=row.get("contact_form_url"),
+        linkedin_url=row.get("linkedin_url"),
+        factory_photo_verdict=row.get("factory_photo_verdict"),
+        facility_address_verified=(
+            bool(row["facility_address_verified"])
+            if row.get("facility_address_verified") is not None else None
+        ),
+        year_established=row.get("year_established"),
+        alibaba_years=row.get("alibaba_years"),
+        matched_capabilities=row.get("matched_capabilities") or [],
+    )
+
+
+def _to_job_response(job: Dict[str, Any]) -> PipelineJobResponse:
+    return PipelineJobResponse(
+        id=job["id"],
+        status=job["status"],
+        query=job["query"],
+        stats=job.get("stats"),
+        error=job.get("error"),
+        created_at=_stringify(job.get("created_at")),
+        started_at=_stringify(job.get("started_at")),
+        completed_at=_stringify(job.get("completed_at")),
+    )
+
+
+def _stringify(value: Any) -> Optional[str]:
+    return str(value) if value is not None else None
+
+
+@app.get("/health")
+def health() -> Dict[str, str]:
+    """No auth -- this is what Railway (or any uptime monitor) hits to
+    confirm the service is alive. Deliberately reveals nothing about
+    configuration or data."""
+    return {"status": "ok"}
+
+
+@app.get(
+    "/suppliers/search",
+    response_model=List[SupplierSearchResult],
+    dependencies=[Depends(require_api_token)],
+)
+def search_suppliers(
+    product: Optional[str] = None,
+    require: List[str] = Query(default=[]),
+    manufacturers_only: bool = False,
+    country: Optional[str] = None,
+    min_score: Optional[int] = None,
+    limit: int = 25,
+    repo: SupplierRepository = Depends(get_repo),
+) -> List[SupplierSearchResult]:
+    """Thin HTTP wrapper over `search_suppliers_full` -- see that
+    method's own docstring for the actual matching semantics
+    (`require` is AND, not OR; `country` is exact match, not fuzzy).
+    """
+    try:
+        results = repo.search_suppliers_full(
+            product_query=product,
+            required_capabilities=require,
+            manufacturers_only=manufacturers_only,
+            country=country,
+            min_score=min_score,
+            limit=limit,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return [_to_search_result(r) for r in results]
+
+
+@app.get(
+    "/suppliers/{supplier_id}",
+    response_model=SupplierSearchResult,
+    dependencies=[Depends(require_api_token)],
+)
+def get_supplier(
+    supplier_id: int, repo: SupplierRepository = Depends(get_repo)
+) -> SupplierSearchResult:
+    supplier = repo.get_supplier(supplier_id)
+    if supplier is None:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    supplier["matched_capabilities"] = repo.get_capabilities(supplier_id)
+    return _to_search_result(supplier)
+
+
+@app.post(
+    "/pipeline/jobs",
+    response_model=PipelineJobResponse,
+    status_code=202,
+    dependencies=[Depends(require_api_token)],
+)
+def create_pipeline_job(
+    request: PipelineJobRequest,
+    background_tasks: BackgroundTasks,
+    repo: SupplierRepository = Depends(get_repo),
+) -> PipelineJobResponse:
+    """Returns 202 Accepted immediately with a job id -- the actual
+    run happens in the background. Poll `GET /pipeline/jobs/{id}` for
+    status. See this module's own docstring for why this can't be a
+    synchronous endpoint.
+    """
+    job_id = str(uuid.uuid4())
+    options = request.model_dump(exclude={"query"})
+    repo.create_pipeline_job(job_id=job_id, query=request.query, options=options)
+    background_tasks.add_task(run_pipeline_job, job_id, request.query, options)
+    job = repo.get_pipeline_job(job_id)
+    return _to_job_response(job)
+
+
+@app.get(
+    "/pipeline/jobs/{job_id}",
+    response_model=PipelineJobResponse,
+    dependencies=[Depends(require_api_token)],
+)
+def get_pipeline_job(job_id: str, repo: SupplierRepository = Depends(get_repo)) -> PipelineJobResponse:
+    job = repo.get_pipeline_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _to_job_response(job)
+
+
+@app.get("/pipeline/jobs", response_model=List[PipelineJobResponse], dependencies=[Depends(require_api_token)])
+def list_pipeline_jobs(
+    limit: int = 50, repo: SupplierRepository = Depends(get_repo)
+) -> List[PipelineJobResponse]:
+    return [_to_job_response(j) for j in repo.list_pipeline_jobs(limit=limit)]
+
+
+@app.get("/export/csv", dependencies=[Depends(require_api_token)])
+def export_csv(
+    recommendation: Optional[str] = None,
+    min_score: Optional[int] = None,
+    limit: int = 1000,
+    repo: SupplierRepository = Depends(get_repo),
+) -> PlainTextResponse:
+    from reports.generator import suppliers_to_csv_string
+
+    suppliers = repo.list_suppliers(
+        recommendation=recommendation, min_composite_score=min_score, limit=limit
+    )
+    csv_text = suppliers_to_csv_string(suppliers)
+    return PlainTextResponse(
+        csv_text, media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=suppliers.csv"},
+    )

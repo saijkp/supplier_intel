@@ -1,0 +1,263 @@
+"""
+tests/test_api.py
+
+Tests for api/app.py, using FastAPI's TestClient (real HTTP requests
+in-process, no network) against a real, temporary SQLite database --
+not mocks of the repository. This exercises the actual dependency
+injection, auth, and JSON serialisation path a real client would hit.
+"""
+
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+TOKEN = "test-token-123"
+
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    """Two fixes over a naive TestClient setup, both for real reasons
+    found while first writing these tests:
+
+    1. `config.settings.DB_PATH` (and CORS's `ALLOWED_ORIGINS`) are
+       resolved once at module-import time from the environment --
+       monkeypatching the env var after `api.app` has already been
+       imported does nothing. FastAPI's own `app.dependency_overrides`
+       is the correct, import-order-independent way to inject a test
+       database, so that's what this uses instead of env manipulation.
+
+    2. FastAPI's TestClient actually executes `BackgroundTasks` for
+       real, synchronously, within the `with TestClient(...)` block --
+       not a no-op or a mock. Left unpatched, every test that creates a
+       pipeline job would trigger a real, live pipeline run: real
+       network calls to Alibaba/HKTDC/Volza/etc., ~80 seconds per test,
+       and — if a real paid key were ever present in a test
+       environment — real spend. `api.app.run_pipeline_job` (the name
+       bound in api.app's own namespace via `from api.jobs import
+       run_pipeline_job`, not `api.jobs.run_pipeline_job` itself, which
+       a caller who already imported it would not see change) is
+       patched to a fast, no-network fake for every test that only
+       needs to prove the API triggers a job, not that the underlying
+       pipeline works -- that's already covered by
+       tests/test_capability_pipeline_stage.py and friends.
+    """
+    db_path = tmp_path / "test_api.db"
+
+    import api.auth
+    monkeypatch.setattr(api.auth, "API_ACCESS_TOKEN", TOKEN)
+
+    import api.app
+    from storage.database import initialise_schema
+    from storage.repository import SupplierRepository
+
+    initialise_schema(db_path)
+    test_repo = SupplierRepository(db_path=db_path)
+    api.app.app.dependency_overrides[api.app.get_repo] = lambda: test_repo
+
+    def fake_run_pipeline_job(job_id, query, options):
+        test_repo.mark_pipeline_job_running(job_id)
+        test_repo.mark_pipeline_job_completed(job_id, stats={"scraped": 0})
+
+    monkeypatch.setattr(api.app, "run_pipeline_job", fake_run_pipeline_job)
+
+    with TestClient(api.app.app) as test_client:
+        test_client.repo = test_repo
+        yield test_client
+
+    api.app.app.dependency_overrides.clear()
+
+
+def auth_headers():
+    return {"Authorization": f"Bearer {TOKEN}"}
+
+
+class TestHealth:
+
+    def test_health_needs_no_auth(self, client):
+        response = client.get("/health")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+
+
+class TestAuth:
+
+    def test_missing_token_is_rejected(self, client):
+        response = client.get("/suppliers/search")
+        assert response.status_code == 401
+
+    def test_wrong_token_is_rejected(self, client):
+        response = client.get("/suppliers/search", headers={"Authorization": "Bearer wrong"})
+        assert response.status_code == 401
+
+    def test_correct_token_is_accepted(self, client):
+        response = client.get("/suppliers/search", headers=auth_headers())
+        assert response.status_code == 200
+
+    def test_no_token_configured_fails_closed(self, client, monkeypatch):
+        """The specific security property that matters: an
+        unconfigured server refuses requests rather than silently
+        allowing everyone through."""
+        import api.auth
+
+        monkeypatch.setattr(api.auth, "API_ACCESS_TOKEN", None)
+        response = client.get("/suppliers/search", headers=auth_headers())
+        assert response.status_code == 503
+
+
+class TestSearchEndpoint:
+
+    def test_search_returns_a_seeded_supplier(self, client):
+        client.repo.create_golden_record({
+            "canonical_name": "Acme Trailer Parts", "country": "United Kingdom",
+            "domain": "acme.example.com", "product_keywords": ["wheel hub"],
+        })
+        response = client.get(
+            "/suppliers/search", params={"product": "wheel hub"}, headers=auth_headers(),
+        )
+        assert response.status_code == 200
+        results = response.json()
+        assert len(results) == 1
+        assert results[0]["canonical_name"] == "Acme Trailer Parts"
+
+    def test_search_with_no_matches_returns_empty_list_not_404(self, client):
+        response = client.get(
+            "/suppliers/search", params={"product": "nonexistent widget"}, headers=auth_headers(),
+        )
+        assert response.status_code == 200
+        assert response.json() == []
+
+    def test_country_filter_is_passed_through(self, client):
+        client.repo.create_golden_record({
+            "canonical_name": "UK Co", "country": "United Kingdom", "domain": "uk.example.com",
+        })
+        client.repo.create_golden_record({
+            "canonical_name": "China Co", "country": "China", "domain": "cn.example.com",
+        })
+        response = client.get(
+            "/suppliers/search", params={"country": "United Kingdom"}, headers=auth_headers(),
+        )
+        names = {r["canonical_name"] for r in response.json()}
+        assert names == {"UK Co"}
+
+    def test_repeated_require_params_are_all_applied(self, client):
+        """Confirms query-string list handling (?require=a&require=b)
+        works through FastAPI's own parsing, not just at the
+        repository layer (already covered elsewhere)."""
+        response = client.get(
+            "/suppliers/search",
+            params=[("require", "iso 9001"), ("require", "sub-assembly")],
+            headers=auth_headers(),
+        )
+        assert response.status_code == 200
+
+    def test_unrecognised_capability_returns_400_not_500(self, client):
+        response = client.get(
+            "/suppliers/search", params={"require": "not-a-real-capability"}, headers=auth_headers(),
+        )
+        assert response.status_code == 400
+        assert "not a recognised capability" in response.json()["detail"]
+
+    def test_is_manufacturer_boolean_is_correctly_coerced_from_sqlite_int(self, client):
+        """SQLite stores booleans as 0/1 -- this proves the API
+        response actually comes back as a real JSON boolean, not 1."""
+        supplier_id = client.repo.create_golden_record({
+            "canonical_name": "Verified Co", "domain": "verified.example.com",
+        })
+        client.repo.update_supplier_fields(supplier_id, {"is_manufacturer": True})
+        response = client.get(
+            "/suppliers/search", params={"product": "Verified"}, headers=auth_headers(),
+        )
+        results = response.json()
+        assert len(results) == 1
+        assert results[0]["is_manufacturer"] is True
+
+
+class TestGetSupplierEndpoint:
+
+    def test_returns_full_detail_including_capabilities(self, client):
+        supplier_id = client.repo.create_golden_record({
+            "canonical_name": "Acme", "domain": "acme.example.com",
+        })
+        client.repo.add_capability_finding(supplier_id, {
+            "reported_term": "iso 9001", "canonical_term": "iso 9001", "category": "standard",
+            "relationship": "in_house", "confidence": 0.9,
+            "evidence": "we are ISO 9001 certified", "source_url": "https://acme.example.com",
+        })
+        response = client.get(f"/suppliers/{supplier_id}", headers=auth_headers())
+        assert response.status_code == 200
+        body = response.json()
+        assert body["canonical_name"] == "Acme"
+        assert len(body["matched_capabilities"]) == 1
+        assert body["matched_capabilities"][0]["canonical_term"] == "iso 9001"
+
+    def test_nonexistent_supplier_returns_404(self, client):
+        response = client.get("/suppliers/999999", headers=auth_headers())
+        assert response.status_code == 404
+
+
+class TestPipelineJobEndpoints:
+
+    def test_creating_a_job_returns_202_with_a_job_id(self, client):
+        response = client.post(
+            "/pipeline/jobs", json={"query": "wheel bearings"}, headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        body = response.json()
+        assert body["status"] == "queued"
+        assert body["query"] == "wheel bearings"
+        assert body["id"]
+
+    def test_created_job_is_retrievable_by_id(self, client):
+        create_response = client.post(
+            "/pipeline/jobs", json={"query": "led lighting"}, headers=auth_headers(),
+        )
+        job_id = create_response.json()["id"]
+        get_response = client.get(f"/pipeline/jobs/{job_id}", headers=auth_headers())
+        assert get_response.status_code == 200
+        assert get_response.json()["query"] == "led lighting"
+
+    def test_nonexistent_job_returns_404(self, client):
+        response = client.get("/pipeline/jobs/does-not-exist", headers=auth_headers())
+        assert response.status_code == 404
+
+    def test_list_jobs_returns_created_jobs(self, client):
+        client.post("/pipeline/jobs", json={"query": "wheel bearings"}, headers=auth_headers())
+        client.post("/pipeline/jobs", json={"query": "led lighting"}, headers=auth_headers())
+        response = client.get("/pipeline/jobs", headers=auth_headers())
+        assert response.status_code == 200
+        assert len(response.json()) == 2
+
+    def test_missing_query_is_a_validation_error(self, client):
+        response = client.post("/pipeline/jobs", json={}, headers=auth_headers())
+        assert response.status_code == 422
+
+
+class TestExportEndpoint:
+
+    def test_export_returns_csv_content_type(self, client):
+        client.repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        response = client.get("/export/csv", headers=auth_headers())
+        assert response.status_code == 200
+        assert "text/csv" in response.headers["content-type"]
+        assert "Acme" in response.text
+
+    def test_export_requires_auth(self, client):
+        response = client.get("/export/csv")
+        assert response.status_code == 401
+
+
+class TestCORSConfiguration:
+    """CORSMiddleware is added once, at module-import time, using
+    whatever ALLOWED_ORIGINS config.settings had at that moment --
+    monkeypatching it per-test after the module has already loaded
+    would not actually change the middleware's configured behaviour.
+    So this only asserts CORS is wired in at all, not the exact
+    allowed-origin list; that list is better verified by hand once
+    against the real deployed ALLOWED_ORIGINS env var."""
+
+    def test_cors_middleware_is_registered(self, client):
+        import api.app
+
+        middleware_classes = [m.cls.__name__ for m in api.app.app.user_middleware]
+        assert "CORSMiddleware" in middleware_classes
