@@ -64,7 +64,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
 
-from verification.capability_vocabulary import CapabilityTerm, map_to_canonical
+from verification.capability_vocabulary import CATEGORY_STANDARD, CapabilityTerm, map_to_canonical
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,25 @@ RELATIONSHIP_IN_HOUSE = "in_house"
 RELATIONSHIP_SUBCONTRACTED = "subcontracted"
 RELATIONSHIP_SOLD_ONLY = "sold_only"
 RELATIONSHIP_ASSERTED = "asserted"
+
+# Deterministic check for standard/certification claims: the evidence
+# text must contain the standard's own number, not just adjacent
+# quality language. Added after a real calibration finding that
+# proved the prompt instruction alone insufficient -- telling the
+# model "don't infer ISO 9001 from vague quality language" as one rule
+# among several did not reliably stop it from doing exactly that
+# (found via a real supplier's site: "known as a quality leader" kept
+# getting cited as evidence for ISO 9001 even after that prompt rule
+# was added). A model instruction is a request it can ignore; this
+# check cannot be argued around by phrasing. "ce marking" has no
+# digit sequence of its own, so it's checked against a short list of
+# textual markers instead.
+_STANDARD_EVIDENCE_MUST_CONTAIN = {
+    "iso 9001": ("9001",),
+    "iatf 16949": ("16949",),
+    "iso 14001": ("14001",),
+    "ce marking": ("ce mark", "ce certif", "ce complian", " ce "),
+}
 # 'asserted' (v9, commercial-intelligence extension): for claims with
 # no in-house-vs-subcontracted distinction at all -- "we serve the UK
 # market" isn't something a company does in-house or subcontracts,
@@ -108,12 +127,20 @@ this applies to logistics and OEM-readiness facts too (e.g. shipping handled by 
 partner, not the company itself).
 3. Use "asserted" for facts with no in-house-vs-subcontracted distinction at all — which markets \
 the company serves, whether they describe themselves as an OEM/Tier-1 supplier, and similar plain \
-factual claims. Never use "sold_only" for these; that value is only for manufacturing capabilities.
-4. POSITIVE OBSERVATIONS ONLY. If the page denies, has stopped, or plans something, omit it \
+factual claims. Never use "sold_only" for these; that value is only for manufacturing capabilities. \
+Certifications and standards (ISO 9001, IATF 16949, CE marking, ...) are also always "asserted" — a \
+company either holds a certification or it doesn't, there is no in-house-vs-subcontracted version of \
+holding one.
+4. FOR CERTIFICATIONS AND STANDARDS SPECIFICALLY, the evidence must name the actual standard — "ISO \
+9001", "IATF 16949", "CE marking", or an equally specific reference. General quality language ("we \
+are known for quality", "a quality leader", "committed to excellence") is NOT evidence of holding any \
+particular certification, however confident it sounds — omit the entry rather than inferring a \
+specific standard from vague quality marketing copy.
+5. POSITIVE OBSERVATIONS ONLY. If the page denies, has stopped, or plans something, omit it \
 entirely. Never return an entry meaning absence.
-5. Do not infer one capability or fact from another.
-6. Every entry needs a real quotation in "evidence". If you cannot quote the page, omit the entry.
-7. Return an empty array if the page supports nothing. That is a correct answer for a contact page.
+6. Do not infer one capability or fact from another.
+7. Every entry needs a real quotation in "evidence". If you cannot quote the page, omit the entry.
+8. Return an empty array if the page supports nothing. That is a correct answer for a contact page.
 
 Known terms:
 {term_list}
@@ -181,11 +208,23 @@ def _finding_from_assertion(assertion: dict, *, source_url: str) -> Optional[Cap
         return None
 
     mapped: Optional[CapabilityTerm] = map_to_canonical(term_text)
+
+    relationship_to_store = relationship
+    if mapped and mapped.category == CATEGORY_STANDARD:
+        if relationship != RELATIONSHIP_ASSERTED:
+            relationship_to_store = RELATIONSHIP_ASSERTED
+
+        required_markers = _STANDARD_EVIDENCE_MUST_CONTAIN.get(mapped.canonical)
+        if required_markers is not None:
+            evidence_lower = f" {evidence.strip().lower()} "
+            if not any(marker in evidence_lower for marker in required_markers):
+                return None  # the quoted evidence doesn't actually name the standard -- reject, not just discount
+
     return CapabilityFinding(
         reported_term=term_text.strip(),
         canonical_term=mapped.canonical if mapped else None,
         category=mapped.category if mapped else None,
-        relationship=relationship,
+        relationship=relationship_to_store,
         confidence=float(confidence),
         evidence=evidence.strip(),
         source_url=source_url,

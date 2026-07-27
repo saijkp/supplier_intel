@@ -545,8 +545,19 @@ class SupplierIntelligencePipeline:
         first, checking the output, and only then widening is the
         cheap way to find out whether the extraction is any good
         before paying for it across a whole catalogue.
+
+        `force=True` also clears every existing capability finding for
+        each supplier being re-processed before re-extracting -- see
+        `SupplierRepository.clear_capabilities`'s own docstring for why
+        this is necessary: `add_capability_finding`'s `INSERT OR
+        IGNORE` never updates or removes a stale finding on its own, so
+        without this, --force could re-run the AI call forever without
+        ever letting a prompt or logic fix's effect actually become
+        visible in the results.
         """
         for supplier in self.repo.get_suppliers_needing_capability_extraction(limit=limit, force=force):
+            if force:
+                self.repo.clear_capabilities(supplier["id"])
             domain = supplier.get("domain")
             try:
                 fetch_result = self.own_website_scraper.fetch(domain)

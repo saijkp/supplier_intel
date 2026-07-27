@@ -1,0 +1,24 @@
+# Real secrets -- never commit this. Copy .env.example instead.
+.env
+
+# Virtual environment
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# The database itself: a local SQLite file that grows over time and
+# has no business in git history. data/source_files/ is deliberately
+# NOT excluded -- reference exports like the Automechanika workbook
+# belong in the repo, only the live database doesn't.
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/exports/*
+
+# Logs
+logs/*.log

@@ -483,7 +483,12 @@ def search(product: str, required_capabilities: tuple, manufacturers_only: bool,
             console.print(f"  [blue]{shipments} confirmed export shipment(s) on customs record{buyer_bit}[/blue]")
 
         for cap in s.get("matched_capabilities", []):
-            tag = "in-house" if cap["relationship"] == "in_house" else "subcontracted"
+            if cap["relationship"] == "in_house":
+                tag = "in-house"
+            elif cap["relationship"] == "subcontracted":
+                tag = "subcontracted"
+            else:
+                tag = "asserted"
             console.print(
                 f"  [cyan]✓[/cyan] {cap['canonical_term']} ({tag}, confidence {cap['confidence']:.2f}) "
                 f"— \"{cap['evidence']}\""
@@ -499,7 +504,7 @@ def search(product: str, required_capabilities: tuple, manufacturers_only: bool,
 
 @cli.command("find-by-capability")
 @click.argument("capability")
-@click.option("--relationship", type=click.Choice(["in_house", "subcontracted"]), default=None,
+@click.option("--relationship", type=click.Choice(["in_house", "subcontracted", "asserted"]), default=None,
               help="Restrict to suppliers with this exact relationship to the capability. "
                    "Default: either — a rotomoulder who subcontracts injection moulding is "
                    "still a legitimate answer to an enquiry needing both processes.")

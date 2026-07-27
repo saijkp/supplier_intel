@@ -1023,6 +1023,28 @@ class SupplierRepository:
             ).fetchall()
             return _rows_to_dicts(rows)
 
+    def clear_capabilities(self, supplier_id: int) -> int:
+        """Deletes every existing capability finding for a supplier.
+
+        Exists specifically because `add_capability_finding`'s own
+        `INSERT OR IGNORE` uniqueness (on supplier_id, reported_term,
+        relationship) means re-running extraction over a supplier
+        never removes or updates a previous finding — only adds a new
+        one if the (term, relationship) pair genuinely differs. Found
+        from a real, confusing case: after fixing a prompt so it no
+        longer claims a certification from vague evidence, re-running
+        `extract-capabilities --force` still showed the old, wrong
+        finding, because nothing had ever deleted it -- the fix was
+        working, but there was no way to see that without first
+        clearing the stale row. `--force` calls this before
+        re-extracting for exactly that reason.
+
+        Returns the number of rows deleted.
+        """
+        with connection_scope(self.db_path) as conn:
+            cur = conn.execute("DELETE FROM supplier_capabilities WHERE supplier_id = ?", (supplier_id,))
+            return cur.rowcount
+
     def find_suppliers_by_capability(
         self,
         canonical_term: str,

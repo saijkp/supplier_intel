@@ -27,7 +27,18 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 EXPORTS_DIR = DATA_DIR / "exports"
-DB_PATH = Path(os.getenv("SUPPLIER_INTEL_DB_PATH", str(DATA_DIR / "suppliers.db")))
+DB_PATH = Path(os.getenv("SUPPLIER_INTEL_DB_PATH") or str(DATA_DIR / "suppliers.db"))
+# ^ deliberately `os.getenv(key) or default`, not `os.getenv(key, default)`.
+# The two-argument form only falls back when the key is *absent* from the
+# environment -- it does NOT fall back when the key is present but blank,
+# which is exactly what happens if a .env file has "SUPPLIER_INTEL_DB_PATH="
+# with nothing after the "=" (python-dotenv loads that as an empty string,
+# not as unset). An empty string here becomes Path("").resolve(), which
+# resolves to the current working directory -- so sqlite3 ends up trying
+# to open the project folder itself as a database file, producing a
+# confusing "unable to open database file" error that looks like OS/
+# permissions interference but is actually just this. Confirmed directly:
+# a real user hit exactly this from a blank line in their own .env.
 LOG_DIR = BASE_DIR / "logs"
 
 # Ensure critical directories exist at import time. This keeps main.py
@@ -388,7 +399,7 @@ MAX_REQUESTS_PER_SESSION: Dict[str, int] = {
 # ─────────────────────────────────────────────────────────────
 # Logging
 # ─────────────────────────────────────────────────────────────
-LOG_LEVEL = os.getenv("SUPPLIER_INTEL_LOG_LEVEL", "INFO").upper()
+LOG_LEVEL = (os.getenv("SUPPLIER_INTEL_LOG_LEVEL") or "INFO").upper()
 
 
 def configure_logging() -> None:
