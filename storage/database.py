@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
 
 
 # ═══════════════════════════════════════════════════════════
@@ -253,7 +253,10 @@ CREATE TABLE IF NOT EXISTS supplier_capabilities (
     reported_term       TEXT NOT NULL,   -- verbatim model output before vocabulary mapping
     canonical_term      TEXT,            -- NULL when the vocabulary doesn't recognise reported_term yet
     category            TEXT,            -- 'process' | 'capability' | 'standard' — NULL alongside canonical_term
-    relationship        TEXT NOT NULL CHECK (relationship IN ('in_house', 'subcontracted')),
+    relationship        TEXT NOT NULL CHECK (relationship IN ('in_house', 'subcontracted', 'asserted')),
+                                          -- 'asserted' (v9): for claims with no in-house-vs-subcontracted
+                                          -- distinction at all (e.g. "serves the UK market") -- see
+                                          -- capability_vocabulary's commercial-intelligence extension
                                           -- 'sold_only' observations are never stored — see capability_extractor
     confidence          REAL NOT NULL CHECK (confidence BETWEEN 0.0 AND 1.0),
     evidence            TEXT NOT NULL,   -- the supporting quotation from the page
@@ -296,6 +299,60 @@ CREATE TABLE IF NOT EXISTS pipeline_jobs (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON pipeline_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_created ON pipeline_jobs(created_at);
+
+
+-- ═══════════════════════════════════════
+-- COMMERCIAL INTELLIGENCE: BUYER PROFILES + PROCUREMENT OUTCOMES (v10)
+-- A Buyer Profile is a named, reusable bundle of the same filters
+-- search_suppliers_full already accepts, plus commercial preferences
+-- (incoterm, payment terms, target market) scored rather than
+-- filtered on -- see pipeline.buyer_profile_search's own docstring
+-- for exactly how required vs preferred fields are treated
+-- differently. required_capabilities is stored as JSON, matching
+-- every other JSON-array field on suppliers (product_keywords, etc).
+--
+-- procurement_outcomes is schema + repository methods only, per the
+-- commercial-intelligence spec's own instruction -- no UI, and
+-- currently no automated scoring calibration reads from it either
+-- (see commercial_probability.py's own note on this being the future
+-- calibration source once real outcomes accumulate). `outcome` is
+-- deliberately NOT constrained by a CHECK -- the same lesson v4 and
+-- v9 already both taught this codebase: a fixed list breaks the
+-- moment a new outcome type is needed, and rebuilding a table to fix
+-- a CHECK constraint is real, avoidable migration work.
+-- ═══════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS buyer_profiles (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                            TEXT NOT NULL UNIQUE,
+    destination_country             TEXT,
+    required_capabilities           TEXT,     -- JSON array, e.g. ["iso 9001"]
+    preferred_incoterm              TEXT,     -- e.g. "ddp shipping" -- scored, not filtered
+    preferred_payment_terms_days    INTEGER,
+    min_company_size                TEXT,     -- free text (e.g. "medium+") -- deliberately not a numeric
+                                               -- tier; see commercial_scoring.assess_company_scale's own
+                                               -- note on why fabricated precision is worse than honest text
+    target_market                   TEXT,     -- e.g. "oem"
+    min_export_experience_years     INTEGER,
+    manufacturers_only              BOOLEAN NOT NULL DEFAULT 1,
+    created_at                      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS procurement_outcomes (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id         INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    buyer_profile_id    INTEGER REFERENCES buyer_profiles(id) ON DELETE SET NULL,
+    outcome             TEXT NOT NULL,   -- e.g. 'nda_signed', 'rfq_submitted', 'quoted',
+                                          -- 'accepted_ddp', 'accepted_60_day_payment',
+                                          -- 'tooling_order_won', 'quality_approved', 'supplier_rejected'
+                                          -- -- deliberately unconstrained, see section comment above
+    notes               TEXT,
+    recorded_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_outcomes_supplier ON procurement_outcomes(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_outcomes_profile ON procurement_outcomes(buyer_profile_id);
+CREATE INDEX IF NOT EXISTS idx_outcomes_outcome ON procurement_outcomes(outcome);
 
 
 -- ═══════════════════════════════════════
@@ -519,6 +576,84 @@ MIGRATIONS: dict[int, dict] = {
             "CREATE INDEX IF NOT EXISTS idx_jobs_created ON pipeline_jobs(created_at)",
         ],
     },
+    9: {
+        "description": (
+            "Commercial intelligence extension, part 1: extend "
+            "supplier_capabilities.relationship's CHECK constraint to add 'asserted', for "
+            "commercial claims (market presence, logistics facts) that have no "
+            "in-house-vs-subcontracted distinction at all -- SQLite can't ALTER a CHECK "
+            "constraint in place, so this rebuilds the table, the same pattern v4 already "
+            "used for shipment_records.source"
+        ),
+        "statements": [
+            """
+            CREATE TABLE IF NOT EXISTS supplier_capabilities_v9 (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_id         INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+                reported_term       TEXT NOT NULL,
+                canonical_term      TEXT,
+                category            TEXT,
+                relationship        TEXT NOT NULL CHECK (relationship IN ('in_house', 'subcontracted', 'asserted')),
+                confidence          REAL NOT NULL CHECK (confidence BETWEEN 0.0 AND 1.0),
+                evidence            TEXT NOT NULL,
+                source_url          TEXT,
+                assessed_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (supplier_id, reported_term, relationship)
+            )
+            """,
+            """
+            INSERT INTO supplier_capabilities_v9 (
+                id, supplier_id, reported_term, canonical_term, category,
+                relationship, confidence, evidence, source_url, assessed_at
+            )
+            SELECT
+                id, supplier_id, reported_term, canonical_term, category,
+                relationship, confidence, evidence, source_url, assessed_at
+            FROM supplier_capabilities
+            """,
+            "DROP TABLE supplier_capabilities",
+            "ALTER TABLE supplier_capabilities_v9 RENAME TO supplier_capabilities",
+            "CREATE INDEX IF NOT EXISTS idx_cap_supplier ON supplier_capabilities(supplier_id)",
+            "CREATE INDEX IF NOT EXISTS idx_cap_canonical ON supplier_capabilities(canonical_term)",
+        ],
+    },
+    10: {
+        "description": (
+            "Commercial intelligence extension, part 2: buyer_profiles (named, reusable "
+            "search + commercial preference bundles) and procurement_outcomes (feedback-loop "
+            "schema only, no UI, per spec)"
+        ),
+        "statements": [
+            """
+            CREATE TABLE IF NOT EXISTS buyer_profiles (
+                id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+                name                            TEXT NOT NULL UNIQUE,
+                destination_country             TEXT,
+                required_capabilities           TEXT,
+                preferred_incoterm              TEXT,
+                preferred_payment_terms_days    INTEGER,
+                min_company_size                TEXT,
+                target_market                   TEXT,
+                min_export_experience_years     INTEGER,
+                manufacturers_only              BOOLEAN NOT NULL DEFAULT 1,
+                created_at                      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS procurement_outcomes (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_id         INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+                buyer_profile_id    INTEGER REFERENCES buyer_profiles(id) ON DELETE SET NULL,
+                outcome             TEXT NOT NULL,
+                notes               TEXT,
+                recorded_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_outcomes_supplier ON procurement_outcomes(supplier_id)",
+            "CREATE INDEX IF NOT EXISTS idx_outcomes_profile ON procurement_outcomes(buyer_profile_id)",
+            "CREATE INDEX IF NOT EXISTS idx_outcomes_outcome ON procurement_outcomes(outcome)",
+        ],
+    },
 }
 
 
@@ -660,6 +795,8 @@ def table_counts(db_path: Path | str | None = None) -> dict[str, int]:
         "source_query_runs",
         "supplier_capabilities",
         "pipeline_jobs",
+        "buyer_profiles",
+        "procurement_outcomes",
         "schema_migrations",
     )
     counts: dict[str, int] = {}

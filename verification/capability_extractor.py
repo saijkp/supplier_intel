@@ -73,31 +73,47 @@ DEFAULT_MODEL = "gpt-4o-mini"  # CONFIRM this is still current before relying on
 RELATIONSHIP_IN_HOUSE = "in_house"
 RELATIONSHIP_SUBCONTRACTED = "subcontracted"
 RELATIONSHIP_SOLD_ONLY = "sold_only"
-_VALID_RELATIONSHIPS = (RELATIONSHIP_IN_HOUSE, RELATIONSHIP_SUBCONTRACTED, RELATIONSHIP_SOLD_ONLY)
+RELATIONSHIP_ASSERTED = "asserted"
+# 'asserted' (v9, commercial-intelligence extension): for claims with
+# no in-house-vs-subcontracted distinction at all -- "we serve the UK
+# market" isn't something a company does in-house or subcontracts,
+# it's just true or not. See capability_vocabulary's
+# CATEGORY_MARKET_PRESENCE terms, which always use this relationship.
+_VALID_RELATIONSHIPS = (
+    RELATIONSHIP_IN_HOUSE, RELATIONSHIP_SUBCONTRACTED,
+    RELATIONSHIP_SOLD_ONLY, RELATIONSHIP_ASSERTED,
+)
 
-SYSTEM_PROMPT_TEMPLATE = """You are a procurement analyst assessing whether a manufacturing company \
-genuinely operates specific production processes, reading one page of that company's own website.
+SYSTEM_PROMPT_TEMPLATE = """You are a procurement analyst assessing what a company genuinely does, \
+reading one page of that company's own website — both manufacturing processes and commercial or \
+logistics facts (shipping terms, markets served, OEM readiness).
 
 Return ONLY a JSON array. No preamble, no markdown fences, no commentary. Each element must be an \
 object with exactly these keys:
 
-  "term":         string. The capability, preferably one of the known terms listed below.
-  "relationship": one of "in_house", "subcontracted", "sold_only".
+  "term":         string. The capability or fact, preferably one of the known terms listed below.
+  "relationship": one of "in_house", "subcontracted", "sold_only", "asserted".
   "evidence":     string. A short direct quotation from the page, under 25 words, supporting this.
   "confidence":   number between 0 and 1. Your genuine certainty. Do not default or inflate it.
 
 Rules, in priority order:
 
-1. DISTINGUISH MAKING FROM SELLING. A page listing products for sale proves nothing about how \
-they are produced. Only use "in_house" when the page asserts the company itself operates the \
-process — describing its own machines, workshop, production lines, or staff. If the page only \
-shows the company supplies or offers such products, use "sold_only".
-2. Use "subcontracted" when the page states the work is done by partners or a supplier network.
-3. POSITIVE OBSERVATIONS ONLY. If the page denies, has stopped, or plans a capability, omit it \
+1. DISTINGUISH MAKING FROM SELLING, for manufacturing processes and capabilities. A page listing \
+products for sale proves nothing about how they are produced. Only use "in_house" when the page \
+asserts the company itself operates the process — describing its own machines, workshop, \
+production lines, or staff. If the page only shows the company supplies or offers such products, \
+use "sold_only".
+2. Use "subcontracted" when the page states the work is done by partners or a supplier network — \
+this applies to logistics and OEM-readiness facts too (e.g. shipping handled by a named freight \
+partner, not the company itself).
+3. Use "asserted" for facts with no in-house-vs-subcontracted distinction at all — which markets \
+the company serves, whether they describe themselves as an OEM/Tier-1 supplier, and similar plain \
+factual claims. Never use "sold_only" for these; that value is only for manufacturing capabilities.
+4. POSITIVE OBSERVATIONS ONLY. If the page denies, has stopped, or plans something, omit it \
 entirely. Never return an entry meaning absence.
-4. Do not infer one capability from another.
-5. Every entry needs a real quotation in "evidence". If you cannot quote the page, omit the entry.
-6. Return an empty array if the page supports nothing. That is a correct answer for a contact page.
+5. Do not infer one capability or fact from another.
+6. Every entry needs a real quotation in "evidence". If you cannot quote the page, omit the entry.
+7. Return an empty array if the page supports nothing. That is a correct answer for a contact page.
 
 Known terms:
 {term_list}
@@ -268,6 +284,13 @@ def assess_own_website_capability(
     processes it doesn't run itself), so that case returns `None`
     ("no signal"), never `False` — this module should never be the
     reason a real manufacturer gets marked as a probable trader.
+
+    `asserted` findings (market presence, OEM-supplier self-
+    description) are deliberately invisible to this function -- "we
+    serve the UK market" says nothing about whether a company
+    manufactures anything, so they fall through to the same "no
+    signal" default as an empty findings list, never treated as
+    evidence either way.
     """
     if not findings:
         return None, "No capability findings from the supplier's own website (not yet assessed, or nothing extracted)"
@@ -282,7 +305,7 @@ def assess_own_website_capability(
         terms = ", ".join(sorted({f.canonical_term or f.reported_term for f in subcontracted}))
         return None, f"Own website describes only subcontracted capability ({terms}) — not evidence either way"
 
-    return None, "Capability findings present but none asserted as in-house or subcontracted"
+    return None, "Capability findings present but none describe an in-house or subcontracted manufacturing relationship"
 
 
 def unmapped_terms(findings: List[CapabilityFinding]) -> List[str]:

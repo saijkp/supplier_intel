@@ -42,7 +42,16 @@ from fastapi.responses import PlainTextResponse
 
 from api.auth import require_api_token
 from api.jobs import run_pipeline_job
-from api.models import PipelineJobRequest, PipelineJobResponse, SupplierSearchResult
+from api.models import (
+    BuyerProfileRequest,
+    BuyerProfileResponse,
+    CommercialSearchResult,
+    PipelineJobRequest,
+    PipelineJobResponse,
+    ProcurementOutcomeRequest,
+    ProcurementOutcomeResponse,
+    SupplierSearchResult,
+)
 from config.settings import ALLOWED_ORIGINS
 from storage.database import initialise_schema
 from storage.repository import SupplierRepository
@@ -239,3 +248,136 @@ def export_csv(
         csv_text, media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=suppliers.csv"},
     )
+
+
+# ═════════════════════════════════════════════════════
+# Buyer profiles + commercial compatibility search
+# ═════════════════════════════════════════════════════
+
+
+def _to_buyer_profile_response(profile: Dict[str, Any]) -> BuyerProfileResponse:
+    return BuyerProfileResponse(
+        id=profile["id"], name=profile["name"], destination_country=profile.get("destination_country"),
+        required_capabilities=profile.get("required_capabilities") or [],
+        preferred_incoterm=profile.get("preferred_incoterm"),
+        preferred_payment_terms_days=profile.get("preferred_payment_terms_days"),
+        min_company_size=profile.get("min_company_size"), target_market=profile.get("target_market"),
+        min_export_experience_years=profile.get("min_export_experience_years"),
+        manufacturers_only=bool(profile.get("manufacturers_only")),
+        created_at=_stringify(profile.get("created_at")),
+    )
+
+
+@app.post(
+    "/buyer-profiles", response_model=BuyerProfileResponse, status_code=201,
+    dependencies=[Depends(require_api_token)],
+)
+def create_buyer_profile(
+    request: BuyerProfileRequest, repo: SupplierRepository = Depends(get_repo)
+) -> BuyerProfileResponse:
+    fields = request.model_dump(exclude={"name"})
+    try:
+        profile_id = repo.create_buyer_profile(name=request.name, **fields)
+    except Exception as e:
+        raise HTTPException(status_code=409, detail=f"could not create profile: {e}") from e
+    return _to_buyer_profile_response(repo.get_buyer_profile(profile_id))
+
+
+@app.get(
+    "/buyer-profiles", response_model=List[BuyerProfileResponse],
+    dependencies=[Depends(require_api_token)],
+)
+def list_buyer_profiles(repo: SupplierRepository = Depends(get_repo)) -> List[BuyerProfileResponse]:
+    return [_to_buyer_profile_response(p) for p in repo.list_buyer_profiles()]
+
+
+@app.get(
+    "/buyer-profiles/{profile_id}", response_model=BuyerProfileResponse,
+    dependencies=[Depends(require_api_token)],
+)
+def get_buyer_profile(profile_id: int, repo: SupplierRepository = Depends(get_repo)) -> BuyerProfileResponse:
+    profile = repo.get_buyer_profile(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Buyer profile not found")
+    return _to_buyer_profile_response(profile)
+
+
+@app.delete("/buyer-profiles/{profile_id}", status_code=204, dependencies=[Depends(require_api_token)])
+def delete_buyer_profile(profile_id: int, repo: SupplierRepository = Depends(get_repo)) -> None:
+    if repo.get_buyer_profile(profile_id) is None:
+        raise HTTPException(status_code=404, detail="Buyer profile not found")
+    repo.delete_buyer_profile(profile_id)
+
+
+@app.get(
+    "/buyer-profiles/{profile_id}/search", response_model=List[CommercialSearchResult],
+    dependencies=[Depends(require_api_token)],
+)
+def search_for_buyer_profile(
+    profile_id: int, product: Optional[str] = None, limit: int = 50,
+    repo: SupplierRepository = Depends(get_repo),
+) -> List[CommercialSearchResult]:
+    """The commercial-intelligence search: applies the profile's
+    required fields as filters, scores every result against its
+    preferred fields, and returns both the existing technical score
+    and the new commercial-compatibility score, kept separate. See
+    pipeline.buyer_profile_search's own docstring for the reasoning.
+    """
+    from pipeline.buyer_profile_search import search_suppliers_for_buyer_profile
+
+    profile = repo.get_buyer_profile(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Buyer profile not found")
+
+    results = search_suppliers_for_buyer_profile(repo, profile, product_query=product, limit=limit)
+    return [
+        CommercialSearchResult(
+            id=r["id"], canonical_name=r["canonical_name"], country=r.get("country"), domain=r.get("domain"),
+            composite_score=r.get("composite_score"), recommendation=r.get("recommendation"),
+            is_manufacturer=bool(r["is_manufacturer"]) if r.get("is_manufacturer") is not None else None,
+            commercial_compatibility_score=r.get("commercial_compatibility_score"),
+            commercial_compatibility=r.get("commercial_compatibility") or {},
+        )
+        for r in results
+    ]
+
+
+# ═════════════════════════════════════════════════════
+# Procurement outcomes (feedback loop) -- API only, no UI, per spec
+# ═════════════════════════════════════════════════════
+
+
+def _to_outcome_response(outcome: Dict[str, Any]) -> ProcurementOutcomeResponse:
+    return ProcurementOutcomeResponse(
+        id=outcome["id"], supplier_id=outcome["supplier_id"], buyer_profile_id=outcome.get("buyer_profile_id"),
+        outcome=outcome["outcome"], notes=outcome.get("notes"), recorded_at=_stringify(outcome.get("recorded_at")),
+    )
+
+
+@app.post(
+    "/suppliers/{supplier_id}/procurement-outcomes", response_model=ProcurementOutcomeResponse,
+    status_code=201, dependencies=[Depends(require_api_token)],
+)
+def record_procurement_outcome(
+    supplier_id: int, request: ProcurementOutcomeRequest, repo: SupplierRepository = Depends(get_repo),
+) -> ProcurementOutcomeResponse:
+    if repo.get_supplier(supplier_id) is None:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    outcome_id = repo.record_procurement_outcome(
+        supplier_id=supplier_id, outcome=request.outcome,
+        buyer_profile_id=request.buyer_profile_id, notes=request.notes,
+    )
+    outcome = repo.get_procurement_outcomes(supplier_id=supplier_id, limit=1000)
+    return _to_outcome_response(next(o for o in outcome if o["id"] == outcome_id))
+
+
+@app.get(
+    "/suppliers/{supplier_id}/procurement-outcomes", response_model=List[ProcurementOutcomeResponse],
+    dependencies=[Depends(require_api_token)],
+)
+def get_procurement_outcomes(
+    supplier_id: int, repo: SupplierRepository = Depends(get_repo)
+) -> List[ProcurementOutcomeResponse]:
+    if repo.get_supplier(supplier_id) is None:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    return [_to_outcome_response(o) for o in repo.get_procurement_outcomes(supplier_id=supplier_id)]

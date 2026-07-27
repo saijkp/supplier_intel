@@ -38,6 +38,17 @@ from typing import Dict, NamedTuple, Tuple
 CATEGORY_PROCESS = "process"
 CATEGORY_CAPABILITY = "capability"
 CATEGORY_STANDARD = "standard"
+# Added for the commercial-intelligence extension (see
+# verification/commercial_probability.py and DEPLOY.md's own note on
+# this feature's design). Deliberately kept as three fine-grained
+# categories rather than folding everything into CATEGORY_CAPABILITY:
+# a buyer filtering "show me only logistics-relevant evidence" or
+# "only OEM-readiness evidence" needs the category to actually
+# distinguish these, matching the same reasoning CATEGORY_STANDARD was
+# already kept separate from CATEGORY_CAPABILITY for.
+CATEGORY_LOGISTICS = "logistics"
+CATEGORY_MARKET_PRESENCE = "market_presence"
+CATEGORY_OEM_READINESS = "oem_readiness"
 
 
 class CapabilityTerm(NamedTuple):
@@ -115,6 +126,70 @@ VOCABULARY: Tuple[CapabilityTerm, ...] = (
     CapabilityTerm("iso 9001", CATEGORY_STANDARD, ("iso9001", "iso 9001:2015")),
     CapabilityTerm("iatf 16949", CATEGORY_STANDARD, ("iatf16949", "ts 16949", "ts16949")),
     CapabilityTerm("iso 14001", CATEGORY_STANDARD, ("iso14001",)),
+    CapabilityTerm("ce marking", CATEGORY_STANDARD, ("ce mark", "ce marked", "ce certified", "ce compliance")),
+
+    # --- Logistics (commercial intelligence extension) --------------------
+    # Evidence source is the supplier's own shipping/incoterms page, not
+    # a directory listing -- same capability_extractor pipeline every
+    # process/capability term already goes through. "relationship" here
+    # means: in_house = they operate this themselves (own fleet, own
+    # bonded warehouse), subcontracted = via a named or implied logistics
+    # partner. A bare capability claim with no such distinction stated
+    # uses "asserted" (see verification.capability_extractor's own note
+    # on why a third relationship value was added).
+    CapabilityTerm("ddp shipping", CATEGORY_LOGISTICS, (
+        "ddp", "delivered duty paid", "ddp shipping available", "ddp incoterms",
+    )),
+    CapabilityTerm("dap shipping", CATEGORY_LOGISTICS, ("dap", "delivered at place")),
+    CapabilityTerm("fob shipping", CATEGORY_LOGISTICS, ("fob", "free on board", "fob only")),
+    CapabilityTerm("cif shipping", CATEGORY_LOGISTICS, ("cif", "cost insurance and freight", "cost, insurance and freight")),
+    CapabilityTerm("door to door shipping", CATEGORY_LOGISTICS, ("door-to-door delivery", "door to door delivery")),
+    CapabilityTerm("uk warehouse", CATEGORY_LOGISTICS, (
+        "warehouse in the uk", "uk based warehouse", "uk stock", "uk distribution centre", "uk distribution center",
+    )),
+    CapabilityTerm("eu warehouse", CATEGORY_LOGISTICS, (
+        "warehouse in europe", "european warehouse", "eu stock", "eu distribution centre", "eu distribution center",
+    )),
+    CapabilityTerm("customs expertise", CATEGORY_LOGISTICS, (
+        "customs clearance", "customs brokerage", "in house customs", "customs handling",
+    )),
+
+    # --- Market presence (commercial intelligence extension) ---------------
+    # Website-derived evidence of which markets a supplier already
+    # serves. Complements, rather than replaces, the two signals already
+    # on the supplier record: exports_to_uk/eu/us (self-reported "main
+    # markets" text, via BaseNormalizer.infer_export_flags_from_markets)
+    # and confirmed_shipments_uk/eu/us (actual customs/trade data, via
+    # the Volza normalizer -- the strongest evidence tier of the three).
+    # This is the third, own-website-text tier. "relationship" is always
+    # "asserted" for these -- there's no in-house-vs-subcontracted
+    # version of "we serve the UK market."
+    CapabilityTerm("serves uk market", CATEGORY_MARKET_PRESENCE, (
+        "uk customers", "supplying the uk", "serving the uk market", "uk clients",
+    )),
+    CapabilityTerm("serves eu market", CATEGORY_MARKET_PRESENCE, (
+        "european customers", "supplying europe", "serving the european market", "eu clients",
+    )),
+    CapabilityTerm("serves north america market", CATEGORY_MARKET_PRESENCE, (
+        "north american customers", "supplying north america", "us customers", "usa customers", "canadian customers",
+    )),
+    CapabilityTerm("serves australia market", CATEGORY_MARKET_PRESENCE, (
+        "australian customers", "supplying australia", "serving the australian market",
+    )),
+    CapabilityTerm("oem supplier", CATEGORY_MARKET_PRESENCE, (
+        "oem experience", "original equipment manufacturer supplier", "tier 1 supplier", "tier one supplier",
+    )),
+
+    # --- OEM readiness (commercial intelligence extension) ------------------
+    CapabilityTerm("ppap capability", CATEGORY_OEM_READINESS, (
+        "ppap", "production part approval process", "ppap submission",
+    )),
+    CapabilityTerm("cad engineering support", CATEGORY_OEM_READINESS, (
+        "cad support", "cad design", "3d cad", "engineering drawings support",
+    )),
+    CapabilityTerm("traceability system", CATEGORY_OEM_READINESS, (
+        "full traceability", "batch traceability", "lot traceability", "material traceability",
+    )),
 )
 
 

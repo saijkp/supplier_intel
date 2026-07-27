@@ -15,6 +15,7 @@ import json
 from verification.capability_extractor import (
     CapabilityExtractor,
     CapabilityFinding,
+    RELATIONSHIP_ASSERTED,
     RELATIONSHIP_IN_HOUSE,
     RELATIONSHIP_SUBCONTRACTED,
     assess_own_website_capability,
@@ -279,3 +280,83 @@ class TestAssessOwnWebsiteCapability:
         ]
         verdict, _ = assess_own_website_capability(findings)
         assert verdict is True
+
+    def test_asserted_only_findings_are_invisible_to_the_manufacturer_verdict(self):
+        """The specific new behaviour this extension must get right:
+        'we serve the UK market' says nothing about whether a company
+        manufactures anything -- must return None, not True or False."""
+        finding = CapabilityFinding(
+            reported_term="serves uk market", canonical_term="serves uk market", category="market_presence",
+            relationship=RELATIONSHIP_ASSERTED, confidence=0.85, evidence="we supply customers across the UK",
+            source_url="",
+        )
+        verdict, explanation = assess_own_website_capability([finding])
+        assert verdict is None
+
+    def test_asserted_findings_do_not_mask_a_real_in_house_finding(self):
+        """A page can assert market presence AND describe real
+        manufacturing -- the in-house signal must still surface."""
+        findings = [
+            CapabilityFinding("serves uk market", "serves uk market", "market_presence", RELATIONSHIP_ASSERTED, 0.85, "e1", ""),
+            CapabilityFinding("rotomoulding", "rotational moulding", "process", RELATIONSHIP_IN_HOUSE, 0.9, "e2", ""),
+        ]
+        verdict, _ = assess_own_website_capability(findings)
+        assert verdict is True
+
+
+class TestCommercialIntelligenceExtension:
+    """Tests for the v9 extension: the 'asserted' relationship value
+    and the new logistics/market_presence/oem_readiness categories."""
+
+    def test_asserted_relationship_is_accepted(self):
+        extractor = _extractor([_assertion(term="serves uk market", relationship=RELATIONSHIP_ASSERTED)])
+        findings = extractor.extract("text")
+        assert len(findings) == 1
+        assert findings[0].relationship == RELATIONSHIP_ASSERTED
+
+    def test_market_presence_term_maps_to_the_right_category(self):
+        extractor = _extractor([_assertion(term="serves uk market", relationship=RELATIONSHIP_ASSERTED)])
+        finding = extractor.extract("text")[0]
+        assert finding.canonical_term == "serves uk market"
+        assert finding.category == "market_presence"
+
+    def test_logistics_term_maps_correctly(self):
+        extractor = _extractor([_assertion(term="ddp", relationship=RELATIONSHIP_IN_HOUSE)])
+        finding = extractor.extract("text")[0]
+        assert finding.canonical_term == "ddp shipping"
+        assert finding.category == "logistics"
+
+    def test_logistics_term_can_be_subcontracted(self):
+        """Unlike market presence, logistics facts DO have a
+        meaningful in-house-vs-subcontracted distinction (own fleet
+        vs a named freight partner)."""
+        extractor = _extractor([_assertion(term="customs clearance", relationship=RELATIONSHIP_SUBCONTRACTED)])
+        finding = extractor.extract("text")[0]
+        assert finding.canonical_term == "customs expertise"
+        assert finding.relationship == RELATIONSHIP_SUBCONTRACTED
+
+    def test_oem_readiness_term_maps_correctly(self):
+        extractor = _extractor([_assertion(term="ppap", relationship=RELATIONSHIP_IN_HOUSE)])
+        finding = extractor.extract("text")[0]
+        assert finding.canonical_term == "ppap capability"
+        assert finding.category == "oem_readiness"
+
+    def test_mixed_manufacturing_and_commercial_findings_on_one_page(self):
+        extractor = _extractor([
+            _assertion(term="rotomoulding", relationship=RELATIONSHIP_IN_HOUSE),
+            _assertion(term="ddp", relationship=RELATIONSHIP_IN_HOUSE),
+            _assertion(term="serves eu market", relationship=RELATIONSHIP_ASSERTED),
+        ])
+        findings = extractor.extract("text")
+        categories = {f.category for f in findings}
+        assert categories == {"process", "logistics", "market_presence"}
+
+    def test_still_rejects_sold_only_for_a_manufacturing_term(self):
+        """The original, most important rule must survive the
+        extension unchanged."""
+        extractor = _extractor([_assertion(relationship="sold_only")])
+        assert extractor.extract("text") == []
+
+    def test_bulk_import_still_rejects_a_genuinely_invalid_relationship(self):
+        extractor = _extractor([_assertion(relationship="not_a_real_relationship")])
+        assert extractor.extract("text") == []

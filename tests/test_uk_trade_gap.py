@@ -322,7 +322,7 @@ class TestShipmentRecordsMigrationV4:
                 (supplier_id,),
             )
 
-        assert get_schema_version(db_path) == 8  # latest migration at time of writing; bumps as new migrations are added (see storage/database.py MIGRATIONS)
+        assert get_schema_version(db_path) == 10  # latest migration at time of writing; bumps as new migrations are added (see storage/database.py MIGRATIONS)
 
 
 class TestPipelineVolzaIntegration:

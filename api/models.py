@@ -57,3 +57,70 @@ class PipelineJobResponse(BaseModel):
     created_at: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+
+
+class BuyerProfileRequest(BaseModel):
+    name: str
+    destination_country: Optional[str] = None
+    required_capabilities: List[str] = Field(default_factory=list)
+    preferred_incoterm: Optional[str] = None
+    preferred_payment_terms_days: Optional[int] = None
+    min_company_size: Optional[str] = None
+    target_market: Optional[str] = None
+    min_export_experience_years: Optional[int] = None
+    manufacturers_only: bool = True
+
+
+class BuyerProfileResponse(BaseModel):
+    id: int
+    name: str
+    destination_country: Optional[str] = None
+    required_capabilities: List[str] = Field(default_factory=list)
+    preferred_incoterm: Optional[str] = None
+    preferred_payment_terms_days: Optional[int] = None
+    min_company_size: Optional[str] = None
+    target_market: Optional[str] = None
+    min_export_experience_years: Optional[int] = None
+    manufacturers_only: bool
+    created_at: Optional[str] = None
+
+
+class CommercialFactorResponse(BaseModel):
+    factor_name: str
+    value: Optional[Any] = None
+    confidence: float
+    evidence: Optional[str] = None
+    source: str
+    reasoning: str
+
+
+class CommercialSearchResult(BaseModel):
+    """Deliberately keeps composite_score (technical) and
+    commercial_compatibility_score separate — see
+    pipeline.buyer_profile_search's own docstring for why these are
+    never silently blended into one number."""
+
+    id: int
+    canonical_name: str
+    country: Optional[str] = None
+    domain: Optional[str] = None
+    composite_score: Optional[int] = None
+    recommendation: Optional[str] = None
+    is_manufacturer: Optional[bool] = None
+    commercial_compatibility_score: Optional[float] = None
+    commercial_compatibility: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ProcurementOutcomeRequest(BaseModel):
+    outcome: str
+    buyer_profile_id: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class ProcurementOutcomeResponse(BaseModel):
+    id: int
+    supplier_id: int
+    buyer_profile_id: Optional[int] = None
+    outcome: str
+    notes: Optional[str] = None
+    recorded_at: Optional[str] = None

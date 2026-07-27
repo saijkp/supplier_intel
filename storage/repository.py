@@ -1377,3 +1377,118 @@ class SupplierRepository:
                         job[field] = json.loads(job[field])
                 jobs.append(job)
             return jobs
+
+    # ═════════════════════════════════════════════════════
+    # Buyer profiles (v10) -- named, reusable search + commercial
+    # preference bundles. See pipeline.buyer_profile_search's own
+    # docstring for exactly how required_capabilities/
+    # destination_country (filtered) differ from preferred_incoterm/
+    # min_company_size/target_market/min_export_experience_years
+    # (scored, not filtered).
+    # ═════════════════════════════════════════════════════
+
+    def create_buyer_profile(self, *, name: str, **fields: Any) -> int:
+        """`fields` may include any of: destination_country,
+        required_capabilities (a list, JSON-encoded here),
+        preferred_incoterm, preferred_payment_terms_days,
+        min_company_size, target_market, min_export_experience_years,
+        manufacturers_only. `name` must be unique -- raises
+        `sqlite3.IntegrityError` on a duplicate, the same discipline
+        every other unique-constrained insert in this codebase already
+        has, rather than silently overwriting an existing profile.
+        """
+        payload = dict(fields)
+        if "required_capabilities" in payload and payload["required_capabilities"] is not None:
+            payload["required_capabilities"] = json.dumps(payload["required_capabilities"])
+
+        columns = ["name", *payload.keys()]
+        placeholders = ", ".join("?" for _ in columns)
+        values = [name, *payload.values()]
+
+        with connection_scope(self.db_path) as conn:
+            cur = conn.execute(
+                f"INSERT INTO buyer_profiles ({', '.join(columns)}) VALUES ({placeholders})",
+                values,
+            )
+            return cur.lastrowid
+
+    def get_buyer_profile(self, profile_id: int) -> Optional[Dict[str, Any]]:
+        with connection_scope(self.db_path) as conn:
+            row = conn.execute("SELECT * FROM buyer_profiles WHERE id = ?", (profile_id,)).fetchone()
+            return self._decode_buyer_profile(row)
+
+    def get_buyer_profile_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        with connection_scope(self.db_path) as conn:
+            row = conn.execute("SELECT * FROM buyer_profiles WHERE name = ?", (name,)).fetchone()
+            return self._decode_buyer_profile(row)
+
+    def list_buyer_profiles(self) -> List[Dict[str, Any]]:
+        with connection_scope(self.db_path) as conn:
+            rows = conn.execute("SELECT * FROM buyer_profiles ORDER BY name").fetchall()
+            return [self._decode_buyer_profile(row) for row in rows]
+
+    def delete_buyer_profile(self, profile_id: int) -> None:
+        with connection_scope(self.db_path) as conn:
+            conn.execute("DELETE FROM buyer_profiles WHERE id = ?", (profile_id,))
+
+    @staticmethod
+    def _decode_buyer_profile(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
+        if row is None:
+            return None
+        profile = dict(row)
+        if profile.get("required_capabilities"):
+            profile["required_capabilities"] = json.loads(profile["required_capabilities"])
+        else:
+            profile["required_capabilities"] = []
+        return profile
+
+    # ═════════════════════════════════════════════════════
+    # Procurement outcomes (v10) -- feedback-loop schema and
+    # repository methods only, per the commercial-intelligence spec's
+    # own instruction. No UI, and nothing in this codebase currently
+    # reads these back into scoring -- see
+    # verification.commercial_probability's own note on this being the
+    # future calibration source once real outcomes accumulate.
+    # ═════════════════════════════════════════════════════
+
+    def record_procurement_outcome(
+        self, *, supplier_id: int, outcome: str,
+        buyer_profile_id: Optional[int] = None, notes: Optional[str] = None,
+    ) -> int:
+        """`outcome` is free text by design (e.g. 'nda_signed',
+        'rfq_submitted', 'quoted', 'accepted_ddp',
+        'accepted_60_day_payment', 'tooling_order_won',
+        'quality_approved', 'supplier_rejected') -- deliberately not
+        constrained to a fixed list, the same lesson migrations v4 and
+        v9 both already taught this codebase about CHECK constraints
+        on an open-ended category column.
+        """
+        with connection_scope(self.db_path) as conn:
+            cur = conn.execute(
+                "INSERT INTO procurement_outcomes (supplier_id, buyer_profile_id, outcome, notes) "
+                "VALUES (?, ?, ?, ?)",
+                (supplier_id, buyer_profile_id, outcome, notes),
+            )
+            return cur.lastrowid
+
+    def get_procurement_outcomes(
+        self, *, supplier_id: Optional[int] = None, buyer_profile_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        clauses = []
+        params: List[Any] = []
+        if supplier_id is not None:
+            clauses.append("supplier_id = ?")
+            params.append(supplier_id)
+        if buyer_profile_id is not None:
+            clauses.append("buyer_profile_id = ?")
+            params.append(buyer_profile_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+
+        with connection_scope(self.db_path) as conn:
+            rows = conn.execute(
+                f"SELECT * FROM procurement_outcomes {where} ORDER BY recorded_at DESC, id DESC LIMIT ?",
+                params,
+            ).fetchall()
+            return [dict(row) for row in rows]

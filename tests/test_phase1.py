@@ -79,7 +79,7 @@ class TestSchemaCreation:
         assert counts["shipment_records"] == 0
         assert counts["dedup_candidates"] == 0
         assert counts["search_log"] == 0
-        assert counts["schema_migrations"] == 8  # v1 base + v2 manufacturer verification + v3 incremental scraping + v4 shipment source fix + v5 capability findings + v6 website discovery + v7 facility/linkedin verification + v8 pipeline jobs
+        assert counts["schema_migrations"] == 10  # v1-v9 as noted previously + v10 buyer_profiles/procurement_outcomes
 
     def test_foreign_keys_enforced(self, db_path):
         with connection_scope(db_path) as conn:
