@@ -517,3 +517,71 @@ class TestPhotoVerificationReusesTheSameFetchedPages:
         )
         pipeline.run_capability_extraction_only()
         assert downloader.downloaded_urls == ["https://a.example.com/1.jpg"]
+
+
+class TestCostControls:
+    """--limit and --no-photos exist so a first/calibration run can be
+    cost-controlled. Without these, 'try it on 30 suppliers first' is
+    not actually possible from the CLI."""
+
+    def _seed(self, repo, count):
+        for i in range(count):
+            repo.create_golden_record({
+                "canonical_name": f"Supplier {i}", "domain": f"supplier{i}.example.com",
+            })
+
+    def test_limit_stops_after_n_suppliers(self, repo):
+        self._seed(repo, 5)
+        own_site = FakeOwnWebsiteScraper()
+        pipeline = SupplierIntelligencePipeline(
+            repo=repo, scrapers={}, normalizers={},
+            own_website_scraper=own_site, capability_extractor=FakeCapabilityExtractor(findings=[_finding()]),
+        )
+        pipeline.run_capability_extraction_only(limit=2)
+        assert len(own_site.fetched_domains) == 2
+
+    def test_no_limit_processes_everything(self, repo):
+        self._seed(repo, 5)
+        own_site = FakeOwnWebsiteScraper()
+        pipeline = SupplierIntelligencePipeline(
+            repo=repo, scrapers={}, normalizers={},
+            own_website_scraper=own_site, capability_extractor=FakeCapabilityExtractor(findings=[_finding()]),
+        )
+        pipeline.run_capability_extraction_only()
+        assert len(own_site.fetched_domains) == 5
+
+    def test_assess_photos_false_skips_the_vision_model_entirely(self, repo):
+        repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        own_site = FakeOwnWebsiteScraper(default_result=OwnWebsiteFetchResult(
+            domain="acme.example.com",
+            pages=[OwnWebsitePage(url="acme.example.com", text="hi",
+                                   image_urls=["https://acme.example.com/factory.jpg"])],
+        ))
+        downloader = FakePhotoDownloader()
+        verifier = FakeFactoryPhotoVerifier()
+        pipeline = SupplierIntelligencePipeline(
+            repo=repo, scrapers={}, normalizers={},
+            own_website_scraper=own_site, capability_extractor=FakeCapabilityExtractor(),
+            photo_downloader=downloader, factory_photo_verifier=verifier,
+        )
+        stats = pipeline.run_capability_extraction_only(assess_photos=False)
+
+        assert stats["photos_assessed"] == 0
+        assert downloader.downloaded_urls == []   # nothing downloaded either — no bandwidth spent
+        assert verifier.assess_calls == 0
+
+    def test_photos_still_run_by_default(self, repo):
+        repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        own_site = FakeOwnWebsiteScraper(default_result=OwnWebsiteFetchResult(
+            domain="acme.example.com",
+            pages=[OwnWebsitePage(url="acme.example.com", text="hi",
+                                   image_urls=["https://acme.example.com/factory.jpg"])],
+        ))
+        verifier = FakeFactoryPhotoVerifier()
+        pipeline = SupplierIntelligencePipeline(
+            repo=repo, scrapers={}, normalizers={},
+            own_website_scraper=own_site, capability_extractor=FakeCapabilityExtractor(),
+            photo_downloader=FakePhotoDownloader(), factory_photo_verifier=verifier,
+        )
+        pipeline.run_capability_extraction_only()
+        assert verifier.assess_calls == 1

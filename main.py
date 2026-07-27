@@ -274,7 +274,10 @@ def import_automechanika(path: str, include_tier2: bool) -> None:
 @cli.command("find-websites")
 @click.option("--force", is_flag=True,
               help="Re-attempt every domain-less supplier, not just ones never searched.")
-def find_websites(force: bool) -> None:
+@click.option("--limit", default=1000, show_default=True,
+              help="Stop after this many suppliers. Each one costs a paid SerpAPI call, so start "
+                   "small on a first run.")
+def find_websites(force: bool, limit: int) -> None:
     """For suppliers with a company name but no known website (common for Alibaba/
     IndiaMart/Made-in-China listings that don't expose one), search the name and
     validate the top result before accepting it as their domain. Costs a paid
@@ -284,7 +287,7 @@ def find_websites(force: bool) -> None:
     from pipeline.orchestrator import SupplierIntelligencePipeline
 
     pipeline = SupplierIntelligencePipeline()
-    stats = pipeline.run_website_discovery_only(force=force)
+    stats = pipeline.run_website_discovery_only(force=force, limit=limit)
     console.print(f"[green]✓[/green] Found and validated {stats['website_discovered']} new website(s).")
 
 
@@ -321,16 +324,39 @@ def check_linkedin(force: bool) -> None:
 @cli.command("extract-capabilities")
 @click.option("--force", is_flag=True,
               help="Re-attempt every supplier with a known domain, not just ones never attempted.")
-def extract_capabilities(force: bool) -> None:
+@click.option("--limit", default=1000, show_default=True,
+              help="Stop after this many suppliers. Use a small number on a first run — this "
+                   "spends real money per supplier and is worth checking before running at scale.")
+@click.option("--no-photos", is_flag=True,
+              help="Skip factory-photo assessment. Photos go to a vision model (up to 5 images per "
+                   "page, several pages per supplier) and are by far the most expensive part of this "
+                   "command, so a first calibration run is usually cheaper without them.")
+def extract_capabilities(force: bool, limit: int, no_photos: bool) -> None:
     """Crawl each supplier's own website for manufacturing capability evidence
     (processes, capabilities, standards) — the one signal none of the directory/
     registry-based sources can give you: what a company says about itself, in
-    its own words, distinguishing what it makes from what it merely sells."""
+    its own words, distinguishing what it makes from what it merely sells.
+
+    On a first run, start small:
+
+        python main.py extract-capabilities --limit 30 --no-photos
+    """
     from pipeline.orchestrator import SupplierIntelligencePipeline
 
     pipeline = SupplierIntelligencePipeline()
-    stats = pipeline.run_capability_extraction_only(force=force)
-    console.print(f"[green]✓[/green] Recorded {stats['capability_extracted']} new capability finding(s).")
+    stats = pipeline.run_capability_extraction_only(
+        force=force, limit=limit, assess_photos=not no_photos
+    )
+
+    table = Table(show_header=False)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Count", justify="right", style="magenta")
+    for key in ("capability_extracted", "contact_emails_added", "contact_phones_added",
+                "contact_forms_recorded", "photos_assessed"):
+        table.add_row(key.replace("_", " "), str(stats.get(key, 0)))
+    console.print(table)
+    if no_photos:
+        console.print("[dim]Photo assessment skipped. Drop --no-photos to include it.[/dim]")
 
 
 @cli.command("search")

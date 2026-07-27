@@ -498,8 +498,10 @@ class SupplierIntelligencePipeline:
     # Alibaba/IndiaMart/Made-in-China gave a name but no usable site)
     # ═════════════════════════════════════════════════════
 
-    def _website_discovery_stage(self, stats: Dict[str, Any], force: bool = False) -> None:
-        for supplier in self.repo.get_suppliers_needing_website_search(force=force):
+    def _website_discovery_stage(
+        self, stats: Dict[str, Any], force: bool = False, limit: int = 1000
+    ) -> None:
+        for supplier in self.repo.get_suppliers_needing_website_search(limit=limit, force=force):
             name = supplier.get("canonical_name")
             try:
                 result = self.website_finder.find_website(name, country=supplier.get("country"))
@@ -518,21 +520,33 @@ class SupplierIntelligencePipeline:
                 )
                 continue
 
-    def run_website_discovery_only(self, force: bool = False) -> Dict[str, Any]:
+    def run_website_discovery_only(self, force: bool = False, limit: int = 1000) -> Dict[str, Any]:
         """Standalone pass across every domain-less supplier -- run
         this before `run_capability_extraction_only()` if you want a
         clean two-step sweep rather than opting both flags into a
         single `run()` call."""
         stats = {"website_discovered": 0}
-        self._website_discovery_stage(stats, force=force)
+        self._website_discovery_stage(stats, force=force, limit=limit)
         return stats
 
     # ═════════════════════════════════════════════════════
     # Stage 4.6: own-website capability extraction
     # ═════════════════════════════════════════════════════
 
-    def _capability_extraction_stage(self, stats: Dict[str, Any], force: bool = False) -> None:
-        for supplier in self.repo.get_suppliers_needing_capability_extraction(force=force):
+    def _capability_extraction_stage(
+        self, stats: Dict[str, Any], force: bool = False,
+        limit: int = 1000, assess_photos: bool = True,
+    ) -> None:
+        """`limit` and `assess_photos` exist for cost control on a
+        first/calibration run: photo assessment sends up to
+        `_MAX_IMAGES_PER_PAGE` images per page to a vision model, which
+        is by far the most expensive part of this stage and the least
+        validated. Running a small `limit` with `assess_photos=False`
+        first, checking the output, and only then widening is the
+        cheap way to find out whether the extraction is any good
+        before paying for it across a whole catalogue.
+        """
+        for supplier in self.repo.get_suppliers_needing_capability_extraction(limit=limit, force=force):
             domain = supplier.get("domain")
             try:
                 fetch_result = self.own_website_scraper.fetch(domain)
@@ -612,10 +626,11 @@ class SupplierIntelligencePipeline:
                 # factory_photo_urls/verdict/assessed_at columns that
                 # have existed since Phase 2 with no caller until now.
                 image_urls: list = []
-                for page in fetch_result.pages:
-                    for url in page.image_urls:
-                        if url not in image_urls:
-                            image_urls.append(url)
+                if assess_photos:
+                    for page in fetch_result.pages:
+                        for url in page.image_urls:
+                            if url not in image_urls:
+                                image_urls.append(url)
                 if image_urls:
                     downloaded = self.photo_downloader.download_all(image_urls)
                     photos_for_assessment = [d.as_assessment_input() for d in downloaded if d.success]
@@ -637,16 +652,24 @@ class SupplierIntelligencePipeline:
                 )
                 continue
 
-    def run_capability_extraction_only(self, force: bool = False) -> Dict[str, Any]:
+    def run_capability_extraction_only(
+        self, force: bool = False, limit: int = 1000, assess_photos: bool = True,
+    ) -> Dict[str, Any]:
         """Standalone pass, run separately from run() given the
         cost/traffic profile noted on run()'s own docstring — e.g. a
         weekly job that walks the whole supplier catalogue's own
-        websites once, independent of any particular search query."""
+        websites once, independent of any particular search query.
+
+        See `_capability_extraction_stage` for why `limit` and
+        `assess_photos` matter on a first run.
+        """
         stats = {
             "capability_extracted": 0, "contact_emails_added": 0,
             "contact_phones_added": 0, "contact_forms_recorded": 0, "photos_assessed": 0,
         }
-        self._capability_extraction_stage(stats, force=force)
+        self._capability_extraction_stage(
+            stats, force=force, limit=limit, assess_photos=assess_photos
+        )
         return stats
 
     # ═════════════════════════════════════════════════════
