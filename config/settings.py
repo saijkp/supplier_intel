@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -401,6 +402,58 @@ MAX_REQUESTS_PER_SESSION: Dict[str, int] = {
 # ─────────────────────────────────────────────────────────────
 LOG_LEVEL = (os.getenv("SUPPLIER_INTEL_LOG_LEVEL") or "INFO").upper()
 
+_REDACT_PARAM_PATTERN = re.compile(r"(?i)\b(api_key|key|token)=([^&\s\"']*)")
+
+
+class _RedactApiKeysFilter(logging.Filter):
+    """Masks `api_key=`/`key=`/`token=` URL-parameter values
+    (case-insensitive) in every log record reaching the handler this is
+    attached to -- this codebase's scrapers/verifiers pass credentials
+    as query-string parameters to Apify, SerpAPI, Google Places, Amap,
+    and Qichacha, and any of those URLs reaching a log line would leak
+    the key in plain text.
+
+    Deliberately attached to the HANDLER (see `configure_logging`
+    below), not to any one logger's own `.filters` list. Python's
+    logging module only runs a logger's own filters against records
+    that originate from a direct call on that specific logger object --
+    propagating a record up the logger hierarchy does not re-check each
+    ancestor logger's filters, only each Handler's, as the record
+    actually reaches it (`Logger.callHandlers` walks the handler list,
+    calling `handler.handle()`, which is what invokes the handler's own
+    filters). `httpx` -- which every scraper's HTTP client is built on
+    -- logs every outbound request URL at INFO through its own `httpx`
+    child logger, not through this application's loggers, so a filter
+    attached only to the root logger's own `.filters` list would never
+    see those records at all; the handler is the one place every
+    record, this application's own and every propagated third-party
+    one, actually passes through.
+
+    Redacts the fully-assembled message -- `record.getMessage()`, which
+    is `str(record.msg) % record.args` -- rather than redacting
+    `record.msg` and `record.args` separately. That would have a real
+    bug: a message *template* can contain a literal `"key=%s"`
+    substring, which is a placeholder, not a secret -- but the same
+    regex that must catch a real secret embedded in an arg's string
+    form would just as happily "redact" that placeholder text itself,
+    corrupting the template before `%`-substitution ever runs (and
+    then crashing formatting entirely, since the substituted arg no
+    longer has a placeholder left to land in). Redacting only the
+    final, already-substituted text sidesteps this. It also means no
+    special-casing is needed for httpx passing its request URL as an
+    `httpx.URL` object rather than a plain string: `%s` % that object
+    already calls `str()` on it as part of ordinary `%`-formatting,
+    the same way it would for any other non-string arg (e.g. `%d` with
+    a real int) -- `record.getMessage()` does that stringification
+    itself, correctly, for every arg type, before this filter ever
+    needs to look at the text.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = _REDACT_PARAM_PATTERN.sub(r"\1=***REDACTED***", record.getMessage())
+        record.args = None
+        return True
+
 
 def configure_logging() -> None:
     """Idempotent logging setup. Safe to call multiple times (e.g. once
@@ -413,3 +466,6 @@ def configure_logging() -> None:
         format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    redaction_filter = _RedactApiKeysFilter()
+    for handler in root.handlers:
+        handler.addFilter(redaction_filter)
