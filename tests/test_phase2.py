@@ -107,8 +107,14 @@ class FakeActorHandle:
     def __init__(self, run_result=None, error=None):
         self._run_result = run_result or {"defaultDatasetId": "ds1"}
         self._error = error
+        self.last_call_kwargs = None
 
-    def call(self, run_input=None, timeout_secs=None):
+    def call(self, run_input=None, **kwargs):
+        # **kwargs (not a hardcoded run_timeout=/max_items=/timeout_secs=)
+        # deliberately, so this fake doesn't go stale again the next time
+        # apify-client's own ActorClient.call() signature changes -- it
+        # already has once, silently, since this was first written.
+        self.last_call_kwargs = {"run_input": run_input, **kwargs}
         if self._error:
             raise self._error
         return self._run_result
@@ -118,9 +124,11 @@ class FakeApifyClient:
     def __init__(self, dataset_items=None, actor_error=None):
         self._dataset_items = dataset_items or []
         self._actor_error = actor_error
+        self.last_actor_handle = None
 
     def actor(self, actor_id):
-        return FakeActorHandle(error=self._actor_error)
+        self.last_actor_handle = FakeActorHandle(error=self._actor_error)
+        return self.last_actor_handle
 
     def dataset(self, dataset_id):
         return FakeDataset(self._dataset_items)
@@ -148,6 +156,27 @@ ALIBABA_ITEM_TOO_NEW = {
 
 
 class TestAlibabaScraper:
+
+    def test_call_uses_the_current_apify_client_kwargs_not_the_removed_ones(self):
+        """Regression test for a real bug found running this against a
+        real APIFY_TOKEN for the first time: the actually-installed
+        apify-client no longer accepts timeout_secs=<int> at all (it's
+        now run_timeout=<timedelta>), so this failed with a TypeError
+        on every attempt despite the token itself being valid. Also
+        confirms max_items is set as a platform-enforced cap on top of
+        run_input's own maxItems -- Apify's own docs describe max_items
+        as also limiting billing for a per-result-charged actor."""
+        from datetime import timedelta
+
+        client = FakeApifyClient(dataset_items=[ALIBABA_ITEM_GOLD_5Y])
+        scraper = AlibabaScraper(client=client, enable_delays=False)
+
+        scraper.scrape("LED marker light", max_results=7)
+
+        kwargs = client.last_actor_handle.last_call_kwargs
+        assert "timeout_secs" not in kwargs
+        assert isinstance(kwargs["run_timeout"], timedelta)
+        assert kwargs["max_items"] == 7
 
     def test_scrape_filters_by_min_years_gold(self):
         client = FakeApifyClient(dataset_items=[ALIBABA_ITEM_GOLD_5Y, ALIBABA_ITEM_TOO_NEW])

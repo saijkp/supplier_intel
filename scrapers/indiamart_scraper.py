@@ -15,7 +15,7 @@ APIFY_TOKEN or network access.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from config.settings import APIFY_ACTORS, APIFY_TOKEN
@@ -71,7 +71,13 @@ class IndiaMartScraper(BaseScraper):
             run = self._safe_request(
                 self.client.actor(self.actor_id).call,
                 run_input=run_input,
-                timeout_secs=300,
+                # See AlibabaScraper's identical fix for why: apify-client
+                # 3.x renamed timeout_secs=<int> to run_timeout=<timedelta>,
+                # and max_items is a second, platform-enforced cap on top
+                # of run_input's own maxItems (Apify's own docs describe it
+                # as also limiting billing for a per-result-charged actor).
+                run_timeout=timedelta(seconds=300),
+                max_items=max_results,
             )
         except Exception as e:
             logger.error("IndiaMART actor run failed for '%s': %s", query, e)

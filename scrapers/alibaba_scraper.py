@@ -14,6 +14,7 @@ that path is only hit when no client was injected.
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 from config.settings import APIFY_ACTORS, APIFY_TOKEN
@@ -78,7 +79,18 @@ class AlibabaScraper(BaseScraper):
             run = self._safe_request(
                 self.client.actor(self.actor_id).call,
                 run_input=run_input,
-                timeout_secs=300,
+                # apify-client 3.x renamed the old timeout_secs=<int> kwarg
+                # to run_timeout=<timedelta> -- confirmed by inspecting the
+                # actually-installed SDK's ActorClient.call() signature
+                # directly, since this had never been exercised against a
+                # real APIFY_TOKEN before. max_items is a second,
+                # platform-enforced cap on top of run_input's own maxItems:
+                # Apify's own docs describe it as also limiting billing for
+                # a per-result-charged actor, not just the item count, so
+                # this is worth setting even though maxItems above already
+                # asks the actor itself to stop at max_results.
+                run_timeout=timedelta(seconds=300),
+                max_items=max_results,
             )
         except Exception as e:
             logger.error("Alibaba actor run failed for '%s': %s", query, e)
