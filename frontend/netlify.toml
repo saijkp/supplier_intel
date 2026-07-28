@@ -1,0 +1,25 @@
+# Netlify configuration for the Supplier Intel frontend.
+#
+# There is no build step: the app is a single self-contained index.html
+# with no dependencies to install and no bundler to run. Netlify serves
+# it directly, which also means a deploy is effectively instant and
+# there is no build cache to go stale.
+
+[build]
+  publish = "."
+  command = ""
+
+# Single-page app: every path serves index.html so a refresh on any
+# view doesn't 404.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "geolocation=(), microphone=(), camera=()"
