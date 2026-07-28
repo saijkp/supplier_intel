@@ -162,7 +162,15 @@ class TestCapabilityExtractionStage:
         stats = pipeline.run_capability_extraction_only()
         assert stats["capability_extracted"] == 1  # good.example.com's finding still recorded
 
-    def test_duplicate_findings_across_runs_do_not_inflate_the_stat(self, repo):
+    def test_forced_rerun_reinserts_and_recounts_the_same_finding(self, repo):
+        """A forced re-run clears each supplier's existing findings
+        before re-extracting (see SupplierRepository.clear_capabilities's
+        own docstring: without this, a fixed prompt or logic change's
+        effect would never become visible, because the stale row from
+        before the fix was still sitting there and INSERT OR IGNORE
+        would silently no-op against it). So re-extracting the *same*
+        finding on a forced run is expected to genuinely re-insert it
+        and recount it -- not be silently treated as a dedup no-op."""
         repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
         pipeline = SupplierIntelligencePipeline(
             repo=repo, scrapers={}, normalizers={},
@@ -172,7 +180,7 @@ class TestCapabilityExtractionStage:
         first = pipeline.run_capability_extraction_only()
         second = pipeline.run_capability_extraction_only(force=True)
         assert first["capability_extracted"] == 1
-        assert second["capability_extracted"] == 0  # same finding already on file
+        assert second["capability_extracted"] == 1  # cleared, then genuinely re-extracted -- not a stale duplicate
 
 
 class TestContactExtractionReusesTheSameFetchedPages:
