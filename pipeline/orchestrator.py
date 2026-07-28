@@ -179,6 +179,7 @@ class SupplierIntelligencePipeline:
         run_linkedin_check: bool = False,
         incremental_days: int = 0,
         force_rescrape: bool = False,
+        results_limit: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Run every stage for `query` against `sources` (defaults to every
@@ -232,6 +233,16 @@ class SupplierIntelligencePipeline:
         exists, via a Google-search snippet -- never scrapes LinkedIn
         directly. Off by default: another paid SerpAPI call per
         supplier.
+
+        results_limit: hard cap on raw results kept per source, applied
+        after that source's own scraper returns -- for a small,
+        cost-controlled test run against a source that's never been
+        exercised against real credentials before. None (the default)
+        means no cap, matching every prior version of this method's
+        behaviour. See `_scrape_stage`'s own note on why this is
+        enforced centrally rather than trusting each scraper's own
+        (inconsistently-named: max_results vs max_pages) internal
+        count-limiting parameter alone.
         """
         sources = sources or list(self.scrapers.keys())
         scraper_kwargs = scraper_kwargs or {}
@@ -241,6 +252,7 @@ class SupplierIntelligencePipeline:
         raw_records = self._scrape_stage(
             query, sources, scraper_kwargs, stats,
             incremental_days=incremental_days, force_rescrape=force_rescrape,
+            results_limit=results_limit,
         )
         self.repo.log_search(query=query, sources_used=sources, results_count=stats["scraped"])
         self._normalise_and_dedup_stage(raw_records, stats)
@@ -351,6 +363,7 @@ class SupplierIntelligencePipeline:
         stats: Dict[str, Any],
         incremental_days: int = 0,
         force_rescrape: bool = False,
+        results_limit: Optional[int] = None,
     ) -> List[tuple]:
         raw_records = []  # (raw_id, source_name, raw_data)
 
@@ -376,6 +389,17 @@ class SupplierIntelligencePipeline:
                 logger.error("%s scraper raised unexpectedly for '%s': %s", source_name, query, e)
                 stats["scrape_errors"] += 1
                 continue
+
+            if results_limit is not None:
+                # A hard, source-agnostic cap -- independent of whatever
+                # count-limiting kwarg (or lack of one) a given scraper
+                # happens to accept internally. scraper_kwargs can (and,
+                # for a small test run, should) also pass a scraper's own
+                # max_results/max_pages to avoid paying for/fetching more
+                # than necessary in the first place, but this is the one
+                # guarantee that holds regardless: no source ever produces
+                # more than results_limit raw records in a single run.
+                results = results[:results_limit]
 
             source_scraped_count = 0
             for result in results:

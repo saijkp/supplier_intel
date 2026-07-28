@@ -162,21 +162,51 @@ def doctor(live: bool) -> None:
 @click.option("--check-linkedin", is_flag=True,
               help="Confirm whether each supplier has a findable LinkedIn company page. Off by "
                    "default: a paid SerpAPI call per supplier.")
+@click.option("--limit", type=int, default=None,
+              help="Cap raw results kept PER SOURCE to this many -- for a small, cost-controlled "
+                   "test run against a source you haven't exercised against real credentials yet. "
+                   "Passed through as each source's own natural count parameter where one exists "
+                   "(max_results for alibaba/indiamart/google; max_pages=1 for everything "
+                   "page-based, so a test run never fetches more than one page in the first place) "
+                   "AND enforced as a hard cap afterward regardless -- see "
+                   "SupplierIntelligencePipeline.run's own note on why both. No cap by default, "
+                   "matching every prior version of this command's behaviour.")
 def run(query: str, sources: tuple, no_verify: bool, no_score: bool, find_websites: bool,
-        extract_capabilities: bool, verify_facilities: bool, check_linkedin: bool) -> None:
+        extract_capabilities: bool, verify_facilities: bool, check_linkedin: bool,
+        limit: Optional[int]) -> None:
     """Run the full pipeline for QUERY: scrape -> dedup/merge -> verify -> score."""
     from pipeline.orchestrator import SupplierIntelligencePipeline
 
     pipeline = SupplierIntelligencePipeline()
+
+    # alibaba/indiamart/google accept max_results; every other scraper
+    # in this codebase (hktdc, importyeti, volza, and every directory/
+    # exhibition source) accepts max_pages instead -- see each
+    # scraper's own scrape() signature. Built from the EFFECTIVE source
+    # list (every configured scraper, if -s was never given) rather
+    # than just what --source was passed, so --limit alone (no -s)
+    # still avoids over-fetching from every source, not just named
+    # ones. Only meaningful when --limit is actually given;
+    # _scrape_stage's results_limit is what guarantees the cap either way.
+    scraper_kwargs = {}
+    if limit is not None:
+        effective_sources = list(sources) or list(pipeline.scrapers.keys())
+        for source_name in effective_sources:
+            if source_name in ("alibaba", "indiamart", "google"):
+                scraper_kwargs[source_name] = {"max_results": limit}
+            else:
+                scraper_kwargs[source_name] = {"max_pages": 1}
     stats = pipeline.run(
         query,
         sources=list(sources) or None,
+        scraper_kwargs=scraper_kwargs,
         run_verification=not no_verify,
         run_scoring=not no_score,
         run_website_discovery=find_websites,
         run_capability_extraction=extract_capabilities,
         run_facility_verification=verify_facilities,
         run_linkedin_check=check_linkedin,
+        results_limit=limit,
     )
 
     console.print(f"[bold]Pipeline run: \"{query}\"[/bold]\n")

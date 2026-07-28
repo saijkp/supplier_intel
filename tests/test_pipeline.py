@@ -97,6 +97,57 @@ class TestPipelineFullRun:
         assert supplier["composite_score"] is not None
         assert supplier["recommendation"] in ("recommended", "review", "unverified", "avoid")
 
+    def test_results_limit_truncates_per_source(self, repo):
+        """A hard, source-agnostic cap on raw results kept per source --
+        for a small, cost-controlled test run against a source that's
+        never been exercised for real before (see main.py's --limit)."""
+        scrapers = {
+            "hktdc": FakeScraper("hktdc", [
+                ScraperResult(source="hktdc", source_id=str(i), raw_data={"company_name": f"Company {i}", "country": "China"}, success=True)
+                for i in range(5)
+            ]),
+        }
+        pipeline = SupplierIntelligencePipeline(repo=repo, scrapers=scrapers, normalizers={"hktdc": HKTDCNormalizer()})
+
+        stats = pipeline.run("widgets", sources=["hktdc"], results_limit=2)
+
+        assert stats["scraped"] == 2  # the scraper returned 5; only 2 kept
+        assert len(repo.list_suppliers(limit=10)) == 2
+
+    def test_results_limit_applies_independently_per_source(self, repo):
+        scrapers = {
+            "alibaba": FakeScraper("alibaba", [
+                ScraperResult(source="alibaba", source_id=str(i), raw_data={**ALIBABA_RAW, "supplierId": f"A{i}", "companyName": f"Alibaba Co {i}"}, success=True)
+                for i in range(4)
+            ]),
+            "hktdc": FakeScraper("hktdc", [
+                ScraperResult(source="hktdc", source_id=str(i), raw_data={"company_name": f"HKTDC Co {i}", "country": "China"}, success=True)
+                for i in range(4)
+            ]),
+        }
+        normalizers = {"alibaba": AlibabaNormalizer(), "hktdc": HKTDCNormalizer()}
+        pipeline = SupplierIntelligencePipeline(repo=repo, scrapers=scrapers, normalizers=normalizers)
+
+        stats = pipeline.run("widgets", sources=["alibaba", "hktdc"], results_limit=1)
+
+        assert stats["scraped"] == 2  # 1 from each source, not 1 total
+
+    def test_no_results_limit_keeps_every_result_by_default(self, repo):
+        """The default (results_limit=None) must be a strict no-op --
+        confirms adding this parameter didn't change existing
+        unlimited-run behaviour."""
+        scrapers = {
+            "hktdc": FakeScraper("hktdc", [
+                ScraperResult(source="hktdc", source_id=str(i), raw_data={"company_name": f"Company {i}", "country": "China"}, success=True)
+                for i in range(5)
+            ]),
+        }
+        pipeline = SupplierIntelligencePipeline(repo=repo, scrapers=scrapers, normalizers={"hktdc": HKTDCNormalizer()})
+
+        stats = pipeline.run("widgets", sources=["hktdc"])
+
+        assert stats["scraped"] == 5
+
     def test_unknown_source_is_skipped_without_error(self, repo):
         pipeline = SupplierIntelligencePipeline(repo=repo, scrapers={}, normalizers={})
         stats = pipeline.run("widgets", sources=["not_a_real_source"])
