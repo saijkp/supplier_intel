@@ -32,6 +32,7 @@ confirm the actual selectors:
 
 from __future__ import annotations
 
+import json
 import logging
 import urllib.parse
 from typing import Any, Dict, List, Optional
@@ -42,6 +43,23 @@ from bs4 import BeautifulSoup
 from scrapers.base_scraper import BaseScraper, ScraperResult
 
 logger = logging.getLogger(__name__)
+
+
+def _iso_country_name(code: Any) -> Optional[str]:
+    """'DE' -> 'Germany', matching how country is stored everywhere
+    else in this database (full names, e.g. 'United Kingdom', not ISO
+    codes) -- storing a bare code here would silently break the exact-
+    match country filter search_suppliers_full relies on. pycountry is
+    already a project dependency (confirmed unused elsewhere, per
+    verification/commercial_scoring.py's own note), so this is the
+    natural place to actually use it, not a new dependency.
+    """
+    if not code or not isinstance(code, str):
+        return None
+    import pycountry
+
+    country = pycountry.countries.get(alpha_2=code.strip().upper())
+    return country.name if country else None
 
 # Each entry fully describes one directory: display name, an optional
 # country_hint (stamped onto every result whose card doesn't show an
@@ -150,6 +168,22 @@ class GlobalDirectoryScraper(BaseScraper):
         return results
 
     def _parse_companies(self, html: str) -> List[ScraperResult]:
+        # Prefer JSON-LD structured data over CSS-selector scraping
+        # whenever a page actually embeds it: schema.org markup is
+        # machine-readable by design and far more stable across a
+        # front-end redesign than the page's own CSS classes -- found
+        # via a real calibration run against europages, whose current
+        # markup is entirely auto-generated Tailwind utility classes
+        # with no semantic hooks left for `selectors` to hook onto at
+        # all, while the exact same page's JSON-LD block still carries
+        # every result's real name/country cleanly. Falls through to
+        # the CSS-selector path below for any directory whose page
+        # doesn't embed this (which _parse_json_ld_companies reports
+        # as simply finding nothing, not an error).
+        json_ld_results = self._parse_json_ld_companies(html)
+        if json_ld_results:
+            return json_ld_results
+
         selectors = self.config["selectors"]
         country_hint = self.config.get("country_hint", "")
         soup = BeautifulSoup(html, "html.parser")
@@ -179,6 +213,73 @@ class GlobalDirectoryScraper(BaseScraper):
                     ))
             except Exception as e:
                 logger.warning("Failed to parse a company card (%s): %s", self.directory, e)
+
+        return results
+
+    def _parse_json_ld_companies(self, html: str) -> List[ScraperResult]:
+        """Extract schema.org Organization entries from any JSON-LD
+        <script> block shaped like an ItemList of ItemList-position
+        entries wrapping an Organization -- the shape europages embeds
+        on its own search results pages. Returns [] (never raises) for
+        any page that doesn't have this, which is exactly what makes
+        it safe to try unconditionally ahead of the CSS-selector path
+        for every directory, not just europages.
+
+        Deliberately doesn't populate "website": the URL in this JSON-LD
+        is the directory's OWN profile page for the company (e.g.
+        europages.co.uk/en/company/...), never the company's real
+        outbound domain -- populating `website`/`domain` with that
+        would collide every company here onto the same fake shared
+        domain, silently defeating the UNIQUE constraint on
+        suppliers.domain and the domain-exact-match dedup tier along
+        with it. A real domain, if one exists, is CompanyWebsiteFinder's
+        job (main.py find-websites), same as any other domain-less
+        supplier.
+        """
+        country_hint = self.config.get("country_hint", "")
+        soup = BeautifulSoup(html, "html.parser")
+        results: List[ScraperResult] = []
+
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                parsed = json.loads(script.string or "")
+            except (TypeError, ValueError):
+                continue
+
+            graph = parsed.get("@graph") if isinstance(parsed, dict) else None
+            entries = graph if isinstance(graph, list) else [parsed]
+
+            for entry in entries:
+                if not isinstance(entry, dict) or entry.get("@type") != "ItemList":
+                    continue
+                for list_item in entry.get("itemListElement") or []:
+                    org = list_item.get("item") if isinstance(list_item, dict) else None
+                    if not isinstance(org, dict) or org.get("@type") != "Organization":
+                        continue
+                    try:
+                        name = (org.get("name") or "").strip()
+                        if not name:
+                            continue
+                        address = org.get("address") or {}
+                        country = None
+                        if isinstance(address, dict):
+                            country = _iso_country_name(address.get("addressCountry"))
+                        data = {
+                            "company_name": name,
+                            "country": country or country_hint,
+                            "products": [],
+                            "profile_url": org.get("url", ""),
+                            "directory": self.directory,
+                            "directory_name": self.config["name"],
+                        }
+                        results.append(ScraperResult(
+                            source=self.directory,
+                            source_id=data["profile_url"],
+                            raw_data=data,
+                            success=True,
+                        ))
+                    except Exception as e:
+                        logger.warning("Failed to parse a JSON-LD Organization (%s): %s", self.directory, e)
 
         return results
 
