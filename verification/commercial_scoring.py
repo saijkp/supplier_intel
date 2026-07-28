@@ -71,7 +71,11 @@ SOURCE_UNAVAILABLE = "unavailable"
 
 _MARKET_CANONICAL_TERMS = {
     "uk": "serves uk market",
-    "eu": "serves eu market",
+    # "eu" is this module's market *key* (matches COUNTRY_TO_MARKET_KEY
+    # below) -- it maps to the vocabulary's "serves europe market" term,
+    # which is deliberately named for the geography, not EU membership.
+    # See capability_vocabulary.py's own note on that term for why.
+    "eu": "serves europe market",
     "us": "serves north america market",
     "australia": "serves australia market",
 }

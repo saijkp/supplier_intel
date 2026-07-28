@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
 
@@ -75,24 +76,95 @@ RELATIONSHIP_SUBCONTRACTED = "subcontracted"
 RELATIONSHIP_SOLD_ONLY = "sold_only"
 RELATIONSHIP_ASSERTED = "asserted"
 
-# Deterministic check for standard/certification claims: the evidence
-# text must contain the standard's own number, not just adjacent
-# quality language. Added after a real calibration finding that
+# Deterministic check, keyed by canonical term: the evidence text must
+# actually contain one of that term's own markers, not just adjacent
+# marketing language. Added after a real calibration finding that
 # proved the prompt instruction alone insufficient -- telling the
 # model "don't infer ISO 9001 from vague quality language" as one rule
 # among several did not reliably stop it from doing exactly that
 # (found via a real supplier's site: "known as a quality leader" kept
 # getting cited as evidence for ISO 9001 even after that prompt rule
 # was added). A model instruction is a request it can ignore; this
-# check cannot be argued around by phrasing. "ce marking" has no
-# digit sequence of its own, so it's checked against a short list of
-# textual markers instead.
-_STANDARD_EVIDENCE_MUST_CONTAIN = {
+# check cannot be argued around by phrasing.
+#
+# A second Automechanika calibration pass found the identical failure
+# mode outside standards too: generic export/relationship marketing
+# copy ("preferred supplier for international distributors", "building
+# trusting client relationships") was being cited as evidence for a
+# specific logistics or market-presence claim it never actually makes.
+# One page's vague "distributed to dozens of countries worldwide" was
+# even reused as "evidence" for three different specific regional
+# claims (UK, North America, Australia) at once — a sentence naming no
+# region cannot be genuine evidence for any of them. Extended here,
+# same mechanism, same reasoning.
+#
+# "serves europe market" deliberately has no entry (yet) -- unlike the
+# other market-presence terms, its own real-world evidence tends to be
+# a list of specific countries (see capability_vocabulary.py's note on
+# that term), and a robust marker set for that shape needs more
+# calibration data than one pass has produced so far.
+_EVIDENCE_MUST_CONTAIN = {
+    # --- Standards ---
     "iso 9001": ("9001",),
     "iatf 16949": ("16949",),
     "iso 14001": ("14001",),
-    "ce marking": ("ce mark", "ce certif", "ce complian", " ce "),
+    "ce marking": ("ce mark", "ce certif", "ce complian", "ce"),
+
+    # --- Logistics ---
+    "ddp shipping": ("ddp", "delivered duty paid"),
+    "dap shipping": ("dap", "delivered at place"),
+    "fob shipping": ("fob", "free on board"),
+    "cif shipping": ("cif", "cost insurance and freight"),
+    "door to door shipping": ("door to door",),
+    "uk warehouse": (
+        "uk warehouse", "warehouse in the uk", "uk stock",
+        "uk distribution centre", "uk distribution center", "uk based warehouse",
+    ),
+    "eu warehouse": (
+        "eu warehouse", "warehouse in europe", "european warehouse", "eu stock",
+        "eu distribution centre", "eu distribution center",
+    ),
+    "customs expertise": ("customs",),
+
+    # --- Market presence (region terms only — "oem supplier" is a
+    # status claim, not a "names a specific place" claim, and every
+    # OEM-supplier finding in the calibration pass was well supported,
+    # so it isn't included here) ---
+    "serves uk market": ("uk", "united kingdom"),
+    "serves north america market": ("north america", "usa", "canada", "canadian"),
+    "serves australia market": ("australia", "australian"),
 }
+
+_EVIDENCE_PUNCTUATION_CHARS = ("-", ".", ",", "/", "(", ")", ";", ":", "!", "?", '"', "'")
+
+# These three markers are deliberately matched as a *prefix*, not a
+# whole word -- "ce certif" is meant to match "certified"/"certificate"/
+# "certification" alike, so it can't also require a boundary right
+# after "certif". Every other marker (including the bare "ce" below,
+# which specifically must NOT match inside "certificate") gets a
+# boundary on both sides.
+_PREFIX_ONLY_MARKERS = {"ce mark", "ce certif", "ce complian"}
+
+
+def _evidence_has_required_marker(evidence: str, required_markers: Tuple[str, ...]) -> bool:
+    """Word/phrase match against normalised evidence text — deliberately
+    not a naive substring check: "cif" as a bare substring matches
+    inside "specific", "usa" matches inside "usage". Punctuation is
+    folded to spaces first so a marker at the end of a sentence
+    ("...DDP.") or wrapped in parentheses ("(FOB)") still gets a clean
+    boundary rather than being missed.
+    """
+    text = evidence.strip().lower()
+    for ch in _EVIDENCE_PUNCTUATION_CHARS:
+        text = text.replace(ch, " ")
+    text = f" {' '.join(text.split())} "
+    for marker in required_markers:
+        trailing_boundary = r"" if marker in _PREFIX_ONLY_MARKERS else r"\b"
+        if re.search(r"\b" + re.escape(marker) + trailing_boundary, text):
+            return True
+    return False
+
+
 # 'asserted' (v9, commercial-intelligence extension): for claims with
 # no in-house-vs-subcontracted distinction at all -- "we serve the UK
 # market" isn't something a company does in-house or subcontracts,
@@ -210,15 +282,13 @@ def _finding_from_assertion(assertion: dict, *, source_url: str) -> Optional[Cap
     mapped: Optional[CapabilityTerm] = map_to_canonical(term_text)
 
     relationship_to_store = relationship
-    if mapped and mapped.category == CATEGORY_STANDARD:
-        if relationship != RELATIONSHIP_ASSERTED:
-            relationship_to_store = RELATIONSHIP_ASSERTED
+    if mapped and mapped.category == CATEGORY_STANDARD and relationship != RELATIONSHIP_ASSERTED:
+        relationship_to_store = RELATIONSHIP_ASSERTED
 
-        required_markers = _STANDARD_EVIDENCE_MUST_CONTAIN.get(mapped.canonical)
-        if required_markers is not None:
-            evidence_lower = f" {evidence.strip().lower()} "
-            if not any(marker in evidence_lower for marker in required_markers):
-                return None  # the quoted evidence doesn't actually name the standard -- reject, not just discount
+    if mapped:
+        required_markers = _EVIDENCE_MUST_CONTAIN.get(mapped.canonical)
+        if required_markers is not None and not _evidence_has_required_marker(evidence, required_markers):
+            return None  # the quoted evidence doesn't actually name the required marker -- reject, not just discount
 
     return CapabilityFinding(
         reported_term=term_text.strip(),

@@ -309,19 +309,27 @@ class TestCommercialIntelligenceExtension:
     and the new logistics/market_presence/oem_readiness categories."""
 
     def test_asserted_relationship_is_accepted(self):
-        extractor = _extractor([_assertion(term="serves uk market", relationship=RELATIONSHIP_ASSERTED)])
+        extractor = _extractor([_assertion(
+            term="serves uk market", relationship=RELATIONSHIP_ASSERTED,
+            evidence="we have served customers across the UK for over a decade",
+        )])
         findings = extractor.extract("text")
         assert len(findings) == 1
         assert findings[0].relationship == RELATIONSHIP_ASSERTED
 
     def test_market_presence_term_maps_to_the_right_category(self):
-        extractor = _extractor([_assertion(term="serves uk market", relationship=RELATIONSHIP_ASSERTED)])
+        extractor = _extractor([_assertion(
+            term="serves uk market", relationship=RELATIONSHIP_ASSERTED,
+            evidence="we have served customers across the UK for over a decade",
+        )])
         finding = extractor.extract("text")[0]
         assert finding.canonical_term == "serves uk market"
         assert finding.category == "market_presence"
 
     def test_logistics_term_maps_correctly(self):
-        extractor = _extractor([_assertion(term="ddp", relationship=RELATIONSHIP_IN_HOUSE)])
+        extractor = _extractor([_assertion(
+            term="ddp", relationship=RELATIONSHIP_IN_HOUSE, evidence="we offer DDP shipping to all our customers",
+        )])
         finding = extractor.extract("text")[0]
         assert finding.canonical_term == "ddp shipping"
         assert finding.category == "logistics"
@@ -330,7 +338,10 @@ class TestCommercialIntelligenceExtension:
         """Unlike market presence, logistics facts DO have a
         meaningful in-house-vs-subcontracted distinction (own fleet
         vs a named freight partner)."""
-        extractor = _extractor([_assertion(term="customs clearance", relationship=RELATIONSHIP_SUBCONTRACTED)])
+        extractor = _extractor([_assertion(
+            term="customs clearance", relationship=RELATIONSHIP_SUBCONTRACTED,
+            evidence="customs clearance is handled by our logistics partner",
+        )])
         finding = extractor.extract("text")[0]
         assert finding.canonical_term == "customs expertise"
         assert finding.relationship == RELATIONSHIP_SUBCONTRACTED
@@ -344,8 +355,8 @@ class TestCommercialIntelligenceExtension:
     def test_mixed_manufacturing_and_commercial_findings_on_one_page(self):
         extractor = _extractor([
             _assertion(term="rotomoulding", relationship=RELATIONSHIP_IN_HOUSE),
-            _assertion(term="ddp", relationship=RELATIONSHIP_IN_HOUSE),
-            _assertion(term="serves eu market", relationship=RELATIONSHIP_ASSERTED),
+            _assertion(term="ddp", relationship=RELATIONSHIP_IN_HOUSE, evidence="we offer DDP shipping to all our customers"),
+            _assertion(term="serves europe market", relationship=RELATIONSHIP_ASSERTED),
         ])
         findings = extractor.extract("text")
         categories = {f.category for f in findings}

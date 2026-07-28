@@ -167,8 +167,16 @@ VOCABULARY: Tuple[CapabilityTerm, ...] = (
     CapabilityTerm("serves uk market", CATEGORY_MARKET_PRESENCE, (
         "uk customers", "supplying the uk", "serving the uk market", "uk clients",
     )),
-    CapabilityTerm("serves eu market", CATEGORY_MARKET_PRESENCE, (
-        "european customers", "supplying europe", "serving the european market", "eu clients",
+    # Named "europe", not "eu", deliberately -- a real Automechanika
+    # calibration finding showed this term's own evidence (a supplier's
+    # "we export to Germany, France... the United Kingdom, Norway"
+    # country list) is genuinely about the European geography, not EU
+    # membership specifically (the UK left the EU; Norway was never in
+    # it). The vocabulary has no way to assert EU-membership-specific
+    # facts, so the term name shouldn't imply a precision it can't back.
+    CapabilityTerm("serves europe market", CATEGORY_MARKET_PRESENCE, (
+        "european customers", "supplying europe", "serving the european market",
+        "eu clients", "eu market", "serves eu market",
     )),
     CapabilityTerm("serves north america market", CATEGORY_MARKET_PRESENCE, (
         "north american customers", "supplying north america", "us customers", "usa customers", "canadian customers",

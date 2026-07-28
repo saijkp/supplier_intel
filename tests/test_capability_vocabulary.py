@@ -110,7 +110,7 @@ class TestCommercialIntelligenceExtension:
         "surface_form,expected_canonical",
         [
             ("UK customers", "serves uk market"),
-            ("supplying europe", "serves eu market"),
+            ("supplying europe", "serves europe market"),
             ("US customers", "serves north america market"),
             ("australian customers", "serves australia market"),
             ("tier 1 supplier", "oem supplier"),
