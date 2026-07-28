@@ -24,6 +24,7 @@ from diagnostics.live_environment_check import (
     check_serpapi,
     check_site_reachable,
     run_all_checks,
+    source_base_url,
 )
 
 
@@ -165,6 +166,23 @@ class TestCheckSiteReachable:
         assert result.status == "fail"
 
 
+class TestSourceBaseUrl:
+
+    def test_extracts_scheme_and_host_only(self):
+        assert source_base_url("https://www.volza.com/p/{query}/import/import-in-united-kingdom/?page={page}") == "https://www.volza.com"
+
+    def test_works_with_query_string_before_any_placeholder(self):
+        assert source_base_url("https://www.tim.org.tr/en/member-search?q={query}&page={page}") == "https://www.tim.org.tr"
+
+    def test_works_with_subdomain(self):
+        assert source_base_url("https://en.vcci.com.vn/directory/search?keyword={query}&page={page}") == "https://en.vcci.com.vn"
+
+    def test_works_with_multi_segment_path_before_query(self):
+        assert source_base_url(
+            "https://automechanika-frankfurt.messefrankfurt.com/frankfurt/en/exhibitor-search.html?search={query}&page={page}"
+        ) == "https://automechanika-frankfurt.messefrankfurt.com"
+
+
 class TestCheckResultShape:
 
     def test_run_all_checks_populates_duration_on_every_result(self, monkeypatch):
@@ -198,7 +216,18 @@ class TestRunAllChecks:
         assert "database" in names
         assert "dns_resolution" in names
         assert "apify" in names
-        assert len(results) >= 8
+        # Every no-key-required site-reachability check -- hktdc/importyeti
+        # plus volza and every DIRECTORY_SOURCES/EXHIBITION_SOURCES entry --
+        # must be present. Named explicitly (not just a count) so a source
+        # silently dropping out of run_all_checks would fail this test even
+        # if the total count happened to stay the same.
+        for source in (
+            "hktdc", "importyeti", "volza",
+            "turkey_tim", "vietnam_vcci", "europages_eastern_europe",
+            "ciape", "auto_shanghai", "automechanika_frankfurt",
+        ):
+            assert source in names, f"{source!r} missing from run_all_checks() output"
+        assert len(results) >= 15
 
     def test_one_check_raising_does_not_abort_the_others(self, monkeypatch):
         """_timed's own fault isolation -- a bug inside one check must

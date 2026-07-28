@@ -239,11 +239,37 @@ def check_site_reachable(name: str, url: str, http_client: Optional[object] = No
         return CheckResult(name, "fail", f"unreachable: {e}")
 
 
+def source_base_url(search_url_template: str) -> str:
+    """scheme://host extracted from a scraper's own search_url_template
+    (`{query}`/`{page}` placeholders and all) -- reachability only
+    needs the bare host, and deriving it from the same config dict the
+    real scraper uses means there's exactly one place these URLs are
+    ever written down, never a second copy here that could drift."""
+    import urllib.parse
+
+    parsed = urllib.parse.urlsplit(search_url_template)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
 def run_all_checks() -> List[CheckResult]:
     """Every check, run in sequence, each fault-isolated from the
     others. Order is cheapest/most-fundamental first, so a database or
     DNS failure is visible immediately rather than buried after a
-    dozen paid API calls."""
+    dozen paid API calls.
+
+    The site-reachability checks (hktdc, importyeti, volza, and every
+    DIRECTORY_SOURCES/EXHIBITION_SOURCES entry) need no API key at all
+    -- they exist to answer a different question than every check
+    above them: not "is a credential configured," but "is this
+    environment's IP even able to reach the site." Several of these
+    are known, from README's own disclosed limitations, to actively
+    block datacenter/cloud IPs -- this is how that gets confirmed for
+    a specific deployment rather than assumed from the README alone.
+    """
+    from scrapers.global_directory_scraper import DIRECTORY_SOURCES
+    from scrapers.global_trade_scraper import TRADE_PROVIDERS
+    from scrapers.shanghai_expo_scraper import EXHIBITION_SOURCES
+
     checks = [
         ("database", check_database),
         ("dns_resolution", check_dns_resolution),
@@ -256,4 +282,12 @@ def run_all_checks() -> List[CheckResult]:
         ("hktdc", lambda: check_site_reachable("hktdc", "https://www.hktdc.com")),
         ("importyeti", lambda: check_site_reachable("importyeti", "https://www.importyeti.com")),
     ]
+    for name, config in {
+        "volza": TRADE_PROVIDERS["volza"],
+        **DIRECTORY_SOURCES,
+        **EXHIBITION_SOURCES,
+    }.items():
+        url = source_base_url(config["search_url_template"])
+        checks.append((name, lambda name=name, url=url: check_site_reachable(name, url)))
+
     return [_timed(name, fn) for name, fn in checks]
