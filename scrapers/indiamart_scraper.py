@@ -83,9 +83,17 @@ class IndiaMartScraper(BaseScraper):
             logger.error("IndiaMART actor run failed for '%s': %s", query, e)
             return [self.error_result(str(e))]
 
+        if run is None:
+            logger.error("IndiaMART actor run for '%s' returned no Run object (likely aborted)", query)
+            return [self.error_result("actor run returned no result (aborted before completing?)")]
+
         results: List[ScraperResult] = []
         try:
-            dataset = self.client.dataset(run["defaultDatasetId"])
+            # apify-client 3.x's ActorClient.call() returns a typed Run
+            # model (pydantic), not a dict -- run.default_dataset_id, not
+            # run["defaultDatasetId"]. Same fix as AlibabaScraper's own
+            # note on this, confirmed by inspecting the real Run model.
+            dataset = self.client.dataset(run.default_dataset_id)
             for item in dataset.iterate_items():
                 if require_trustseal and not item.get("trustSealVerified", False):
                     continue

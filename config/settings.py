@@ -102,8 +102,15 @@ def missing_api_keys() -> List[str]:
 # Apify Actor IDs
 # ─────────────────────────────────────────────────────────────
 APIFY_ACTORS: Dict[str, str | None] = {
-    "alibaba": "curious_coder/alibaba-scraper",
-    "indiamart": "zuzka_mach/indiamart-scraper",
+    # curious_coder/alibaba-scraper was confirmed dead on Apify's own
+    # platform (a real "Actor with this name was not found" from their
+    # public API, not an auth/visibility issue) -- replaced with
+    # zen-studio/alibaba-scraper, actively maintained (last build
+    # 2026-07-27, 98% success rate over the last 30 days at the time
+    # this was checked). See scrapers/alibaba_scraper.py's own
+    # docstring for the input/output schema differences this required.
+    "alibaba": "zen-studio/alibaba-scraper",
+    "indiamart": "zuzka_mach/indiamart-scraper",  # also confirmed dead -- not yet replaced, see README
     "hktdc": None,  # Custom scraper, not run via Apify
     "google": "apify/google-search-scraper",
 }

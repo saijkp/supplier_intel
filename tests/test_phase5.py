@@ -8,6 +8,7 @@ and the Shanghai/China exhibition scraper/normalizer (mocked HTTP).
 from __future__ import annotations
 
 from datetime import date
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -34,7 +35,10 @@ class FakeDataset:
 
 class FakeActorHandle:
     def __init__(self, run_result=None, error=None):
-        self._run_result = run_result or {"defaultDatasetId": "ds1"}
+        # A SimpleNamespace, not a dict -- see AlibabaScraper's identical
+        # note on why (apify-client 3.x's real Run object is attribute-
+        # accessed, not dict-subscripted).
+        self._run_result = run_result or SimpleNamespace(default_dataset_id="ds1")
         self._error = error
         self.last_call_kwargs = None
 

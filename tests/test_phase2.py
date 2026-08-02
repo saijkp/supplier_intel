@@ -12,6 +12,7 @@ deterministic while still exercising the real scraper/normalizer code.
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -105,7 +106,12 @@ class FakeDataset:
 
 class FakeActorHandle:
     def __init__(self, run_result=None, error=None):
-        self._run_result = run_result or {"defaultDatasetId": "ds1"}
+        # A SimpleNamespace, not a dict: apify-client 3.x's real
+        # ActorClient.call() returns a typed Run (pydantic) object with
+        # attribute access (run.default_dataset_id), not
+        # run["defaultDatasetId"] -- this fake matching that shape is
+        # what caught the real bug in the first place.
+        self._run_result = run_result or SimpleNamespace(default_dataset_id="ds1")
         self._error = error
         self.last_call_kwargs = None
 
@@ -158,15 +164,21 @@ ALIBABA_ITEM_TOO_NEW = {
 class TestAlibabaScraper:
 
     def test_call_uses_the_current_apify_client_kwargs_not_the_removed_ones(self):
-        """Regression test for a real bug found running this against a
-        real APIFY_TOKEN for the first time: the actually-installed
+        """Regression test for two real bugs found running this against
+        a real APIFY_TOKEN for the first time: (1) the actually-installed
         apify-client no longer accepts timeout_secs=<int> at all (it's
-        now run_timeout=<timedelta>), so this failed with a TypeError
-        on every attempt despite the token itself being valid. Also
-        confirms max_items is set as a platform-enforced cap on top of
-        run_input's own maxItems -- Apify's own docs describe max_items
-        as also limiting billing for a per-result-charged actor."""
+        now run_timeout=<timedelta>), so this failed with a TypeError on
+        every attempt despite the token itself being valid; (2) this
+        actor is billed PAY_PER_EVENT, and Apify's platform aborts a
+        pay-per-event run at a real $0.00 cost ceiling unless
+        max_total_charge_usd is explicitly set -- confirmed live, a run
+        without it returned zero results with "aborted because it
+        reached its maximum cost of $0.00." Also confirms max_items is
+        set as a platform-enforced cap on top of run_input's own
+        maxResults -- Apify's own docs describe max_items as also
+        limiting billing for a per-result-charged actor."""
         from datetime import timedelta
+        from decimal import Decimal
 
         client = FakeApifyClient(dataset_items=[ALIBABA_ITEM_GOLD_5Y])
         scraper = AlibabaScraper(client=client, enable_delays=False)
@@ -176,19 +188,38 @@ class TestAlibabaScraper:
         kwargs = client.last_actor_handle.last_call_kwargs
         assert "timeout_secs" not in kwargs
         assert isinstance(kwargs["run_timeout"], timedelta)
+        assert isinstance(kwargs["max_total_charge_usd"], Decimal)
+        assert kwargs["max_total_charge_usd"] > 0
         assert kwargs["max_items"] == 7
 
-    def test_scrape_filters_by_min_years_gold(self):
+    def test_min_years_gold_maps_to_verified_manufacturer_input_filter(self):
+        """zen-studio/alibaba-scraper has no "years as Gold Supplier"
+        field at all -- min_years_gold > 0 (the default) now means
+        "ask the actor for Verified Manufacturers only" via a real
+        input filter, not a post-fetch discard. Nothing is filtered
+        client-side any more: whatever the actor returns is returned."""
         client = FakeApifyClient(dataset_items=[ALIBABA_ITEM_GOLD_5Y, ALIBABA_ITEM_TOO_NEW])
         scraper = AlibabaScraper(client=client, enable_delays=False)
 
         results = scraper.scrape("LED marker light", min_years_gold=3)
 
-        assert len(results) == 1
-        assert results[0].success is True
+        run_input = client.last_actor_handle.last_call_kwargs["run_input"]
+        assert run_input["verifiedManufacturer"] is True
+        assert run_input["resultType"] == "suppliers"
+        assert run_input["keywords"] == ["LED marker light"]
+        assert len(results) == 2  # both fake dataset items -- no client-side filtering left
         assert results[0].source == "alibaba"
         assert results[0].source_id == "SUP001"
         assert results[0].raw_data["companyName"] == "Guangzhou LED Masters Co Ltd"
+
+    def test_min_years_gold_zero_disables_the_verified_manufacturer_filter(self):
+        client = FakeApifyClient(dataset_items=[])
+        scraper = AlibabaScraper(client=client, enable_delays=False)
+
+        scraper.scrape("LED marker light", min_years_gold=0)
+
+        run_input = client.last_actor_handle.last_call_kwargs["run_input"]
+        assert run_input["verifiedManufacturer"] is False
 
     def test_scrape_returns_error_result_on_actor_failure(self):
         client = FakeApifyClient(actor_error=RuntimeError("Apify actor crashed"))
@@ -310,7 +341,140 @@ class TestImportYetiScraper:
 
 
 # ═════════════════════════════════════════════════════════════
-# AlibabaNormalizer
+# AlibabaNormalizer: zen-studio/alibaba-scraper's real nested shape
+# ═════════════════════════════════════════════════════════════
+# Trimmed from an actual --limit 3 live run against the real actor
+# (2026-08-02, query "wheel hub") -- real company, real field names
+# and nesting, just with the bulk fields (factoryImages, auth cards,
+# etc.) stripped down to what these tests actually check.
+
+ALIBABA_NESTED_ITEM = {
+    "supplier": {
+        "companyId": "265187991",
+        "name": "Guangyuan Anyu Aluminium Wheel Co., Ltd.",
+        "factoryImages": [
+            "https://s.alicdn.com/@sc04/kf/H045490bbed8642928339e0000e4e45d0Q.jpg_640x640.jpg",
+            "https://s.alicdn.com/@sc04/kf/H10926c84eb2e43eca6db943d70c47bf4P.jpg_640x640.jpg",
+        ],
+        "profileUrl": "https://gysyac.en.alibaba.com/company_profile.html",
+        "country": "CN",
+        "city": "Sichuan",
+        "staffNumber": "90+",
+        "goldYears": "5 yrs",
+        "verifiedSupplier": True,
+        "isFactory": True,
+        "certIconList": [
+            {"name": "DOT", "image": "//sc04.alicdn.com/kf/x.png"},
+            {"name": "IATF 16949", "image": "//sc04.alicdn.com/kf/y.png"},
+        ],
+        "perf": {"reviewScore": "4.0", "reviewCount": 125},
+        "mainProducts": [
+            {"name": "Passenger Car Wheels", "count": None},
+            {"name": "Pickup & SUV Wheels", "count": None},
+        ],
+        "profile": {
+            "name": "Guangyuan Anyu Aluminium Wheel Co., Ltd.",
+            "employeesCount": "51-100",
+            "businessType": "Manufacturer,Trading Company",
+            "contactName": "Ms. XU",
+            "jobTitle": "Sales manager",
+            "tradeAssuranceAmount": "200,000",
+            "tradeAssuranceIsDisplayed": True,
+            "tradeAssuranceIsService": True,
+            "exportMarketCountries": ["United States", "France", "Sweden", "Canada", "Spain"],
+        },
+    },
+    "keyword": "wheel hub",
+    "mode": "suppliers",
+}
+
+
+class TestAlibabaNormalizerNestedShape:
+
+    def test_normalise_maps_core_fields_from_the_real_live_shape(self):
+        normalizer = AlibabaNormalizer()
+        result = normalizer.normalise(ALIBABA_NESTED_ITEM)
+
+        assert result["canonical_name"] == "Guangyuan Anyu Aluminium Wheel Co., Ltd."
+        assert result["domain"] == "gysyac.en.alibaba.com"
+        assert result["country"] == "China"  # converted from the raw "CN" ISO code
+        assert result["city"] == "Sichuan"
+        assert result["contact_name"] == "Ms. XU"
+        assert result["contact_title"] == "Sales manager"
+        assert result["employee_count"] == "51-100"
+        assert result["alibaba_gold_supplier"] is True
+        assert result["alibaba_years"] == 5
+        assert result["alibaba_trade_assurance"] is True
+        assert result["alibaba_rating"] == 4.0
+        assert "Passenger Car Wheels" in result["product_keywords"]
+
+    def test_no_contact_email_or_phone_fields_at_all(self):
+        """Deliberately not a regression: Alibaba.com doesn't expose
+        either directly on an anonymous search result, only a
+        "contact via message" link this normalizer has nowhere useful
+        to store."""
+        normalizer = AlibabaNormalizer()
+        result = normalizer.normalise(ALIBABA_NESTED_ITEM)
+        assert "primary_email" not in result
+        assert "primary_phone" not in result
+
+    def test_certifications_set_both_16949_columns_and_iso9001_stays_false(self):
+        normalizer = AlibabaNormalizer()
+        result = normalizer.normalise(ALIBABA_NESTED_ITEM)
+
+        assert result["iatf_16949"] is True
+        assert result["iso_ts_16949"] is True
+        # False, not absent: the output filter only drops None/""/[] --
+        # a real "no, this isn't certified" is kept, not treated the
+        # same as "unknown/not asked."
+        assert result["iso_9001"] is False
+        assert "DOT" in result["other_certifications"]
+        assert "IATF 16949" in result["other_certifications"]
+
+    def test_factory_photos_captured_as_flat_url_list(self):
+        normalizer = AlibabaNormalizer()
+        result = normalizer.normalise(ALIBABA_NESTED_ITEM)
+        assert result["factory_photo_urls"] == [
+            "https://s.alicdn.com/@sc04/kf/H045490bbed8642928339e0000e4e45d0Q.jpg_640x640.jpg",
+            "https://s.alicdn.com/@sc04/kf/H10926c84eb2e43eca6db943d70c47bf4P.jpg_640x640.jpg",
+        ]
+
+    def test_export_market_countries_set_flags(self):
+        """infer_export_flags_from_markets matches literal "europe"/"eu "
+        substrings, not individual EU country names -- "France",
+        "Sweden", "Spain" alone don't set exports_to_eu, only "United
+        States" (matching the "united states" marker) sets a flag here.
+        Pre-existing BaseNormalizer behaviour, not new to this shape."""
+        normalizer = AlibabaNormalizer()
+        result = normalizer.normalise(ALIBABA_NESTED_ITEM)
+        assert result["exports_to_us"] is True
+        assert "exports_to_eu" not in result
+        assert "United States" in result["active_export_countries"]
+        assert "France" in result["active_export_countries"]
+
+    def test_missing_company_name_is_handled(self):
+        normalizer = AlibabaNormalizer()
+        result = normalizer.normalise({"supplier": {"companyId": "999"}})
+        assert result["canonical_name"] == ""
+
+    def test_output_compatible_with_repository(self, tmp_path):
+        db_path = tmp_path / "test.db"
+        initialise_schema(db_path)
+        repo = SupplierRepository(db_path=db_path)
+
+        normalizer = AlibabaNormalizer()
+        supplier_data = normalizer.normalise(ALIBABA_NESTED_ITEM)
+        supplier_id = repo.create_golden_record(supplier_data)
+        supplier = repo.get_supplier(supplier_id)
+
+        assert supplier["canonical_name"] == "Guangyuan Anyu Aluminium Wheel Co., Ltd."
+        assert supplier["country"] == "China"
+        assert supplier["iatf_16949"] == 1
+
+
+# ═════════════════════════════════════════════════════════════
+# AlibabaNormalizer: curious_coder/alibaba-scraper's old flat shape
+# (dead actor, kept as a fallback path -- see this module's own note)
 # ═════════════════════════════════════════════════════════════
 
 class TestAlibabaNormalizer:
