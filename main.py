@@ -708,28 +708,38 @@ def review_reject(candidate_id: int) -> None:
 @cli.command("sweep")
 @click.option("--source", "-s", "sources", multiple=True, help="Limit to specific source(s). Default: all.")
 @click.option("--incremental-days", default=30, help="Skip (source, query) pairs scraped within this many days.")
-@click.option("--limit", default=None, type=int, help="Only run the first N search terms (useful for a quick test sweep).")
+@click.option("--term-limit", default=None, type=int,
+              help="Only run the first N search terms (useful for a quick test sweep).")
+@click.option("--limit", "results_limit", type=int, default=None,
+              help="Cap raw results kept PER SOURCE, PER TERM to this many -- same cost-control "
+                   "flag as `run --limit`, applied to every term in the sweep. With ~40 terms in "
+                   "the catalogue this multiplies fast, so start small on a first real sweep. No "
+                   "cap by default, matching this command's prior behaviour.")
 @click.option("--no-verify", is_flag=True)
 @click.option("--no-score", is_flag=True)
-def sweep(sources: tuple, incremental_days: int, limit: Optional[int], no_verify: bool, no_score: bool) -> None:
+def sweep(sources: tuple, incremental_days: int, term_limit: Optional[int], results_limit: Optional[int],
+          no_verify: bool, no_score: bool) -> None:
     """Sweep the pipeline across the full trailer-component search-term catalogue."""
     from config.settings import TRAILER_COMPONENT_SEARCH_TERMS
-    from pipeline.orchestrator import SupplierIntelligencePipeline
+    from pipeline.orchestrator import SupplierIntelligencePipeline, build_limit_scraper_kwargs
 
     queries = list(TRAILER_COMPONENT_SEARCH_TERMS)
-    if limit:
-        queries = queries[:limit]
+    if term_limit:
+        queries = queries[:term_limit]
 
     console.print(f"[bold]Sweeping {len(queries)} search terms across "
                   f"{', '.join(sources) if sources else 'all configured sources'}...[/bold]\n")
 
     pipeline = SupplierIntelligencePipeline()
+    scraper_kwargs = build_limit_scraper_kwargs(results_limit, list(sources) or None, list(pipeline.scrapers.keys()))
     result = pipeline.run_campaign(
         queries=queries,
         sources=list(sources) or None,
         incremental_days=incremental_days,
         run_verification=not no_verify,
         run_scoring=not no_score,
+        scraper_kwargs=scraper_kwargs,
+        results_limit=results_limit,
     )
 
     console.print(f"\n[bold]Campaign complete:[/bold] {result['queries_run']}/{result['queries_total']} "

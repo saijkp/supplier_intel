@@ -352,6 +352,29 @@ class TestRunCampaign:
         assert result["queries_run"] == 1
         assert result["queries_failed"] == 1
 
+    def test_results_limit_is_forwarded_to_every_query(self, repo):
+        """sweep --limit's own cost-safety cap -- run_campaign forwards
+        **run_kwargs straight into self.run() per query, so
+        results_limit (and scraper_kwargs, built the same way main.py
+        run's --limit builds it) must apply to every term in the
+        catalogue, not just the first."""
+        scrapers = {
+            "hktdc": FakeScraper("hktdc", [
+                ScraperResult(source="hktdc", source_id=str(i), raw_data={"company_name": f"Company {i}", "country": "China"}, success=True)
+                for i in range(5)
+            ]),
+        }
+        pipeline = SupplierIntelligencePipeline(repo=repo, scrapers=scrapers, normalizers={"hktdc": HKTDCNormalizer()})
+
+        result = pipeline.run_campaign(
+            queries=["trailer axle", "trailer coupling"],
+            sources=["hktdc"], enable_delays=False, results_limit=2,
+        )
+
+        assert result["totals"]["scraped"] == 4  # 2 kept per query x 2 queries, not 10
+        for query_result in result["per_query"]:
+            assert query_result["scraped"] == 2
+
     def test_incremental_days_defaults_to_30_for_campaigns(self, repo):
         """Campaign mode should default to skipping recently-scraped
         pairs even though run() itself defaults to always-scrape."""
