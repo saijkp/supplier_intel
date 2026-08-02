@@ -113,6 +113,12 @@ APIFY_ACTORS: Dict[str, str | None] = {
     "indiamart": "zuzka_mach/indiamart-scraper",  # also confirmed dead -- not yet replaced, see README
     "hktdc": None,  # Custom scraper, not run via Apify
     "google": "apify/google-search-scraper",
+    # 1688.com -- Alibaba's domestic Chinese wholesale platform, distinct
+    # from Alibaba.com. Evaluated as a second discovery source alongside
+    # zen-studio/alibaba-scraper specifically because 1688 sellers skew
+    # more toward genuine manufacturers than Alibaba.com's international-
+    # trade mix. See scrapers/scraper_1688.py's own module docstring.
+    "china_1688": "webdata_labs/1688-scraper",
 }
 
 
@@ -332,6 +338,7 @@ VALID_SOURCES: Tuple[str, ...] = (
     "shanghai_expo",
     "panjiva",
     "importyeti",
+    "china_1688",
 )
 
 VALID_SHIPMENT_SOURCES: Tuple[str, ...] = ("panjiva", "importyeti", "volza")

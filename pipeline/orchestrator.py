@@ -30,6 +30,7 @@ from config.settings import TRAILER_COMPONENT_SEARCH_TERMS
 from deduplication.matcher import SupplierMatcher
 from normalizers.alibaba_normalizer import AlibabaNormalizer
 from normalizers.base_normalizer import BaseNormalizer
+from normalizers.china_1688_normalizer import China1688Normalizer
 from normalizers.expo_normalizer import ExpoNormalizer
 from normalizers.global_directory_normalizer import GlobalDirectoryNormalizer
 from normalizers.google_search_normalizer import GoogleSearchNormalizer
@@ -47,6 +48,7 @@ from scrapers.importyeti_scraper import ImportYetiScraper
 from scrapers.indiamart_scraper import IndiaMartScraper
 from scrapers.own_website_scraper import OwnWebsiteScraper
 from scrapers.photo_downloader import PhotoDownloader
+from scrapers.scraper_1688 import China1688Scraper
 from scrapers.shanghai_expo_scraper import EXHIBITION_SOURCES, ShanghaiExpoScraper
 from storage.repository import SupplierRepository
 from verification.capability_extractor import CapabilityExtractor
@@ -124,6 +126,7 @@ class SupplierIntelligencePipeline:
         self.scrapers: Dict[str, BaseScraper] = scrapers if scrapers is not None else {
             "alibaba": AlibabaScraper(),
             "indiamart": IndiaMartScraper(),
+            "china_1688": China1688Scraper(),
             "hktdc": HKTDCScraper(),
             "importyeti": ImportYetiScraper(),
             "volza": GlobalTradeScraper(provider="volza"),
@@ -147,6 +150,7 @@ class SupplierIntelligencePipeline:
         self.normalizers: Dict[str, BaseNormalizer] = normalizers if normalizers is not None else {
             "alibaba": AlibabaNormalizer(),
             "indiamart": IndiaMartNormalizer(),
+            "china_1688": China1688Normalizer(),
             "hktdc": HKTDCNormalizer(),
             "importyeti": TradeNormalizer(),
             "volza": TradeNormalizer(),
