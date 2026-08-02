@@ -61,6 +61,12 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api.app, "run_pipeline_job", fake_run_pipeline_job)
 
+    def fake_run_enrichment_job(job_id, stage, options):
+        test_repo.mark_pipeline_job_running(job_id)
+        test_repo.mark_pipeline_job_completed(job_id, stats={"stage": stage})
+
+    monkeypatch.setattr(api.app, "run_enrichment_job", fake_run_enrichment_job)
+
     with TestClient(api.app.app) as test_client:
         test_client.repo = test_repo
         yield test_client
@@ -231,6 +237,43 @@ class TestPipelineJobEndpoints:
     def test_missing_query_is_a_validation_error(self, client):
         response = client.post("/pipeline/jobs", json={}, headers=auth_headers())
         assert response.status_code == 422
+
+
+class TestEnrichmentJobEndpoints:
+
+    def test_creating_an_enrichment_job_returns_202_with_a_job_id(self, client):
+        response = client.post(
+            "/pipeline/enrichment-jobs", json={"stage": "find_websites"}, headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        body = response.json()
+        assert body["status"] == "queued"
+        assert body["query"] == "[enrichment] find_websites"
+        assert body["id"]
+
+    def test_created_enrichment_job_is_retrievable_by_id(self, client):
+        create_response = client.post(
+            "/pipeline/enrichment-jobs", json={"stage": "extract_capabilities", "limit": 10},
+            headers=auth_headers(),
+        )
+        job_id = create_response.json()["id"]
+        get_response = client.get(f"/pipeline/jobs/{job_id}", headers=auth_headers())
+        assert get_response.status_code == 200
+        assert get_response.json()["query"] == "[enrichment] extract_capabilities"
+
+    def test_missing_stage_is_a_validation_error(self, client):
+        response = client.post("/pipeline/enrichment-jobs", json={}, headers=auth_headers())
+        assert response.status_code == 422
+
+    def test_defaults_match_documented_cost_safe_behaviour(self, client):
+        response = client.post(
+            "/pipeline/enrichment-jobs", json={"stage": "verify_facilities"}, headers=auth_headers(),
+        )
+        job_id = response.json()["id"]
+        job = client.repo.get_pipeline_job(job_id)
+        assert job["options"]["force"] is False
+        assert job["options"]["limit"] is None
+        assert job["options"]["assess_photos"] is False
 
 
 class TestExportEndpoint:

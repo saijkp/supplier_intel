@@ -148,6 +148,19 @@ class TestFacilityVerificationStage:
         pipeline.run_facility_verification_only(force=True)
         assert len(google.calls) == 1
 
+    def test_limit_caps_suppliers_processed_per_run(self, repo):
+        """The API's enrichment-job endpoint relies on this to offer
+        the same cost-controlled small-first-run pattern main.py's
+        other enrichment commands already have."""
+        for i in range(5):
+            repo.create_golden_record({"canonical_name": f"Acme {i}", "domain": f"acme{i}.example.com", "address": "123 Real St"})
+        google = FakeAddressVerifier()
+        pipeline = _pipeline(repo, google_places_verifier=google, amap_verifier=FakeAddressVerifier())
+        stats = pipeline.run_facility_verification_only(limit=2)
+
+        assert stats["facility_address_verified"] == 2
+        assert len(google.calls) == 2
+
     def test_one_supplier_raising_does_not_abort_the_batch(self, repo):
         repo.create_golden_record({"canonical_name": "Broken", "domain": "b.example.com", "address": "x"})
         good_id = repo.create_golden_record({"canonical_name": "Good", "domain": "g.example.com", "address": "y"})

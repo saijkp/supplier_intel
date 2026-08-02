@@ -755,8 +755,10 @@ class SupplierIntelligencePipeline:
     # to expect on the China path specifically)
     # ═════════════════════════════════════════════════════
 
-    def _facility_verification_stage(self, stats: Dict[str, Any], force: bool = False) -> None:
-        for supplier in self.repo.get_suppliers_needing_facility_address_verification(force=force):
+    def _facility_verification_stage(
+        self, stats: Dict[str, Any], force: bool = False, limit: int = 1000,
+    ) -> None:
+        for supplier in self.repo.get_suppliers_needing_facility_address_verification(force=force, limit=limit):
             try:
                 verifier = select_address_verifier(
                     supplier.get("country"), self.google_places_verifier, self.amap_verifier
@@ -775,14 +777,14 @@ class SupplierIntelligencePipeline:
                 )
                 continue
 
-    def run_facility_verification_only(self, force: bool = False) -> Dict[str, Any]:
+    def run_facility_verification_only(self, force: bool = False, limit: int = 1000) -> Dict[str, Any]:
         """Standalone pass across every supplier with an address on
         file that hasn't been checked yet. Address verification only --
         photo verification runs as part of
         run_capability_extraction_only, since it reuses the same
         website fetch rather than needing its own pass."""
         stats = {"facility_address_verified": 0}
-        self._facility_verification_stage(stats, force=force)
+        self._facility_verification_stage(stats, force=force, limit=limit)
         return stats
 
     # ═════════════════════════════════════════════════════

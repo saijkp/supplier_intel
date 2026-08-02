@@ -59,6 +59,41 @@ class PipelineJobRequest(BaseModel):
     run_linkedin_check: bool = False
 
 
+class EnrichmentJobRequest(BaseModel):
+    """Runs one of the standalone enrichment passes across every
+    existing supplier that needs it -- NOT tied to a search query,
+    unlike PipelineJobRequest. These are the same three commands
+    main.py already exposes as `find-websites`/`extract-capabilities`/
+    `verify-facilities`; this is the HTTP equivalent so a job can be
+    triggered without shell access to wherever the API is deployed."""
+
+    stage: str = Field(
+        description='One of "find_websites", "extract_capabilities", "verify_facilities".'
+    )
+    force: bool = Field(
+        default=False,
+        description="Re-attempt suppliers already processed, not just never-attempted ones.",
+    )
+    limit: Optional[int] = Field(
+        default=None,
+        description=(
+            "Stop after this many suppliers. Applies to find_websites (SerpAPI call per "
+            "supplier), extract_capabilities (real HTTP + OpenAI call per supplier), and "
+            "verify_facilities (Google Places/Amap call per supplier). No cap by default -- "
+            "start small on a first real run."
+        ),
+    )
+    assess_photos: bool = Field(
+        default=False,
+        description=(
+            "extract_capabilities only. Off by default here (unlike the CLI's own default) "
+            "-- factory photo assessment sends images to a vision model per supplier and is "
+            "by far the most expensive part of this stage; opt in explicitly once text-only "
+            "extraction quality has been checked."
+        ),
+    )
+
+
 class PipelineJobResponse(BaseModel):
     id: str
     status: str

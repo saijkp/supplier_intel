@@ -53,3 +53,40 @@ def run_pipeline_job(job_id: str, query: str, options: Dict[str, Any]) -> None:
     except Exception as e:
         logger.error("Pipeline job %s failed: %s", job_id, e)
         repo.mark_pipeline_job_failed(job_id, error=str(e))
+
+
+_ENRICHMENT_STAGES = ("find_websites", "extract_capabilities", "verify_facilities")
+
+
+def run_enrichment_job(job_id: str, stage: str, options: Dict[str, Any]) -> None:
+    """Runs one of the standalone, query-independent enrichment passes
+    -- the HTTP equivalent of main.py's `find-websites`/
+    `extract-capabilities`/`verify-facilities` commands. Same
+    never-raises-to-the-caller contract as run_pipeline_job, and reuses
+    the exact same pipeline_jobs table/lifecycle so it's trackable via
+    the existing GET /pipeline/jobs/{id}.
+    """
+    repo = SupplierRepository()
+    repo.mark_pipeline_job_running(job_id)
+    try:
+        if stage not in _ENRICHMENT_STAGES:
+            raise ValueError(f"Unknown enrichment stage: {stage!r} (expected one of {_ENRICHMENT_STAGES})")
+
+        pipeline = SupplierIntelligencePipeline(repo=repo)
+        force = options.get("force", False)
+        limit = options.get("limit")
+
+        if stage == "find_websites":
+            stats = pipeline.run_website_discovery_only(force=force, limit=limit if limit is not None else 1000)
+        elif stage == "extract_capabilities":
+            stats = pipeline.run_capability_extraction_only(
+                force=force, limit=limit if limit is not None else 1000,
+                assess_photos=options.get("assess_photos", False),
+            )
+        else:  # verify_facilities
+            stats = pipeline.run_facility_verification_only(force=force, limit=limit if limit is not None else 1000)
+
+        repo.mark_pipeline_job_completed(job_id, stats=stats)
+    except Exception as e:
+        logger.error("Enrichment job %s (%s) failed: %s", job_id, stage, e)
+        repo.mark_pipeline_job_failed(job_id, error=str(e))

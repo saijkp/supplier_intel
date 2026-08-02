@@ -306,7 +306,10 @@ def find_websites(force: bool, limit: int) -> None:
 
 @cli.command("verify-facilities")
 @click.option("--force", is_flag=True, help="Re-check every supplier with an address, not just new ones.")
-def verify_facilities(force: bool) -> None:
+@click.option("--limit", default=1000, show_default=True,
+              help="Stop after this many suppliers. Each one costs a paid Google Places/Amap "
+                   "call, so start small on a first run.")
+def verify_facilities(force: bool, limit: int) -> None:
     """Confirm each supplier's claimed address resolves to a real place. Routes
     China to Amap, everywhere else to Google Places — see the module docstring in
     verification/facility_address_verifier.py for why, and for the real
@@ -316,7 +319,7 @@ def verify_facilities(force: bool) -> None:
     from pipeline.orchestrator import SupplierIntelligencePipeline
 
     pipeline = SupplierIntelligencePipeline()
-    stats = pipeline.run_facility_verification_only(force=force)
+    stats = pipeline.run_facility_verification_only(force=force, limit=limit)
     console.print(f"[green]✓[/green] Verified {stats['facility_address_verified']} address(es) as real places.")
 
 

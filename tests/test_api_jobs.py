@@ -31,7 +31,8 @@ class FakePipeline:
     """Records the exact kwargs run_pipeline_job calls .run() with, and
     exposes .scrapers (a plain name->None dict) since
     build_limit_scraper_kwargs falls back to list(pipeline.scrapers.keys())
-    when no explicit sources are given."""
+    when no explicit sources are given. Also records calls to the three
+    standalone enrichment methods for run_enrichment_job's own tests."""
 
     last_instance = None
 
@@ -39,11 +40,27 @@ class FakePipeline:
         self.repo = repo
         self.scrapers = {name: None for name in ("alibaba", "indiamart", "china_1688", "google", "hktdc")}
         self.last_run_kwargs = None
+        self.last_enrichment_call = None
         FakePipeline.last_instance = self
 
     def run(self, query, **kwargs):
         self.last_run_kwargs = {"query": query, **kwargs}
         return {"scraped": 1, "created": 1}
+
+    def run_website_discovery_only(self, force=False, limit=1000):
+        self.last_enrichment_call = ("find_websites", {"force": force, "limit": limit})
+        return {"website_discovered": 2}
+
+    def run_capability_extraction_only(self, force=False, limit=1000, assess_photos=True):
+        self.last_enrichment_call = (
+            "extract_capabilities", {"force": force, "limit": limit, "assess_photos": assess_photos},
+        )
+        return {"capability_extracted": 3, "contact_emails_added": 1, "contact_phones_added": 1,
+                "contact_forms_recorded": 0, "photos_assessed": 0}
+
+    def run_facility_verification_only(self, force=False, limit=1000):
+        self.last_enrichment_call = ("verify_facilities", {"force": force, "limit": limit})
+        return {"facility_address_verified": 1}
 
 
 class FailingFakePipeline(FakePipeline):
@@ -118,6 +135,80 @@ class TestRunPipelineJobLimitHandling:
         kwargs = FakePipeline.last_instance.last_run_kwargs
         assert kwargs["run_verification"] is False
         assert kwargs["run_capability_extraction"] is True
+
+
+class TestRunEnrichmentJob:
+
+    def test_find_websites_dispatches_to_the_right_pipeline_method(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "SupplierIntelligencePipeline", FakePipeline)
+
+        repo.create_pipeline_job(job_id="job10", query="[enrichment] find_websites", options={"limit": 5})
+        jobs_module.run_enrichment_job("job10", "find_websites", {"force": False, "limit": 5})
+
+        stage, kwargs = FakePipeline.last_instance.last_enrichment_call
+        assert stage == "find_websites"
+        assert kwargs == {"force": False, "limit": 5}
+        job = repo.get_pipeline_job("job10")
+        assert job["status"] == "completed"
+        assert job["stats"]["website_discovered"] == 2
+
+    def test_extract_capabilities_dispatches_with_assess_photos(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "SupplierIntelligencePipeline", FakePipeline)
+
+        repo.create_pipeline_job(job_id="job11", query="[enrichment] extract_capabilities", options={"limit": 5})
+        jobs_module.run_enrichment_job(
+            "job11", "extract_capabilities", {"force": False, "limit": 5, "assess_photos": True},
+        )
+
+        stage, kwargs = FakePipeline.last_instance.last_enrichment_call
+        assert stage == "extract_capabilities"
+        assert kwargs == {"force": False, "limit": 5, "assess_photos": True}
+
+    def test_extract_capabilities_defaults_assess_photos_to_false(self, repo, monkeypatch):
+        """Mirrors EnrichmentJobRequest's own default -- unlike the
+        CLI's --extract-capabilities (which assesses photos by
+        default), the API defaults photos off since it's the most
+        expensive part of this stage."""
+        monkeypatch.setattr(jobs_module, "SupplierIntelligencePipeline", FakePipeline)
+
+        repo.create_pipeline_job(job_id="job12", query="[enrichment] extract_capabilities", options={})
+        jobs_module.run_enrichment_job("job12", "extract_capabilities", {})
+
+        stage, kwargs = FakePipeline.last_instance.last_enrichment_call
+        assert kwargs["assess_photos"] is False
+
+    def test_verify_facilities_dispatches_with_limit(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "SupplierIntelligencePipeline", FakePipeline)
+
+        repo.create_pipeline_job(job_id="job13", query="[enrichment] verify_facilities", options={"limit": 5})
+        jobs_module.run_enrichment_job("job13", "verify_facilities", {"force": True, "limit": 5})
+
+        stage, kwargs = FakePipeline.last_instance.last_enrichment_call
+        assert stage == "verify_facilities"
+        assert kwargs == {"force": True, "limit": 5}
+
+    def test_no_limit_defaults_to_1000_not_none(self, repo, monkeypatch):
+        """None (the API default, meaning "no cap") must not be passed
+        straight to the pipeline methods, whose own default is the
+        int 1000 -- passing None through would be a TypeError against
+        the SQL LIMIT ? parameter binding."""
+        monkeypatch.setattr(jobs_module, "SupplierIntelligencePipeline", FakePipeline)
+
+        repo.create_pipeline_job(job_id="job14", query="[enrichment] find_websites", options={})
+        jobs_module.run_enrichment_job("job14", "find_websites", {})
+
+        _, kwargs = FakePipeline.last_instance.last_enrichment_call
+        assert kwargs["limit"] == 1000
+
+    def test_unknown_stage_marks_job_failed_not_raised(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "SupplierIntelligencePipeline", FakePipeline)
+
+        repo.create_pipeline_job(job_id="job15", query="[enrichment] bogus", options={})
+        jobs_module.run_enrichment_job("job15", "bogus_stage", {})  # must not raise
+
+        job = repo.get_pipeline_job("job15")
+        assert job["status"] == "failed"
+        assert "bogus_stage" in job["error"]
 
 
 class TestRunPipelineJobOutcomes:

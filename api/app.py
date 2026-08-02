@@ -41,11 +41,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 
 from api.auth import require_api_token
-from api.jobs import run_pipeline_job
+from api.jobs import run_enrichment_job, run_pipeline_job
 from api.models import (
     BuyerProfileRequest,
     BuyerProfileResponse,
     CommercialSearchResult,
+    EnrichmentJobRequest,
     PipelineJobRequest,
     PipelineJobResponse,
     ProcurementOutcomeRequest,
@@ -208,6 +209,29 @@ def create_pipeline_job(
     options = request.model_dump(exclude={"query"})
     repo.create_pipeline_job(job_id=job_id, query=request.query, options=options)
     background_tasks.add_task(run_pipeline_job, job_id, request.query, options)
+    job = repo.get_pipeline_job(job_id)
+    return _to_job_response(job)
+
+
+@app.post(
+    "/pipeline/enrichment-jobs",
+    response_model=PipelineJobResponse,
+    status_code=202,
+    dependencies=[Depends(require_api_token)],
+)
+def create_enrichment_job(
+    request: EnrichmentJobRequest,
+    background_tasks: BackgroundTasks,
+    repo: SupplierRepository = Depends(get_repo),
+) -> PipelineJobResponse:
+    """Same async job/poll pattern as POST /pipeline/jobs, but for the
+    standalone enrichment passes (find-websites/extract-capabilities/
+    verify-facilities) that run across every existing supplier needing
+    them rather than against a fresh search query."""
+    job_id = str(uuid.uuid4())
+    options = request.model_dump(exclude={"stage"})
+    repo.create_pipeline_job(job_id=job_id, query=f"[enrichment] {request.stage}", options=options)
+    background_tasks.add_task(run_enrichment_job, job_id, request.stage, options)
     job = repo.get_pipeline_job(job_id)
     return _to_job_response(job)
 
