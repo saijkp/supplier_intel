@@ -175,30 +175,10 @@ def run(query: str, sources: tuple, no_verify: bool, no_score: bool, find_websit
         extract_capabilities: bool, verify_facilities: bool, check_linkedin: bool,
         limit: Optional[int]) -> None:
     """Run the full pipeline for QUERY: scrape -> dedup/merge -> verify -> score."""
-    from pipeline.orchestrator import SupplierIntelligencePipeline
+    from pipeline.orchestrator import SupplierIntelligencePipeline, build_limit_scraper_kwargs
 
     pipeline = SupplierIntelligencePipeline()
-
-    # alibaba/indiamart/china_1688/google accept max_results; every
-    # other scraper in this codebase (hktdc, importyeti, volza, and
-    # every directory/exhibition source) accepts max_pages instead --
-    # see each scraper's own scrape() signature. Built from the
-    # EFFECTIVE source list (every configured scraper, if -s was never
-    # given) rather than just what --source was passed, so --limit
-    # alone (no -s) still avoids over-fetching from every source, not
-    # just named ones. Only meaningful when --limit is actually given;
-    # _scrape_stage's results_limit is what guarantees the cap either
-    # way -- but getting this mapping right still matters for
-    # pay-per-event actors (alibaba, china_1688), where fetching more
-    # than needed before truncating means paying for more than needed.
-    scraper_kwargs = {}
-    if limit is not None:
-        effective_sources = list(sources) or list(pipeline.scrapers.keys())
-        for source_name in effective_sources:
-            if source_name in ("alibaba", "indiamart", "china_1688", "google"):
-                scraper_kwargs[source_name] = {"max_results": limit}
-            else:
-                scraper_kwargs[source_name] = {"max_pages": 1}
+    scraper_kwargs = build_limit_scraper_kwargs(limit, list(sources) or None, list(pipeline.scrapers.keys()))
     stats = pipeline.run(
         query,
         sources=list(sources) or None,

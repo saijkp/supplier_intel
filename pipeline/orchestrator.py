@@ -86,6 +86,43 @@ DEFAULT_STATS_KEYS = (
     "website_discovered", "facility_address_verified", "linkedin_checked",
 )
 
+# Sources whose scrape() accepts max_results (a real item-count cap the
+# scraper itself understands); every other source in this codebase
+# accepts max_pages instead. Shared between main.py's --limit and the
+# API's PipelineJobRequest.limit specifically so the two callers can't
+# drift out of sync the way this would if each kept its own copy --
+# already true once, before this was pulled out (main.py's own mapping
+# had to be updated by hand each time a new pay-per-event source was
+# added tonight).
+MAX_RESULTS_SOURCES = {"alibaba", "indiamart", "china_1688", "google"}
+
+
+def build_limit_scraper_kwargs(
+    limit: Optional[int], sources: Optional[List[str]], all_source_names: List[str],
+) -> Dict[str, Dict[str, Any]]:
+    """Per-source scraper_kwargs asking each source's own natural
+    count-limiting parameter to stay near `limit` -- avoids over-
+    fetching (and, for pay-per-event actors, overpaying) before
+    `results_limit` truncates the results anyway. Returns {} when
+    limit is None, matching "no cap" behaviour unchanged.
+
+    `sources`: the caller's explicit -s/sources list, or None/empty to
+    mean "every configured source" -- in which case `all_source_names`
+    (typically list(pipeline.scrapers.keys())) is used instead, so a
+    bare --limit with no explicit source list still avoids
+    over-fetching from every source, not just named ones.
+    """
+    if limit is None:
+        return {}
+    effective_sources = sources or all_source_names
+    scraper_kwargs: Dict[str, Dict[str, Any]] = {}
+    for source_name in effective_sources:
+        if source_name in MAX_RESULTS_SOURCES:
+            scraper_kwargs[source_name] = {"max_results": limit}
+        else:
+            scraper_kwargs[source_name] = {"max_pages": 1}
+    return scraper_kwargs
+
 
 class SupplierIntelligencePipeline:
 

@@ -19,10 +19,40 @@ from scrapers.base_scraper import BaseScraper, ScraperResult
 from normalizers.alibaba_normalizer import AlibabaNormalizer
 from normalizers.hktdc_normalizer import HKTDCNormalizer
 from normalizers.trade_normalizer import TradeNormalizer
-from pipeline.orchestrator import SupplierIntelligencePipeline
+from pipeline.orchestrator import SupplierIntelligencePipeline, build_limit_scraper_kwargs
 from storage.database import initialise_schema
 from storage.repository import SupplierRepository
 from verification.qichacha import QichachaVerifier
+
+
+class TestBuildLimitScraperKwargs:
+    """Shared between main.py's --limit and api.jobs' PipelineJobRequest.
+    limit -- see that function's own docstring for why this is pulled
+    out rather than duplicated in both callers."""
+
+    def test_none_limit_returns_empty_dict(self):
+        assert build_limit_scraper_kwargs(None, ["alibaba"], ["alibaba", "hktdc"]) == {}
+
+    def test_pay_per_event_sources_get_max_results(self):
+        result = build_limit_scraper_kwargs(5, ["alibaba", "indiamart", "china_1688", "google"], [])
+        assert result == {
+            "alibaba": {"max_results": 5},
+            "indiamart": {"max_results": 5},
+            "china_1688": {"max_results": 5},
+            "google": {"max_results": 5},
+        }
+
+    def test_page_based_sources_get_max_pages_one(self):
+        result = build_limit_scraper_kwargs(5, ["hktdc", "turkey_tim"], [])
+        assert result == {"hktdc": {"max_pages": 1}, "turkey_tim": {"max_pages": 1}}
+
+    def test_no_explicit_sources_falls_back_to_all_source_names(self):
+        result = build_limit_scraper_kwargs(5, None, ["alibaba", "hktdc"])
+        assert result == {"alibaba": {"max_results": 5}, "hktdc": {"max_pages": 1}}
+
+    def test_empty_explicit_sources_list_also_falls_back(self):
+        result = build_limit_scraper_kwargs(5, [], ["alibaba"])
+        assert result == {"alibaba": {"max_results": 5}}
 
 
 class FakeScraper(BaseScraper):

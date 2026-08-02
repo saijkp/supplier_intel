@@ -40,6 +40,17 @@ class SupplierSearchResult(BaseModel):
 class PipelineJobRequest(BaseModel):
     query: str
     sources: Optional[List[str]] = None
+    limit: Optional[int] = Field(
+        default=None,
+        description=(
+            "Cap raw results kept PER SOURCE to this many -- mirrors main.py run's own "
+            "--limit exactly (see pipeline.orchestrator.build_limit_scraper_kwargs, shared "
+            "by both). No cap by default. Strongly recommended for alibaba/indiamart/"
+            "china_1688/google: these are pay-per-event/metered, and without a limit each "
+            "falls back to its own scraper default (50 for alibaba, 20 for china_1688) with "
+            "no per-request ceiling."
+        ),
+    )
     run_verification: bool = True
     run_scoring: bool = True
     run_capability_extraction: bool = False

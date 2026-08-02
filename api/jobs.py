@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from pipeline.orchestrator import SupplierIntelligencePipeline
+from pipeline.orchestrator import SupplierIntelligencePipeline, build_limit_scraper_kwargs
 from storage.repository import SupplierRepository
 
 logger = logging.getLogger(__name__)
@@ -35,8 +35,20 @@ def run_pipeline_job(job_id: str, query: str, options: Dict[str, Any]) -> None:
     repo.mark_pipeline_job_running(job_id)
     try:
         pipeline = SupplierIntelligencePipeline(repo=repo)
-        run_kwargs = {k: v for k, v in options.items() if k != "sources"}
-        stats = pipeline.run(query, sources=options.get("sources"), **run_kwargs)
+        sources = options.get("sources")
+        limit = options.get("limit")
+        # "limit" (the request-facing name) -> "results_limit"
+        # (pipeline.run's actual parameter name) -- everything else
+        # passes straight through unchanged. build_limit_scraper_kwargs
+        # is the same helper main.py's own --limit uses, so a job
+        # triggered here gets the identical per-source
+        # max_results/max_pages treatment a CLI run would, not just the
+        # after-the-fact results_limit truncation.
+        run_kwargs = {k: v for k, v in options.items() if k not in ("sources", "limit")}
+        scraper_kwargs = build_limit_scraper_kwargs(limit, sources, list(pipeline.scrapers.keys()))
+        stats = pipeline.run(
+            query, sources=sources, scraper_kwargs=scraper_kwargs, results_limit=limit, **run_kwargs,
+        )
         repo.mark_pipeline_job_completed(job_id, stats=stats)
     except Exception as e:
         logger.error("Pipeline job %s failed: %s", job_id, e)
