@@ -232,3 +232,81 @@ class TestRunPipelineJobOutcomes:
         job = repo.get_pipeline_job("job7")
         assert job["status"] == "failed"
         assert "boom" in job["error"]
+
+
+class FakeCollectionService:
+    """CollectionService is constructed directly inside
+    run_collection_job (not injectable via a parameter), same pattern
+    as SupplierIntelligencePipeline in run_pipeline_job -- these tests
+    monkeypatch api.jobs.CollectionService itself."""
+
+    last_instance = None
+
+    def __init__(self, repo=None):
+        self.repo = repo
+        self.last_collect_call = None
+        self.last_collect_pending_call = None
+        FakeCollectionService.last_instance = self
+
+    def collect(self, supplier_id):
+        self.last_collect_call = supplier_id
+        return {"supplier_id": supplier_id, "status": "success", "pages_visited": 3}
+
+    def collect_pending(self, limit=20, force=False):
+        self.last_collect_pending_call = {"limit": limit, "force": force}
+        return {"attempted": 2, "succeeded": 2, "failed": 0, "total_eligible": 2, "status": "completed"}
+
+
+class FailingFakeCollectionService(FakeCollectionService):
+    def collect(self, supplier_id):
+        raise RuntimeError("browser crashed")
+
+    def collect_pending(self, limit=20, force=False):
+        raise RuntimeError("browser crashed")
+
+
+class TestRunCollectionJob:
+
+    def test_supplier_id_dispatches_to_collect(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "CollectionService", FakeCollectionService)
+
+        repo.create_pipeline_job(job_id="job20", query="[collection] supplier #5", options={"supplier_id": 5})
+        jobs_module.run_collection_job("job20", {"supplier_id": 5, "pending": False, "limit": 20, "force": False})
+
+        assert FakeCollectionService.last_instance.last_collect_call == 5
+        assert FakeCollectionService.last_instance.last_collect_pending_call is None
+        job = repo.get_pipeline_job("job20")
+        assert job["status"] == "completed"
+        assert job["stats"]["pages_visited"] == 3
+
+    def test_pending_dispatches_to_collect_pending_with_limit_and_force(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "CollectionService", FakeCollectionService)
+
+        repo.create_pipeline_job(job_id="job21", query="[collection] pending batch",
+                                  options={"pending": True, "limit": 15, "force": True})
+        jobs_module.run_collection_job("job21", {"supplier_id": None, "pending": True, "limit": 15, "force": True})
+
+        assert FakeCollectionService.last_instance.last_collect_call is None
+        assert FakeCollectionService.last_instance.last_collect_pending_call == {"limit": 15, "force": True}
+        job = repo.get_pipeline_job("job21")
+        assert job["status"] == "completed"
+        assert job["stats"]["attempted"] == 2
+
+    def test_supplier_id_takes_priority_over_pending_if_both_set(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "CollectionService", FakeCollectionService)
+
+        repo.create_pipeline_job(job_id="job22", query="x", options={"supplier_id": 9, "pending": True})
+        jobs_module.run_collection_job("job22", {"supplier_id": 9, "pending": True, "limit": 20, "force": False})
+
+        assert FakeCollectionService.last_instance.last_collect_call == 9
+        assert FakeCollectionService.last_instance.last_collect_pending_call is None
+
+    def test_failing_job_marks_failed_not_raised(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "CollectionService", FailingFakeCollectionService)
+
+        repo.create_pipeline_job(job_id="job23", query="x", options={"supplier_id": 5})
+        jobs_module.run_collection_job("job23", {"supplier_id": 5, "pending": False, "limit": 20, "force": False})  # must not raise
+
+        job = repo.get_pipeline_job("job23")
+        assert job["status"] == "failed"
+        assert "browser crashed" in job["error"]

@@ -324,6 +324,46 @@ def verify_facilities(force: bool, limit: int) -> None:
     console.print(f"[green]✓[/green] Verified {stats['facility_address_verified']} address(es) as real places.")
 
 
+@cli.command("collect")
+@click.option("--supplier-id", type=int, default=None,
+              help="Collect against one specific supplier (ignores --pending/--limit/--force).")
+@click.option("--pending", is_flag=True,
+              help="Batch mode: collect against every supplier needing it (has a domain, "
+                   "never collected before).")
+@click.option("--limit", default=20, show_default=True,
+              help="Stop after this many suppliers in --pending mode. Each one launches a "
+                   "real headless-browser session, so start small on a first run.")
+@click.option("--force", is_flag=True,
+              help="In --pending mode, re-collect every supplier with a domain, not just "
+                   "ones never collected.")
+def collect(supplier_id: Optional[int], pending: bool, limit: int, force: bool) -> None:
+    """Visit supplier website(s) with a real headless browser (collection.
+    SiteCollector) and save HTML/screenshots/extracted contact+product data.
+    Either --supplier-id ONE or --pending a batch -- see collection/
+    collection_service.py's module docstring for the concurrency/timeout
+    safeguards a --pending batch runs under."""
+    from collection.collection_service import CollectionService
+
+    if not supplier_id and not pending:
+        console.print("[red]✗[/red] Specify either --supplier-id or --pending.")
+        return
+
+    service = CollectionService()
+    if supplier_id:
+        outcome = service.collect(supplier_id)
+        console.print(f"[green]✓[/green] Supplier #{supplier_id}: {outcome['status']} "
+                       f"({outcome['pages_visited']} page(s) visited)"
+                       + (f" -- {outcome['error']}" if outcome.get("error") else ""))
+    else:
+        stats = service.collect_pending(limit=limit, force=force)
+        table = Table(show_header=False)
+        table.add_column("Metric", style="cyan")
+        table.add_column("Count", justify="right", style="magenta")
+        for key in ("attempted", "succeeded", "failed", "total_eligible", "status"):
+            table.add_row(key.replace("_", " "), str(stats.get(key, "")))
+        console.print(table)
+
+
 @cli.command("check-linkedin")
 @click.option("--force", is_flag=True, help="Re-check every supplier, not just ones never checked.")
 def check_linkedin(force: bool) -> None:

@@ -94,6 +94,34 @@ class EnrichmentJobRequest(BaseModel):
     )
 
 
+class CollectionJobRequest(BaseModel):
+    """Triggers collection.collection_service.CollectionService against
+    either one named supplier or a batch of every supplier needing it
+    -- the HTTP equivalent of `main.py collect`. Reuses the same
+    pipeline_jobs table/poll pattern as PipelineJobRequest/
+    EnrichmentJobRequest (see api/jobs.py's run_collection_job)."""
+
+    supplier_id: Optional[int] = Field(
+        default=None,
+        description="Collect against one specific supplier. Ignores pending/limit/force.",
+    )
+    pending: bool = Field(
+        default=False,
+        description="Batch mode: collect against every supplier needing it. Exactly one of "
+                     "supplier_id or pending must be set.",
+    )
+    limit: int = Field(
+        default=20,
+        description="Stop after this many suppliers in pending mode. Each one launches a real "
+                     "headless-browser session -- start small on a first run.",
+    )
+    force: bool = Field(
+        default=False,
+        description="In pending mode, re-collect every supplier with a domain, not just ones "
+                     "never collected.",
+    )
+
+
 class PipelineJobResponse(BaseModel):
     id: str
     status: str

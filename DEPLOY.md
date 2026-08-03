@@ -44,6 +44,7 @@ git push -u origin main
 
 1. railway.app → New Project → "Deploy from GitHub repo" → pick the repo.
 2. Railway auto-detects Python from `requirements.txt` — no `Procfile` needed if you set the start command in Step 5.
+3. `nixpacks.toml` (repo root) adds one extra install step Railway's auto-detection wouldn't otherwise run: `playwright install --with-deps chromium`. `pip install -r requirements.txt` alone installs the `playwright` Python package but not the actual browser binary `collection.SiteCollector` needs — without this, Collection Service fails on first use, not at build time. This adds real build time (~1-2 min) and image size (~300MB) — expected, not a build error.
 
 ### Step 3: Add persistent storage
 
@@ -62,6 +63,12 @@ Service → **Variables** → add each of these:
 | `API_ACCESS_TOKEN` | a long random string (`openssl rand -hex 32`) | Yes — API refuses all requests without it |
 | `ALLOWED_ORIGINS` | `https://your-frontend.netlify.app` | Yes, once you have a frontend |
 | `APIFY_TOKEN`, `QICHACHA_API_KEY`, `QICHACHA_SECRET_KEY`, `SERPAPI_KEY`, `OPENAI_API_KEY`, `GOOGLE_PLACES_API_KEY`, `AMAP_API_KEY` | your real keys | Only for the integrations you actually want live — anything left unset is skipped gracefully everywhere in this codebase, never silently broken |
+| `COLLECTION_ARTIFACTS_DIR` | `/data/collection` | Yes, once you use Collection Service — same reasoning as `SUPPLIER_INTEL_DB_PATH`: only `/data` survives a redeploy, and `config.settings.DATA_DIR` itself has no env override, so Collection Service's HTML/screenshot artifacts are silently wiped on every deploy without this |
+| `WEBSHARE_PROXY_USERNAME`, `WEBSHARE_PROXY_PASSWORD` | your Webshare proxy credentials | Only if you want Collection Service routed through a rotating proxy — unset means direct connection (`COLLECTION_PROXY_PROVIDER=none`, the default) |
+| `COLLECTION_PROXY_PROVIDER` | `webshare` | Only to actually enable the proxy above — Webshare is the only provider implemented so far (see `collection/proxy_provider.py`) |
+| `COLLECTION_PAGE_TIMEOUT_MS`, `COLLECTION_JOB_MAX_SECONDS`, `COLLECTION_MAX_CONCURRENT_JOBS` | defaults are `25000`, `1200`, `1` | No — sensible defaults; only override if you've confirmed a `collect --pending` batch needs a different budget |
+
+**Memory**: headless Chromium needs real headroom — a `collect`/`POST /collection/jobs` call that OOMs is a memory-plan problem, not a code bug. Recommend at least a 1GB Railway plan before relying on Collection Service at any real volume.
 
 ### Step 5: Start command
 
@@ -126,6 +133,12 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 
 curl -H "Authorization: Bearer $TOKEN" "$URL/pipeline/jobs/<id>"
 # poll every few seconds until "status": "completed"
+
+# Collection Service -- pick a real supplier id that has a domain on file first
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"supplier_id": 1}' \
+  $URL/collection/jobs
+# poll the returned job id the same way; check collection_runs/artifacts_dir once complete
 ```
 
 ### Running the test suite against the deployed environment
@@ -154,8 +167,11 @@ Core endpoints:
 | GET | `/suppliers/search` | The main query — `product`, `require` (repeatable), `manufacturers_only`, `country`, `min_score` |
 | GET | `/suppliers/{id}` | Full detail incl. matched capabilities |
 | POST | `/pipeline/jobs` | Trigger a pipeline run — returns immediately with a job id |
-| GET | `/pipeline/jobs/{id}` | Poll job status (`queued` -> `running` -> `completed`/`failed`) |
+| POST | `/pipeline/enrichment-jobs` | Trigger find-websites/extract-capabilities/verify-facilities across every existing supplier needing it |
+| POST | `/collection/jobs` | Trigger Collection Service (real headless browser) against one supplier or a batch — same job/poll pattern |
+| GET | `/pipeline/jobs/{id}` | Poll job status (`queued` -> `running` -> `completed`/`failed`) — shared by all three job types above |
 | GET | `/export/csv` | Download results as CSV |
+| GET | `/export/excel` | Download results as `.xlsx`, with contact/address enrichment columns CSV omits |
 | GET | `/health` | No auth — for uptime checks |
 
 `POST /pipeline/jobs` returns immediately (202) because a full run

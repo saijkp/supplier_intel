@@ -42,9 +42,17 @@ DB_PATH = Path(os.getenv("SUPPLIER_INTEL_DB_PATH") or str(DATA_DIR / "suppliers.
 # a real user hit exactly this from a blank line in their own .env.
 LOG_DIR = BASE_DIR / "logs"
 
+# collection/'s HTML/screenshot/PDF/JSON artifacts -- same
+# `os.getenv(key) or default` pattern as DB_PATH above, and for the
+# same reason: on Railway only the `/data` volume mount survives a
+# redeploy (see DEPLOY.md), and DATA_DIR itself has no env override,
+# so without this Collection Service's artifacts would be silently
+# wiped on every deploy.
+COLLECTION_ARTIFACTS_DIR = Path(os.getenv("COLLECTION_ARTIFACTS_DIR") or str(DATA_DIR / "collection"))
+
 # Ensure critical directories exist at import time. This keeps main.py
 # and tests from failing on a fresh checkout before init-db has run.
-for _dir in (DATA_DIR, EXPORTS_DIR, LOG_DIR):
+for _dir in (DATA_DIR, EXPORTS_DIR, LOG_DIR, COLLECTION_ARTIFACTS_DIR):
     _dir.mkdir(parents=True, exist_ok=True)
 
 
@@ -64,6 +72,25 @@ GOOGLE_PLACES_API_KEY: str | None = os.getenv("GOOGLE_PLACES_API_KEY")
 # verification/facility_address_verifier.py's module docstring before
 # budgeting time for this one.
 AMAP_API_KEY: str | None = os.getenv("AMAP_API_KEY")
+
+# --- Collection Service (collection/) -- Playwright + rotating proxies ---
+# Webshare is the first (and, for now, only implemented) rotating-proxy
+# provider -- see collection/proxy_provider.py's module docstring for
+# why: a genuine free tier to build/test against, cheapest paid tier of
+# the five named in the original brief. Bright Data/Oxylabs/Decodo/
+# IPRoyal are documented extension points, not implemented yet.
+WEBSHARE_PROXY_USERNAME: str | None = os.getenv("WEBSHARE_PROXY_USERNAME")
+WEBSHARE_PROXY_PASSWORD: str | None = os.getenv("WEBSHARE_PROXY_PASSWORD")
+WEBSHARE_PROXY_ENDPOINT: str = os.getenv("WEBSHARE_PROXY_ENDPOINT") or "p.webshare.io:80"
+COLLECTION_PROXY_PROVIDER: str = os.getenv("COLLECTION_PROXY_PROVIDER") or "none"  # 'webshare' | 'none'
+
+COLLECTION_PAGE_TIMEOUT_MS: int = int(os.getenv("COLLECTION_PAGE_TIMEOUT_MS") or 25_000)
+# Wall-clock budget per collect_pending() batch call -- BackgroundTasks
+# has no built-in timeout (unlike a real task queue), so this is
+# self-enforced: a batch that runs past budget stops early and marks
+# itself partial, safely resumable on the next call.
+COLLECTION_JOB_MAX_SECONDS: int = int(os.getenv("COLLECTION_JOB_MAX_SECONDS") or 1200)
+COLLECTION_MAX_CONCURRENT_JOBS: int = int(os.getenv("COLLECTION_MAX_CONCURRENT_JOBS") or 1)
 
 # --- FastAPI layer (api/app.py) -----------------------------------------
 # A single shared-secret token, not per-user auth -- see api/auth.py's

@@ -67,6 +67,12 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api.app, "run_enrichment_job", fake_run_enrichment_job)
 
+    def fake_run_collection_job(job_id, options):
+        test_repo.mark_pipeline_job_running(job_id)
+        test_repo.mark_pipeline_job_completed(job_id, stats={"attempted": 0})
+
+    monkeypatch.setattr(api.app, "run_collection_job", fake_run_collection_job)
+
     with TestClient(api.app.app) as test_client:
         test_client.repo = test_repo
         yield test_client
@@ -274,6 +280,41 @@ class TestEnrichmentJobEndpoints:
         assert job["options"]["force"] is False
         assert job["options"]["limit"] is None
         assert job["options"]["assess_photos"] is False
+
+
+class TestCollectionJobEndpoints:
+
+    def test_creating_a_supplier_id_job_returns_202_with_a_job_id(self, client):
+        response = client.post(
+            "/collection/jobs", json={"supplier_id": 5}, headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        body = response.json()
+        assert body["status"] == "queued"
+        assert body["query"] == "[collection] supplier #5"
+        assert body["id"]
+
+    def test_creating_a_pending_batch_job(self, client):
+        response = client.post(
+            "/collection/jobs", json={"pending": True, "limit": 10}, headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        assert response.json()["query"] == "[collection] pending batch"
+
+    def test_created_job_is_retrievable_by_id(self, client):
+        create_response = client.post("/collection/jobs", json={"supplier_id": 5}, headers=auth_headers())
+        job_id = create_response.json()["id"]
+        get_response = client.get(f"/pipeline/jobs/{job_id}", headers=auth_headers())
+        assert get_response.status_code == 200
+        assert get_response.json()["query"] == "[collection] supplier #5"
+
+    def test_neither_supplier_id_nor_pending_is_a_validation_error(self, client):
+        response = client.post("/collection/jobs", json={}, headers=auth_headers())
+        assert response.status_code == 422
+
+    def test_requires_auth(self, client):
+        response = client.post("/collection/jobs", json={"supplier_id": 5})
+        assert response.status_code == 401
 
 
 class TestExportEndpoint:

@@ -1,0 +1,11 @@
+# Railway auto-detects Python from requirements.txt and would otherwise
+# stop at `pip install -r requirements.txt` -- that installs the
+# `playwright` Python package but does NOT download the actual browser
+# binary Chromium needs to run. This explicit install phase adds that
+# step. See DEPLOY.md for the Railway plan/memory implication
+# (headless Chromium needs real memory headroom -- recommend >=1GB).
+[phases.install]
+cmds = [
+    "pip install -r requirements.txt",
+    "playwright install --with-deps chromium",
+]

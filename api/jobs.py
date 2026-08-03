@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
+from collection.collection_service import CollectionService
 from pipeline.orchestrator import SupplierIntelligencePipeline, build_limit_scraper_kwargs
 from storage.repository import SupplierRepository
 
@@ -89,4 +90,31 @@ def run_enrichment_job(job_id: str, stage: str, options: Dict[str, Any]) -> None
         repo.mark_pipeline_job_completed(job_id, stats=stats)
     except Exception as e:
         logger.error("Enrichment job %s (%s) failed: %s", job_id, stage, e)
+        repo.mark_pipeline_job_failed(job_id, error=str(e))
+
+
+def run_collection_job(job_id: str, options: Dict[str, Any]) -> None:
+    """The HTTP equivalent of `main.py collect` -- either one named
+    supplier (options['supplier_id']) or a batch of every supplier
+    needing it (options['pending']). Reuses the exact same
+    pipeline_jobs table/lifecycle as run_pipeline_job/run_enrichment_job
+    (same never-raises-to-the-caller contract), constructed fresh here
+    rather than reusing a module-level CollectionService instance so
+    each job gets its own SupplierRepository connection, matching every
+    other job function in this file.
+    """
+    repo = SupplierRepository()
+    repo.mark_pipeline_job_running(job_id)
+    try:
+        service = CollectionService(repo=repo)
+        supplier_id = options.get("supplier_id")
+        if supplier_id:
+            stats = service.collect(supplier_id)
+        else:
+            stats = service.collect_pending(
+                limit=options.get("limit", 20), force=options.get("force", False),
+            )
+        repo.mark_pipeline_job_completed(job_id, stats=stats)
+    except Exception as e:
+        logger.error("Collection job %s failed: %s", job_id, e)
         repo.mark_pipeline_job_failed(job_id, error=str(e))

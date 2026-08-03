@@ -18,3 +18,4 @@ click
 pydantic
 pytest
 jinja2
+playwright

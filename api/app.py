@@ -41,10 +41,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, Response
 
 from api.auth import require_api_token
-from api.jobs import run_enrichment_job, run_pipeline_job
+from api.jobs import run_collection_job, run_enrichment_job, run_pipeline_job
 from api.models import (
     BuyerProfileRequest,
     BuyerProfileResponse,
+    CollectionJobRequest,
     CommercialSearchResult,
     EnrichmentJobRequest,
     PipelineJobRequest,
@@ -232,6 +233,33 @@ def create_enrichment_job(
     options = request.model_dump(exclude={"stage"})
     repo.create_pipeline_job(job_id=job_id, query=f"[enrichment] {request.stage}", options=options)
     background_tasks.add_task(run_enrichment_job, job_id, request.stage, options)
+    job = repo.get_pipeline_job(job_id)
+    return _to_job_response(job)
+
+
+@app.post(
+    "/collection/jobs",
+    response_model=PipelineJobResponse,
+    status_code=202,
+    dependencies=[Depends(require_api_token)],
+)
+def create_collection_job(
+    request: CollectionJobRequest,
+    background_tasks: BackgroundTasks,
+    repo: SupplierRepository = Depends(get_repo),
+) -> PipelineJobResponse:
+    """Same async job/poll pattern as POST /pipeline/jobs, but for
+    collection.collection_service.CollectionService (visits supplier
+    websites with a real headless browser, saves HTML/screenshots/
+    extracted contact+product data) -- the HTTP equivalent of
+    `main.py collect`."""
+    if not request.supplier_id and not request.pending:
+        raise HTTPException(status_code=422, detail="Specify either supplier_id or pending.")
+    job_id = str(uuid.uuid4())
+    options = request.model_dump()
+    label = f"[collection] supplier #{request.supplier_id}" if request.supplier_id else "[collection] pending batch"
+    repo.create_pipeline_job(job_id=job_id, query=label, options=options)
+    background_tasks.add_task(run_collection_job, job_id, options)
     job = repo.get_pipeline_job(job_id)
     return _to_job_response(job)
 
