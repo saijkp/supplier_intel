@@ -1591,11 +1591,19 @@ class SupplierRepository:
         `collection_status IS NULL` means "never run," not "ran and
         found nothing." This is also what makes augmenting the ~1,400
         existing suppliers (all already have a domain, none have ever
-        had collection_status set) work with no special-casing."""
+        had collection_status set) work with no special-casing.
+
+        Ordered newest-first (id DESC) -- a real, observed confusion
+        otherwise: with no ordering, SQLite returns whatever rows it
+        happens to first (effectively id ASC in practice), so a bulk
+        "collect/verify pending" run against a database that's mostly
+        an old imported base processes the OLDEST suppliers first, not
+        the ones a user just discovered and expected to see enriched.
+        """
         with connection_scope(self.db_path) as conn:
             if force:
                 rows = conn.execute(
-                    "SELECT * FROM suppliers WHERE domain IS NOT NULL AND domain != '' LIMIT ?",
+                    "SELECT * FROM suppliers WHERE domain IS NOT NULL AND domain != '' ORDER BY id DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
             else:
@@ -1604,6 +1612,7 @@ class SupplierRepository:
                     SELECT * FROM suppliers
                     WHERE domain IS NOT NULL AND domain != ''
                     AND collection_status IS NULL
+                    ORDER BY id DESC
                     LIMIT ?
                     """,
                     (limit,),
@@ -1615,13 +1624,17 @@ class SupplierRepository:
     ) -> List[Dict[str, Any]]:
         """Suppliers VerificationService.verify_pending() hasn't assessed
         yet -- gated on ai_confidence_assessed_at, same discipline as
-        every other "needing_X" method in this file."""
+        every other "needing_X" method in this file. Ordered newest-first
+        (id DESC) -- see get_suppliers_needing_collection's own note on
+        why unordered SQLite output means "the oldest suppliers get
+        processed first" in practice, not what a user running a bulk
+        pass right after a fresh discovery would expect."""
         with connection_scope(self.db_path) as conn:
             if force:
-                rows = conn.execute("SELECT * FROM suppliers LIMIT ?", (limit,)).fetchall()
+                rows = conn.execute("SELECT * FROM suppliers ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM suppliers WHERE ai_confidence_assessed_at IS NULL LIMIT ?",
+                    "SELECT * FROM suppliers WHERE ai_confidence_assessed_at IS NULL ORDER BY id DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
             return _rows_to_dicts(rows, SUPPLIER_JSON_FIELDS)

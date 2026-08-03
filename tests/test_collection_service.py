@@ -121,6 +121,95 @@ class TestCollectSingleSupplier:
         assert "browser crashed" in outcome["error"]
 
 
+class TestContactExtraction:
+    """A successful collection must also populate primary_email/
+    primary_phone from the fetched pages -- this was a real gap (see
+    collection_service.py's module docstring) where a freshly
+    discovered supplier could be collected and verified repeatedly and
+    never gain a contact detail. These tests use real page text so the
+    real regex/phonenumbers extraction in
+    verification/website_contact_extractor.py actually runs, not a
+    mocked extractor."""
+
+    def test_successful_collection_populates_email_and_phone(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results=[
+            CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(
+                    url="https://acme.example.com/contact",
+                    text="Contact us: sales@acme.example.com or call +86 138 0000 0000.",
+                    has_contact_form=False,
+                ),
+            ]),
+        ])
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        outcome = service.collect(supplier_id)
+
+        assert outcome["status"] == "success"
+        assert outcome["contact_emails_added"] == 1
+        assert outcome["contact_phones_added"] == 1
+        supplier = repo.get_supplier(supplier_id)
+        assert supplier["primary_email"] == "sales@acme.example.com"
+        assert supplier["primary_phone"] == "+8613800000000"
+
+    def test_page_with_no_extractable_contact_details_adds_nothing(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results=[
+            CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://acme.example.com", text="Welcome to Acme.", has_contact_form=False),
+            ]),
+        ])
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        outcome = service.collect(supplier_id)
+
+        assert outcome["status"] == "success"
+        assert outcome["contact_emails_added"] == 0
+        assert outcome["contact_phones_added"] == 0
+        supplier = repo.get_supplier(supplier_id)
+        assert supplier["primary_email"] is None
+        assert supplier["primary_phone"] is None
+
+    def test_existing_contact_details_are_not_overwritten(self, repo):
+        """enrich_contact_details fills gaps only -- a supplier that
+        already has a (possibly better-sourced, e.g. Alibaba listing)
+        email on file must keep it, not have it replaced by whatever
+        the own-website crawl happens to find."""
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Acme", "domain": "acme.example.com",
+            "primary_email": "listing@acme-alibaba.example.com",
+        })
+        fake = FakeSiteCollector(results=[
+            CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(
+                    url="https://acme.example.com/contact",
+                    text="Email us at othersales@acme.example.com",
+                    has_contact_form=False,
+                ),
+            ]),
+        ])
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        service.collect(supplier_id)
+
+        supplier = repo.get_supplier(supplier_id)
+        assert supplier["primary_email"] == "listing@acme-alibaba.example.com"
+
+    def test_failed_collection_does_not_attempt_contact_extraction(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results=[
+            CollectionResult(domain="acme.example.com", success=False, error="timeout"),
+        ])
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        outcome = service.collect(supplier_id)
+
+        assert outcome["status"] == "failed"
+        assert outcome["contact_emails_added"] == 0
+        assert outcome["contact_phones_added"] == 0
+
+
 class TestCollectPending:
 
     def test_processes_every_eligible_supplier(self, repo):

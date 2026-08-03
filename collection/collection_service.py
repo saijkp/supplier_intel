@@ -25,6 +25,19 @@ Service safeguards" section):
   and is safely resumable on the next call (already-collected suppliers
   have collection_status set, so they're skipped next time unless
   force=True).
+
+Contact extraction: a successful collection also runs
+verification.website_contact_extractor.extract_contact_details() over
+the same pages SiteCollector already fetched -- zero extra HTTP cost,
+same "free additional value from an already-paid-for fetch" pattern
+pipeline.orchestrator._capability_extraction_stage already established
+for the older extract-capabilities pipeline stage. This was a real gap
+until now: discovery.DiscoveryService only ever sets canonical_name/
+domain/country on a newly-found supplier, and neither CollectionService
+nor verification_ai.VerificationService extracted contact details --
+meaning "Collect site"/"Verify (AI)" alone would never surface an
+email or phone for a freshly-discovered company, no matter how many
+times either ran.
 """
 
 from __future__ import annotations
@@ -39,6 +52,11 @@ from collection.proxy_provider import ProxyProvider, select_proxy_provider
 from collection.site_collector import SiteCollector
 from config.settings import COLLECTION_JOB_MAX_SECONDS, COLLECTION_MAX_CONCURRENT_JOBS
 from storage.repository import SupplierRepository
+from verification.website_contact_extractor import (
+    best_contact_method,
+    country_name_to_region_code,
+    extract_contact_details,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,10 +122,55 @@ class CollectionService:
             artifacts_dir=result.artifacts_dir, proxy_provider=result.proxy_provider,
             error_message=result.error, started_at=started_at, completed_at=completed_at,
         )
+
+        contact_stats = {"contact_emails_added": 0, "contact_phones_added": 0, "contact_forms_recorded": 0}
+        if result.success and result.pages:
+            contact_stats = self._extract_and_save_contact_details(supplier_id, supplier.get("country"), result.pages)
+
         return {
             "supplier_id": supplier_id, "status": status,
             "pages_visited": len(result.pages), "error": result.error,
+            **contact_stats,
         }
+
+    def _extract_and_save_contact_details(
+        self, supplier_id: int, country: Optional[str], pages: Any,
+    ) -> Dict[str, int]:
+        """Reuses the exact same regex/phonenumbers-based extraction
+        (no LLM, no extra cost) the older extract-capabilities pipeline
+        stage already uses -- see module docstring. Own try/except so a
+        parsing bug here can never fail an otherwise-successful
+        collection run."""
+        stats = {"contact_emails_added": 0, "contact_phones_added": 0, "contact_forms_recorded": 0}
+        try:
+            region_hint = country_name_to_region_code(country)
+            findings = extract_contact_details(pages, default_region=region_hint)
+            all_emails: list = []
+            all_phones: list = []
+            for finding in findings:
+                for email in finding.emails:
+                    if email not in all_emails:
+                        all_emails.append(email)
+                for phone in finding.phone_numbers:
+                    if phone not in all_phones:
+                        all_phones.append(phone)
+
+            fallback = best_contact_method(findings)
+            form_url = fallback["value"] if fallback["method"] == "contact_form" else None
+
+            if all_emails or all_phones or form_url:
+                enrichment = self.repo.enrich_contact_details(
+                    supplier_id, emails=all_emails, phones=all_phones, contact_form_url=form_url,
+                )
+                if enrichment.get("primary_email_set") or enrichment.get("secondary_emails_added"):
+                    stats["contact_emails_added"] = 1
+                if enrichment.get("primary_phone_set"):
+                    stats["contact_phones_added"] = 1
+                if enrichment.get("contact_form_url_set"):
+                    stats["contact_forms_recorded"] = 1
+        except Exception as e:
+            logger.error("collection: contact extraction failed for supplier #%s: %s", supplier_id, e)
+        return stats
 
     def collect_pending(self, limit: int = 20, force: bool = False) -> Dict[str, Any]:
         """Standalone batch pass across every supplier needing

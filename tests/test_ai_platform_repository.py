@@ -62,6 +62,18 @@ class TestGetSuppliersNeedingCollection:
         results = repo.get_suppliers_needing_collection()
         assert [s["id"] for s in results] == [supplier_id]
 
+    def test_newest_supplier_returned_first(self, tmp_path):
+        """A bulk 'collect pending' run should reach a supplier just
+        discovered before it reaches the oldest row in the database --
+        real user-facing confusion otherwise (a bulk pass silently
+        processing arbitrary old suppliers, not the ones just found)."""
+        repo = _make_repo(tmp_path)
+        old_id = repo.create_golden_record({"canonical_name": "Old Co", "domain": "old.example.com"})
+        new_id = repo.create_golden_record({"canonical_name": "New Co", "domain": "new.example.com"})
+        results = repo.get_suppliers_needing_collection(limit=1)
+        assert [s["id"] for s in results] == [new_id]
+        assert old_id != new_id
+
 
 class TestGetSuppliersNeedingAiVerification:
 
@@ -83,6 +95,14 @@ class TestGetSuppliersNeedingAiVerification:
         repo.update_supplier_fields(supplier_id, {"ai_confidence_assessed_at": "2026-08-03T00:00:00+00:00"})
         results = repo.get_suppliers_needing_ai_verification(force=True)
         assert [s["id"] for s in results] == [supplier_id]
+
+    def test_newest_supplier_returned_first(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        old_id = repo.create_golden_record({"canonical_name": "Old Co"})
+        new_id = repo.create_golden_record({"canonical_name": "New Co"})
+        results = repo.get_suppliers_needing_ai_verification(limit=1)
+        assert [s["id"] for s in results] == [new_id]
+        assert old_id != new_id
 
 
 class TestGetSuppliersNeedingReverification:
