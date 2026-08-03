@@ -32,6 +32,14 @@
   --tier-unknown:#7d848a;
   --tier-unknown-bg:#eceef0;
 
+  /* AI cross-check assessment — a synthesis across sources, deliberately
+     a distinct colour from both Technical (steel/neutral) and Commercial
+     (orange) scores, since it's answering a different question: not
+     "how strong is this listing" but "how much do independent sources
+     corroborate it." */
+  --ai:#6d4fb0;
+  --ai-bg:#f2eefa;
+
   --shadow:0 1px 2px rgba(23,26,29,.06),0 4px 12px rgba(23,26,29,.04);
 }
 
@@ -210,6 +218,7 @@ a{color:var(--tier-stated)}
 }
 .score-val.na{color:var(--steel-300);font-size:20px}
 .score.commercial{border-color:var(--orange);background:#fdf2ee}
+.score.ai{border-color:var(--ai);background:var(--ai-bg)}
 
 .badges{display:flex;flex-wrap:wrap;gap:5px;padding:10px 16px 0}
 .badge{
@@ -277,6 +286,25 @@ a{color:var(--tier-stated)}
   display:flex;align-items:center;gap:10px;margin:16px 0 8px;
 }
 .section-rule::after{content:"";flex:1;height:1px;background:var(--rule-soft)}
+
+/* ── AI cross-check assessment ─────────────────────────── */
+.ai-block{border:1px solid var(--ai);background:var(--ai-bg);padding:12px;margin-top:12px}
+.ai-summary{font-size:14px;line-height:1.5}
+.ai-sublabel{
+  font-family:'IBM Plex Mono',monospace;font-size:10px;
+  letter-spacing:.08em;text-transform:uppercase;color:var(--steel-500);
+  display:block;margin:10px 0 4px;
+}
+.ai-sublabel:first-of-type{margin-top:10px}
+.ai-list{margin:0;padding:0;list-style:none;font-size:13px;line-height:1.5}
+.ai-list li{padding-left:16px;position:relative;margin-bottom:3px}
+.ai-list.strengths li::before{content:"+";color:var(--tier-verified);position:absolute;left:0;font-weight:700}
+.ai-list.risks li::before{content:"!";color:var(--orange-dark);position:absolute;left:0;font-weight:700}
+.ai-meta{
+  font-family:'IBM Plex Mono',monospace;font-size:10.5px;
+  color:var(--steel-500);margin-top:10px;padding-top:8px;
+  border-top:1px solid rgba(109,79,176,.2);line-height:1.4;
+}
 
 /* ── Probability block ─────────────────────────────────── */
 .prob{border:1px solid var(--rule);background:var(--paper);padding:12px;margin-top:12px}
@@ -385,6 +413,7 @@ dialog::backdrop{background:rgba(23,26,29,.5)}
       <button data-view="search" aria-current="page">Search</button>
       <button data-view="profiles">Buyer profiles</button>
       <button data-view="pipeline">Pipeline</button>
+      <button data-view="discover">Discover</button>
     </nav>
     <div class="conn">
       <span class="dot" id="connDot"></span>
@@ -556,6 +585,47 @@ dialog::backdrop{background:rgba(23,26,29,.5)}
       </div>
     </div>
   </section>
+
+  <!-- ══ DISCOVER (AI Discovery/Collection/Verification) ══ -->
+  <section id="view-discover" class="hidden">
+    <div class="split">
+      <aside class="panel rail">
+        <div class="panel-head"><h2 class="panel-title">Discover suppliers</h2></div>
+        <div class="panel-body">
+          <div class="field">
+            <label class="label" for="dProduct">Product</label>
+            <input class="input" id="dProduct" placeholder="trailer axle" autocomplete="off">
+          </div>
+          <div class="field">
+            <label class="label" for="dCategory">Category</label>
+            <input class="input" id="dCategory" placeholder="Axles & Suspension" autocomplete="off">
+          </div>
+          <div class="field">
+            <label class="label" for="dCountry">Country</label>
+            <input class="input" id="dCountry" placeholder="China" autocomplete="off">
+          </div>
+          <div class="field">
+            <label class="label" for="dLimit">Max candidates</label>
+            <input class="input" id="dLimit" type="number" min="1" max="50" placeholder="20">
+          </div>
+          <button class="btn btn-primary btn-block" id="btnDiscover">Search the open web</button>
+          <p class="hint" style="margin-top:10px">AI-grounded discovery, not a marketplace scrape — every result traces to a real search hit and a real fetched website that corroborates it. Never invents a company. Costs a real search plus an AI read per candidate — start small.</p>
+        </div>
+      </aside>
+
+      <div>
+        <div id="discoverAlert"></div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2 class="panel-title">Discovery / collection / verification runs</h2>
+            <button class="btn btn-ghost btn-sm" id="btnRefreshDiscoverJobs">Refresh</button>
+          </div>
+          <div id="discoverJobList"></div>
+        </div>
+        <p class="hint" style="margin-top:10px">Per-supplier collection/verification/reverify jobs are also triggered from each result's card on the Search tab — they show up in this same list.</p>
+      </div>
+    </div>
+  </section>
 </main>
 
 <!-- ══ CONNECTION DIALOG ═════════════════════════════════ -->
@@ -638,7 +708,8 @@ const state = {
   profileCaps: new Set(),
   profiles: [],
   activeProfile: null,
-  jobTimer: null
+  jobTimer: null,
+  discoverJobTimer: null
 };
 
 const $ = (id) => document.getElementById(id);
@@ -788,10 +859,11 @@ $("nav").addEventListener("click", (e) => {
   const view = btn.dataset.view;
   document.querySelectorAll("#nav button").forEach(b =>
     b.setAttribute("aria-current", b === btn ? "page" : "false"));
-  ["search","profiles","pipeline"].forEach(v =>
+  ["search","profiles","pipeline","discover"].forEach(v =>
     $("view-" + v).classList.toggle("hidden", v !== view));
   if (view === "profiles") loadProfiles();
   if (view === "pipeline") loadJobs();
+  if (view === "discover") loadDiscoverJobs();
 });
 
 /* ═══ Capability chips ══════════════════════════════════════ */
@@ -860,6 +932,27 @@ function factorRow(f) {
     </div>`;
 }
 
+/* verification_ai's AI cross-check assessment -- a synthesis across
+   every existing signal, deliberately never merged into composite_score
+   (see the .scores comment above) and rendered separately here for the
+   same reason: it answers "how much do independent sources corroborate
+   this," not "how strong is this listing." */
+function aiBlock(s) {
+  const strengths = s.ai_strengths || [];
+  const risks = s.ai_risks || [];
+  const customers = s.ai_suitable_customer_types || [];
+  if (!s.ai_summary && !strengths.length && !risks.length) return "";
+  return `
+    <div class="ai-block">
+      <div class="section-rule" style="margin-top:0">AI cross-check assessment</div>
+      ${s.ai_summary ? `<p class="ai-summary">${esc(s.ai_summary)}</p>` : ""}
+      ${strengths.length ? `<span class="ai-sublabel">Strengths</span><ul class="ai-list strengths">${strengths.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+      ${risks.length ? `<span class="ai-sublabel">Risks</span><ul class="ai-list risks">${risks.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+      ${customers.length ? `<span class="ai-sublabel">Good fit for</span><div class="chips">${customers.map(c => `<span class="chip">${esc(c)}</span>`).join("")}</div>` : ""}
+      <div class="ai-meta">A synthesis across the checks below, not independent verification on its own — see "Show all evidence" for what it's based on.</div>
+    </div>`;
+}
+
 function scoreBlock(label, value, cls) {
   const na = value === null || value === undefined;
   return `
@@ -894,6 +987,8 @@ function badges(s) {
   if (s.factory_photo_verdict === "plausible_factory") out.push(`<span class="badge mfr">Factory photos check out</span>`);
   else if (s.factory_photo_verdict === "implausible") out.push(`<span class="badge warn">Factory photos doubtful</span>`);
   if (s.linkedin_url) out.push(`<span class="badge neutral">LinkedIn found</span>`);
+  if (s.collection_status === "success") out.push(`<span class="badge neutral">Site collected</span>`);
+  else if (s.collection_status === "failed") out.push(`<span class="badge warn">Collection failed</span>`);
   if (s.recommendation) out.push(`<span class="badge neutral">${esc(s.recommendation)}</span>`);
   return out.length ? `<div class="badges">${out.join("")}</div>` : "";
 }
@@ -908,15 +1003,22 @@ function supplierCard(s, i) {
           <div class="card-meta">${supplierMeta(s)}</div>
           <div class="card-meta">${contactLine(s)}</div>
         </div>
-        <div class="scores">${scoreBlock("Technical", s.composite_score)}</div>
+        <div class="scores">
+          ${scoreBlock("Technical", s.composite_score)}
+          ${s.ai_confidence_score != null ? scoreBlock("AI Confidence", s.ai_confidence_score, "ai") : ""}
+        </div>
       </div>
       ${badges(s)}
       <div class="card-body">
         ${caps.length ? `<div class="section-rule">Matched your requirements</div>${caps.map(capabilityRow).join("")}` : ""}
+        ${aiBlock(s)}
         <div id="ev-${s.id}"></div>
         <div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn btn-ghost btn-sm" data-evidence-id="${s.id}">Show all evidence</button>
           <button class="btn btn-ghost btn-sm" data-outcome-id="${s.id}" data-outcome-name="${esc(s.canonical_name)}">Record outcome</button>
+          <button class="btn btn-ghost btn-sm" data-collect-id="${s.id}">Collect site</button>
+          <button class="btn btn-ghost btn-sm" data-verify-id="${s.id}">Verify (AI)</button>
+          <button class="btn btn-ghost btn-sm" data-reverify-id="${s.id}">Reverify</button>
         </div>
       </div>
     </article>`;
@@ -1134,33 +1236,61 @@ $("profileList").addEventListener("click", async (e) => {
 });
 
 /* ═══ Pipeline ══════════════════════════════════════════════ */
+/* One shared job table renders both this tab's runs and Discover's --
+   /pipeline/jobs already returns every job type (pipeline, enrichment,
+   collection, verification, discovery, reverify), discriminated by
+   query's own prefix ("[discovery] ...", "[collection] ...", etc.),
+   not a separate endpoint per type. */
+function summarizeJobStats(j) {
+  if (j.status !== "completed") return j.error ? esc(j.error).slice(0, 70) : "—";
+  const st = j.stats || {};
+  const q = j.query || "";
+  if (q.startsWith("[discovery]")) {
+    return `${st.candidates_validated ?? 0} validated · ${(st.new_supplier_ids || []).length} new`;
+  }
+  if (q.startsWith("[collection]")) {
+    return "pages_visited" in st
+      ? `${st.status ?? "?"} · ${st.pages_visited ?? 0} page(s)`
+      : `${st.succeeded ?? 0}/${st.attempted ?? 0} succeeded`;
+  }
+  if (q.startsWith("[verification]")) {
+    return "confidence_score" in st
+      ? `confidence ${st.confidence_score}`
+      : `${st.succeeded ?? 0}/${st.attempted ?? 0} succeeded`;
+  }
+  if (q.startsWith("[reverify]")) {
+    const v = st.verification || {};
+    return v.confidence_score != null ? `confidence ${v.confidence_score}` : "done";
+  }
+  if (q.startsWith("[enrichment]")) {
+    return Object.entries(st).slice(0, 2).map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(", ");
+  }
+  return `${st.created ?? 0} new · ${st.merged ?? 0} merged`;
+}
+
+function renderJobsTable(jobs) {
+  if (!jobs.length) {
+    return `<div style="padding:32px 16px;text-align:center;color:var(--steel-500);font-size:14px">
+      No runs yet.
+    </div>`;
+  }
+  return `<table class="tbl">
+    <thead><tr><th>Run</th><th>Status</th><th>Result</th><th>Started</th></tr></thead>
+    <tbody>${jobs.map(j => `
+      <tr>
+        <td><strong>${esc(j.query)}</strong></td>
+        <td><span class="status ${esc(j.status)}">${esc(j.status)}</span></td>
+        <td class="mono">${summarizeJobStats(j)}</td>
+        <td class="mono" style="color:var(--steel-500)">${esc(j.created_at || "")}</td>
+      </tr>`).join("")}</tbody>
+  </table>`;
+}
+
 async function loadJobs() {
   try {
     const jobs = await api("/pipeline/jobs?limit=25");
-    const host = $("jobList");
-    if (!jobs.length) {
-      host.innerHTML = `<div style="padding:32px 16px;text-align:center;color:var(--steel-500);font-size:14px">
-        No runs yet. Start one to collect suppliers for a search term.
-      </div>`;
-      stopPolling();
-      return;
-    }
-    host.innerHTML = `<table class="tbl">
-      <thead><tr><th>Search term</th><th>Status</th><th>Found</th><th>Started</th></tr></thead>
-      <tbody>${jobs.map(j => {
-        const st = j.stats || {};
-        const found = j.status === "completed"
-          ? `${st.created ?? 0} new · ${st.merged ?? 0} merged`
-          : (j.error ? esc(j.error).slice(0, 60) : "—");
-        return `<tr>
-          <td><strong>${esc(j.query)}</strong></td>
-          <td><span class="status ${esc(j.status)}">${esc(j.status)}</span></td>
-          <td class="mono">${found}</td>
-          <td class="mono" style="color:var(--steel-500)">${esc(j.created_at || "")}</td>
-        </tr>`;
-      }).join("")}</tbody>
-    </table>`;
-
+    $("jobList").innerHTML = renderJobsTable(jobs.filter(j =>
+      !/^\[(discovery|collection|verification|reverify)\]/.test(j.query || "")));
     const active = jobs.some(j => j.status === "queued" || j.status === "running");
     active ? startPolling() : stopPolling();
   } catch (err) {
@@ -1169,8 +1299,23 @@ async function loadJobs() {
   }
 }
 
+async function loadDiscoverJobs() {
+  try {
+    const jobs = await api("/pipeline/jobs?limit=25");
+    $("discoverJobList").innerHTML = renderJobsTable(jobs.filter(j =>
+      /^\[(discovery|collection|verification|reverify)\]/.test(j.query || "")));
+    const active = jobs.some(j => j.status === "queued" || j.status === "running");
+    active ? startDiscoverPolling() : stopDiscoverPolling();
+  } catch (err) {
+    explain(err, $("discoverAlert"));
+    stopDiscoverPolling();
+  }
+}
+
 function startPolling() { if (!state.jobTimer) state.jobTimer = setInterval(loadJobs, 4000); }
 function stopPolling() { if (state.jobTimer) { clearInterval(state.jobTimer); state.jobTimer = null; } }
+function startDiscoverPolling() { if (!state.discoverJobTimer) state.discoverJobTimer = setInterval(loadDiscoverJobs, 4000); }
+function stopDiscoverPolling() { if (state.discoverJobTimer) { clearInterval(state.discoverJobTimer); state.discoverJobTimer = null; } }
 
 $("btnRunJob").addEventListener("click", async () => {
   const query = $("jQuery").value.trim();
@@ -1202,6 +1347,36 @@ $("btnRunJob").addEventListener("click", async () => {
 });
 
 $("btnRefreshJobs").addEventListener("click", loadJobs);
+
+/* ═══ Discover ══════════════════════════════════════════════ */
+$("btnDiscover").addEventListener("click", async () => {
+  const product = $("dProduct").value.trim();
+  if (!product) {
+    alertBox($("discoverAlert"), 1, "Product needed", "Enter what to search for, for example \"trailer axle\".");
+    return;
+  }
+  const btn = $("btnDiscover");
+  btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Searching`;
+  try {
+    await api("/discovery/jobs", {
+      method: "POST",
+      body: JSON.stringify({
+        product,
+        category: $("dCategory").value.trim() || null,
+        country: $("dCountry").value.trim() || null,
+        max_candidates: $("dLimit").value ? Number($("dLimit").value) : 20
+      })
+    });
+    alertBox($("discoverAlert"), 0);
+    loadDiscoverJobs();
+  } catch (err) {
+    explain(err, $("discoverAlert"));
+  } finally {
+    btn.disabled = false; btn.textContent = "Search the open web";
+  }
+});
+
+$("btnRefreshDiscoverJobs").addEventListener("click", loadDiscoverJobs);
 
 $("btnExport").addEventListener("click", async (e) => {
   e.preventDefault();
@@ -1256,6 +1431,39 @@ document.addEventListener("click", async (e) => {
     btn.textContent = "Show all evidence";
   } finally {
     btn.disabled = false;
+  }
+});
+
+/* ═══ Per-supplier Collect / Verify / Reverify ═════════════════
+   Each queues a background job (same pipeline_jobs table the
+   Discover/Pipeline tabs poll) -- there's no immediate result to show
+   inline, so this just confirms the job was queued and points at
+   where to watch it, rather than pretending the card updates itself.
+   ═══════════════════════════════════════════════════════════ */
+async function triggerSupplierJob(btn, path, body) {
+  const original = btn.textContent;
+  btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Queuing`;
+  try {
+    await api(path, { method: "POST", body: JSON.stringify(body) });
+    btn.textContent = "Queued ✓";
+  } catch (err) {
+    btn.textContent = original;
+    explain(err, $("searchAlert"));
+  } finally {
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const collectBtn = e.target.closest("[data-collect-id]");
+  const verifyBtn = e.target.closest("[data-verify-id]");
+  const reverifyBtn = e.target.closest("[data-reverify-id]");
+  if (collectBtn) {
+    triggerSupplierJob(collectBtn, "/collection/jobs", { supplier_id: Number(collectBtn.dataset.collectId) });
+  } else if (verifyBtn) {
+    triggerSupplierJob(verifyBtn, "/verification/jobs", { supplier_id: Number(verifyBtn.dataset.verifyId) });
+  } else if (reverifyBtn) {
+    triggerSupplierJob(reverifyBtn, `/suppliers/${reverifyBtn.dataset.reverifyId}/reverify`, undefined);
   }
 });
 
