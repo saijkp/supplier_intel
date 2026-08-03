@@ -296,3 +296,91 @@ class TestDiscoverMaxCandidates:
         outcome = service.discover("trailer axle", max_candidates=3)
 
         assert outcome.candidates_found == 3
+
+
+class TestBackfillProductKeywords:
+    """discover() itself already writes product_keywords on create (see
+    TestDiscoverCreatesNewSuppliers) -- these tests cover the separate
+    repair path for suppliers created before that fix existed, using
+    only pipeline_jobs history plus a bare repo (no google_scraper/
+    validator/matcher needed, since backfill never re-runs discovery)."""
+
+    def _service(self, repo):
+        return DiscoveryService(repo=repo, google_scraper=FakeGoogleScraper(results=[]))
+
+    def test_backfills_from_a_completed_discovery_job(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Winch Co"})
+        repo.create_pipeline_job(job_id="job-1", query="[discovery] winch", options={})
+        repo.mark_pipeline_job_completed("job-1", stats={"new_supplier_ids": [supplier_id]})
+
+        result = self._service(repo).backfill_product_keywords()
+
+        assert result["updated_supplier_ids"] == [supplier_id]
+        assert repo.get_supplier(supplier_id)["product_keywords"] == ["winch"]
+
+    def test_supplier_that_already_has_product_keywords_is_left_untouched(self, repo):
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Acme Winch Co", "product_keywords": ["already set"],
+        })
+        repo.create_pipeline_job(job_id="job-1", query="[discovery] winch", options={})
+        repo.mark_pipeline_job_completed("job-1", stats={"new_supplier_ids": [supplier_id]})
+
+        result = self._service(repo).backfill_product_keywords()
+
+        assert result["updated_supplier_ids"] == []
+        assert result["already_had_keywords_supplier_ids"] == [supplier_id]
+        assert repo.get_supplier(supplier_id)["product_keywords"] == ["already set"]
+
+    def test_non_discovery_jobs_are_ignored(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co"})
+        repo.create_pipeline_job(job_id="job-1", query="wheel bearings", options={})
+        repo.mark_pipeline_job_completed("job-1", stats={"created": 1})
+        repo.create_pipeline_job(job_id="job-2", query="[collection] supplier #1", options={})
+        repo.mark_pipeline_job_completed("job-2", stats={"status": "success"})
+
+        result = self._service(repo).backfill_product_keywords()
+
+        assert result["updated_supplier_ids"] == []
+        assert repo.get_supplier(supplier_id)["product_keywords"] is None
+
+    def test_uncompleted_discovery_job_is_ignored(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Winch Co"})
+        repo.create_pipeline_job(job_id="job-1", query="[discovery] winch", options={})
+        # left running, never marked completed
+
+        result = self._service(repo).backfill_product_keywords()
+
+        assert result["updated_supplier_ids"] == []
+        assert repo.get_supplier(supplier_id)["product_keywords"] is None
+
+    def test_supplier_id_no_longer_present_is_reported_not_raised(self, repo):
+        repo.create_pipeline_job(job_id="job-1", query="[discovery] winch", options={})
+        repo.mark_pipeline_job_completed("job-1", stats={"new_supplier_ids": [999999]})
+
+        result = self._service(repo).backfill_product_keywords()
+
+        assert result["missing_supplier_ids"] == [999999]
+        assert result["updated_supplier_ids"] == []
+
+    def test_is_safe_to_run_twice(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Winch Co"})
+        repo.create_pipeline_job(job_id="job-1", query="[discovery] winch", options={})
+        repo.mark_pipeline_job_completed("job-1", stats={"new_supplier_ids": [supplier_id]})
+        service = self._service(repo)
+
+        first = service.backfill_product_keywords()
+        second = service.backfill_product_keywords()
+
+        assert first["updated_supplier_ids"] == [supplier_id]
+        assert second["updated_supplier_ids"] == []
+        assert second["already_had_keywords_supplier_ids"] == [supplier_id]
+
+    def test_writes_a_supplier_change_log_entry(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Winch Co"})
+        repo.create_pipeline_job(job_id="job-1", query="[discovery] winch", options={})
+        repo.mark_pipeline_job_completed("job-1", stats={"new_supplier_ids": [supplier_id]})
+
+        self._service(repo).backfill_product_keywords()
+
+        log = repo.get_supplier_change_log(supplier_id)
+        assert any(entry["field_name"] == "product_keywords" for entry in log)

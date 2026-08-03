@@ -360,6 +360,31 @@ def discover(product: str, category: Optional[str], country: Optional[str], max_
     console.print(table)
 
 
+@cli.command("backfill-discovery-keywords")
+def backfill_discovery_keywords() -> None:
+    """One-off repair: suppliers `discover` created before it started
+    recording product_keywords are invisible to `search`'s product-term
+    matching unless their own name happens to contain the term.
+    Reconstructs the missing value from pipeline_jobs history -- see
+    discovery/discovery_service.py's backfill_product_keywords()
+    docstring for exactly how. Fills gaps only, safe to run more than
+    once."""
+    from discovery.discovery_service import DiscoveryService
+
+    service = DiscoveryService()
+    result = service.backfill_product_keywords()
+
+    table = Table(show_header=False)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Count", justify="right", style="magenta")
+    table.add_row("product_keywords backfilled", str(len(result["updated_supplier_ids"])))
+    table.add_row("already had product_keywords", str(len(result["already_had_keywords_supplier_ids"])))
+    table.add_row("referenced supplier no longer exists", str(len(result["missing_supplier_ids"])))
+    console.print(table)
+    if result["updated_supplier_ids"]:
+        console.print(f"Backfilled supplier ids: {result['updated_supplier_ids']}")
+
+
 @cli.command("collect")
 @click.option("--supplier-id", type=int, default=None,
               help="Collect against one specific supplier (ignores --pending/--limit/--force).")

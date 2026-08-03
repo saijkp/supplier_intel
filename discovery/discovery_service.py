@@ -191,3 +191,58 @@ class DiscoveryService:
             outcome.new_supplier_ids.append(supplier_id)
             if action == "review_queued":
                 outcome.review_queued_supplier_ids.append(supplier_id)
+
+    def backfill_product_keywords(self) -> dict:
+        """One-off repair for suppliers `discover()` created before this
+        module started writing `product_keywords` on them -- see
+        `_process_candidate`'s own comment on why that field matters.
+        Those suppliers are invisible to
+        storage.repository.search_suppliers_full()'s product-term search
+        unless their own name happens to contain the term.
+
+        Reconstructs the missing value from `pipeline_jobs` history, not
+        from a guess: `api.jobs.run_discovery_job`/`main.py discover`
+        both record each completed run as a job with
+        `query="[discovery] {product}"` and
+        `stats["new_supplier_ids"]` (DiscoveryOutcome.new_supplier_ids)
+        -- a supplier only ever lands in that list if
+        candidate_validator.py already deterministically confirmed
+        `product` on that supplier's own fetched page before the
+        candidate was accepted, so this is exactly as grounded as the
+        live fix in `_process_candidate`.
+
+        Fills gaps only: a supplier that already has product_keywords
+        (e.g. re-collected since, or matched from a marketplace listing)
+        is left untouched, so this is safe to run more than once.
+        """
+        prefix = "[discovery] "
+        updated: list = []
+        already_had_keywords: list = []
+        missing_supplier: list = []
+
+        for job in self.repo.list_pipeline_jobs(limit=100_000):
+            query = job.get("query") or ""
+            if job.get("status") != "completed" or not query.startswith(prefix):
+                continue
+            product = query[len(prefix):]
+            stats = job.get("stats") or {}
+            for supplier_id in stats.get("new_supplier_ids") or []:
+                supplier = self.repo.get_supplier(supplier_id)
+                if supplier is None:
+                    missing_supplier.append(supplier_id)
+                    continue
+                if supplier.get("product_keywords"):
+                    already_had_keywords.append(supplier_id)
+                    continue
+                self.repo.update_supplier_fields_with_history(
+                    supplier_id, {"product_keywords": [product]},
+                    changed_by="discovery_service",
+                    change_reason="backfill: product term this supplier was originally discovered for",
+                )
+                updated.append(supplier_id)
+
+        return {
+            "updated_supplier_ids": updated,
+            "already_had_keywords_supplier_ids": already_had_keywords,
+            "missing_supplier_ids": missing_supplier,
+        }

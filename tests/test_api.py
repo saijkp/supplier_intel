@@ -395,6 +395,36 @@ class TestDiscoveryJobEndpoints:
         assert response.status_code == 401
 
 
+class TestBackfillDiscoveryProductKeywordsEndpoint:
+
+    def test_backfills_supplier_created_by_a_completed_discovery_job(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme Winch Co"})
+        client.repo.create_pipeline_job(job_id="job-1", query="[discovery] winch", options={})
+        client.repo.mark_pipeline_job_completed(
+            "job-1", stats={"new_supplier_ids": [supplier_id], "candidates_found": 1},
+        )
+
+        response = client.post("/discovery/backfill-product-keywords", headers=auth_headers())
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["updated_count"] == 1
+        assert body["updated_supplier_ids"] == [supplier_id]
+        supplier = client.repo.get_supplier(supplier_id)
+        assert supplier["product_keywords"] == ["winch"]
+
+    def test_runs_synchronously_not_through_the_job_queue(self, client):
+        """No BackgroundTasks, no pipeline_jobs row created by this
+        call -- it's a fast, pure DB read/write, not a paid-API job."""
+        response = client.post("/discovery/backfill-product-keywords", headers=auth_headers())
+        assert response.status_code == 200
+        assert "id" not in response.json()
+
+    def test_requires_auth(self, client):
+        response = client.post("/discovery/backfill-product-keywords")
+        assert response.status_code == 401
+
+
 class TestReverifyEndpoint:
 
     def test_creates_a_job_for_an_existing_supplier(self, client):

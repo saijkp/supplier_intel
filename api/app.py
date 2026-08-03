@@ -330,6 +330,33 @@ def create_discovery_job(
 
 
 @app.post(
+    "/discovery/backfill-product-keywords",
+    dependencies=[Depends(require_api_token)],
+)
+def backfill_discovery_product_keywords(
+    repo: SupplierRepository = Depends(get_repo),
+) -> Dict[str, Any]:
+    """One-off repair, safe to call more than once: fills product_keywords
+    on suppliers discovery.DiscoveryService created before it started
+    recording that field, using pipeline_jobs history to reconstruct the
+    product term each was actually discovered for -- never guessed (see
+    DiscoveryService.backfill_product_keywords's own docstring). Pure
+    DB read/write with no external API calls, so unlike every other job
+    endpoint here this runs synchronously instead of through the
+    pipeline_jobs queue."""
+    from discovery.discovery_service import DiscoveryService
+
+    service = DiscoveryService(repo=repo)
+    result = service.backfill_product_keywords()
+    return {
+        "updated_count": len(result["updated_supplier_ids"]),
+        "updated_supplier_ids": result["updated_supplier_ids"],
+        "already_had_keywords_count": len(result["already_had_keywords_supplier_ids"]),
+        "missing_supplier_count": len(result["missing_supplier_ids"]),
+    }
+
+
+@app.post(
     "/suppliers/{supplier_id}/reverify",
     response_model=PipelineJobResponse,
     status_code=202,
