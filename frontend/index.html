@@ -9,17 +9,43 @@
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{
-  /* Galvanised steel, drafting paper, safety orange — the materials of the subject */
-  --steel-900:#171a1d;
-  --steel-700:#3a4149;
-  --steel-500:#6b747d;
-  --steel-300:#a8b0b7;
-  --rule:#ccd3d8;
-  --rule-soft:#e2e7ea;
-  --paper:#eef1f3;
+  /* Blue and white. --steel-* keep their old names (avoids re-touching
+     every usage below) but are now a cool slate-blue neutral scale,
+     not warm grey. */
+  --steel-900:#0f1b2d;
+  --steel-700:#334862;
+  --steel-500:#5c7593;
+  --steel-300:#a9bdd4;
+  --rule:#d3e0ee;
+  --rule-soft:#e7eef7;
+  --paper:#f4f8fd;
   --surface:#ffffff;
-  --orange:#e8501e;
-  --orange-dark:#c43f13;
+
+  /* Brand/primary -- true "call to action" blue. Kept under the old
+     --orange/--orange-dark names deliberately: every *brand* usage
+     below (top bar, primary buttons, active nav, focus ring) already
+     points at these two variables, so repointing the values is enough.
+     Anything that was actually a WARNING/ERROR/NEGATIVE signal wearing
+     orange (failed status, "confirmed trader", risks, the disconnected
+     dot) was moved to --danger below instead, on purpose -- a failed
+     job must never look like the same colour as "click here". */
+  --orange:#2563eb;
+  --orange-dark:#1d4ed8;
+  --brand-bg:#eaf1fd;
+
+  /* Genuine warnings/errors/negative signals -- kept a warm colour
+     deliberately, so it never gets lost against an otherwise all-blue
+     interface. */
+  --danger:#c0311a;
+  --danger-dark:#9c2513;
+  --danger-bg:#fdece8;
+
+  /* The Commercial score's own accent -- was orange, now needs a third
+     colour distinct from brand blue (Technical) and AI purple (below),
+     so three scores on one card still read as three different
+     questions, not one blended number. */
+  --gold:#a1690f;
+  --gold-bg:#faf1de;
 
   /* Evidence tiers. These are load-bearing, not decorative: they encode
      how much a claim can actually be trusted. */
@@ -33,14 +59,13 @@
   --tier-unknown-bg:#eceef0;
 
   /* AI cross-check assessment — a synthesis across sources, deliberately
-     a distinct colour from both Technical (steel/neutral) and Commercial
-     (orange) scores, since it's answering a different question: not
-     "how strong is this listing" but "how much do independent sources
-     corroborate it." */
+     a distinct colour from Technical (brand blue), Commercial (gold),
+     since it's answering a different question: not "how strong is this
+     listing" but "how much do independent sources corroborate it." */
   --ai:#6d4fb0;
   --ai-bg:#f2eefa;
 
-  --shadow:0 1px 2px rgba(23,26,29,.06),0 4px 12px rgba(23,26,29,.04);
+  --shadow:0 1px 3px rgba(15,27,45,.07),0 6px 20px rgba(15,27,45,.06);
 }
 
 *{box-sizing:border-box;margin:0;padding:0}
@@ -69,7 +94,7 @@ a{color:var(--tier-stated)}
 .brand-mark{
   font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:12px;
   letter-spacing:.14em;background:var(--orange);color:#fff;
-  padding:4px 7px;
+  padding:4px 7px;border-radius:5px;
 }
 .brand-name{
   font-family:'Barlow Condensed',sans-serif;font-weight:700;
@@ -97,7 +122,7 @@ a{color:var(--tier-stated)}
 }
 .dot{width:7px;height:7px;border-radius:50%;background:var(--steel-500);flex:none}
 .dot.ok{background:#3ddc97;box-shadow:0 0 0 3px rgba(61,220,151,.2)}
-.dot.bad{background:var(--orange)}
+.dot.bad{background:var(--danger)}
 .conn button{
   color:var(--steel-300);text-decoration:underline;text-underline-offset:3px;
   font-family:'IBM Plex Mono',monospace;font-size:11px;
@@ -109,7 +134,7 @@ a{color:var(--tier-stated)}
 .split{display:grid;grid-template-columns:296px 1fr;gap:24px;align-items:start}
 @media(max-width:960px){.split{grid-template-columns:1fr}}
 
-.panel{background:var(--surface);border:1px solid var(--rule);box-shadow:var(--shadow)}
+.panel{background:var(--surface);border:1px solid var(--rule);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
 .rail{position:sticky;top:80px}
 @media(max-width:960px){.rail{position:static}}
 
@@ -132,12 +157,12 @@ a{color:var(--tier-stated)}
 }
 .input,.select{
   width:100%;padding:9px 11px;background:var(--surface);
-  border:1px solid var(--rule);border-radius:2px;
+  border:1px solid var(--rule);border-radius:8px;
   font-size:14px;transition:border-color .12s,box-shadow .12s;
 }
 .input:focus,.select:focus{
-  outline:none;border-color:var(--steel-900);
-  box-shadow:0 0 0 3px rgba(23,26,29,.08);
+  outline:none;border-color:var(--orange);
+  box-shadow:0 0 0 3px rgba(37,99,235,.14);
 }
 .input::placeholder{color:var(--steel-300)}
 .hint{font-size:12px;color:var(--steel-500);margin-top:6px;line-height:1.4}
@@ -147,15 +172,16 @@ a{color:var(--tier-stated)}
 
 .btn{
   display:inline-flex;align-items:center;justify-content:center;gap:8px;
-  padding:10px 16px;border-radius:2px;
+  padding:10px 16px;border-radius:8px;
   font-family:'Barlow Condensed',sans-serif;font-weight:600;
   font-size:15px;letter-spacing:.08em;text-transform:uppercase;
-  border:1px solid transparent;transition:background .12s,border-color .12s;
+  border:1px solid transparent;transition:background .12s,border-color .12s,box-shadow .12s,transform .12s;
 }
-.btn-primary{background:var(--orange);color:#fff}
-.btn-primary:hover{background:var(--orange-dark)}
+.btn-primary{background:var(--orange);color:#fff;box-shadow:0 1px 2px rgba(29,78,216,.15),0 4px 10px rgba(29,78,216,.18)}
+.btn-primary:hover{background:var(--orange-dark);transform:translateY(-1px);box-shadow:0 2px 4px rgba(29,78,216,.18),0 8px 16px rgba(29,78,216,.22)}
+.btn-primary:active{transform:translateY(0)}
 .btn-ghost{border-color:var(--rule);color:var(--steel-700);background:var(--surface)}
-.btn-ghost:hover{border-color:var(--steel-900);color:var(--steel-900)}
+.btn-ghost:hover{border-color:var(--orange);color:var(--orange-dark)}
 .btn-block{width:100%}
 .btn:disabled{opacity:.5;cursor:not-allowed}
 .btn-sm{padding:6px 11px;font-size:13px}
@@ -165,12 +191,12 @@ a{color:var(--tier-stated)}
 .chips{display:flex;flex-wrap:wrap;gap:5px}
 .chip{
   font-family:'IBM Plex Mono',monospace;font-size:11px;
-  padding:4px 8px;border:1px solid var(--rule);border-radius:2px;
+  padding:4px 10px;border:1px solid var(--rule);border-radius:999px;
   background:var(--surface);color:var(--steel-700);
-  transition:border-color .12s,background .12s;
+  transition:border-color .12s,background .12s,color .12s;
 }
-.chip:hover{border-color:var(--steel-900)}
-.chip.on{background:var(--steel-900);border-color:var(--steel-900);color:#fff}
+.chip:hover{border-color:var(--orange);color:var(--orange-dark)}
+.chip.on{background:var(--orange);border-color:var(--orange);color:#fff}
 .chip-group-label{
   font-family:'IBM Plex Mono',monospace;font-size:10px;
   letter-spacing:.1em;text-transform:uppercase;color:var(--steel-300);
@@ -182,8 +208,10 @@ a{color:var(--tier-stated)}
 .results{display:flex;flex-direction:column;gap:12px}
 .card{
   background:var(--surface);border:1px solid var(--rule);
-  box-shadow:var(--shadow);
+  border-radius:12px;overflow:hidden;
+  box-shadow:var(--shadow);transition:box-shadow .15s,transform .15s;
 }
+.card:hover{box-shadow:0 2px 6px rgba(15,27,45,.08),0 12px 28px rgba(15,27,45,.09)}
 .card-head{
   display:grid;grid-template-columns:1fr auto;gap:16px;
   padding:14px 16px;border-bottom:1px solid var(--rule-soft);
@@ -205,7 +233,7 @@ a{color:var(--tier-stated)}
 .scores{display:flex;gap:2px;align-self:start}
 .score{
   min-width:74px;padding:7px 10px 8px;border:1px solid var(--rule);
-  background:var(--paper);text-align:right;
+  border-radius:8px;background:var(--paper);text-align:right;
 }
 .score-label{
   font-family:'IBM Plex Mono',monospace;font-size:9px;
@@ -217,17 +245,17 @@ a{color:var(--tier-stated)}
   font-size:26px;line-height:1.1;display:block;font-variant-numeric:tabular-nums;
 }
 .score-val.na{color:var(--steel-300);font-size:20px}
-.score.commercial{border-color:var(--orange);background:#fdf2ee}
+.score.commercial{border-color:var(--gold);background:var(--gold-bg)}
 .score.ai{border-color:var(--ai);background:var(--ai-bg)}
 
 .badges{display:flex;flex-wrap:wrap;gap:5px;padding:10px 16px 0}
 .badge{
   font-family:'IBM Plex Mono',monospace;font-size:10.5px;
-  letter-spacing:.04em;padding:3px 7px;border-radius:2px;
+  letter-spacing:.04em;padding:3px 8px;border-radius:6px;
   border:1px solid;white-space:nowrap;
 }
 .badge.mfr{color:var(--tier-verified);border-color:var(--tier-verified);background:var(--tier-verified-bg)}
-.badge.trader{color:var(--orange-dark);border-color:var(--orange);background:#fdf2ee}
+.badge.trader{color:var(--danger-dark);border-color:var(--danger);background:var(--danger-bg)}
 .badge.neutral{color:var(--steel-700);border-color:var(--rule);background:var(--paper)}
 .badge.warn{color:var(--tier-claimed);border-color:var(--tier-claimed);background:var(--tier-claimed-bg)}
 
@@ -288,7 +316,7 @@ a{color:var(--tier-stated)}
 .section-rule::after{content:"";flex:1;height:1px;background:var(--rule-soft)}
 
 /* ── AI cross-check assessment ─────────────────────────── */
-.ai-block{border:1px solid var(--ai);background:var(--ai-bg);padding:12px;margin-top:12px}
+.ai-block{border:1px solid var(--ai);border-radius:10px;background:var(--ai-bg);padding:12px;margin-top:12px}
 .ai-summary{font-size:14px;line-height:1.5}
 .ai-sublabel{
   font-family:'IBM Plex Mono',monospace;font-size:10px;
@@ -299,7 +327,7 @@ a{color:var(--tier-stated)}
 .ai-list{margin:0;padding:0;list-style:none;font-size:13px;line-height:1.5}
 .ai-list li{padding-left:16px;position:relative;margin-bottom:3px}
 .ai-list.strengths li::before{content:"+";color:var(--tier-verified);position:absolute;left:0;font-weight:700}
-.ai-list.risks li::before{content:"!";color:var(--orange-dark);position:absolute;left:0;font-weight:700}
+.ai-list.risks li::before{content:"!";color:var(--danger-dark);position:absolute;left:0;font-weight:700}
 .ai-meta{
   font-family:'IBM Plex Mono',monospace;font-size:10.5px;
   color:var(--steel-500);margin-top:10px;padding-top:8px;
@@ -307,7 +335,7 @@ a{color:var(--tier-stated)}
 }
 
 /* ── Probability block ─────────────────────────────────── */
-.prob{border:1px solid var(--rule);background:var(--paper);padding:12px;margin-top:12px}
+.prob{border:1px solid var(--rule);border-radius:10px;background:var(--paper);padding:12px;margin-top:12px}
 .prob-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .prob-q{font-weight:600;font-size:14px}
 .prob-num{
@@ -331,7 +359,7 @@ a{color:var(--tier-stated)}
 
 /* ── States ────────────────────────────────────────────── */
 .empty{
-  background:var(--surface);border:1px dashed var(--rule);
+  background:var(--surface);border:1px dashed var(--rule);border-radius:12px;
   padding:56px 24px;text-align:center;
 }
 .empty-title{
@@ -340,7 +368,7 @@ a{color:var(--tier-stated)}
 }
 .empty-text{color:var(--steel-500);max-width:46ch;margin:8px auto 0;font-size:14px}
 .alert{
-  border:1px solid var(--orange);background:#fdf2ee;
+  border:1px solid var(--danger);border-radius:10px;background:var(--danger-bg);
   padding:12px 14px;font-size:14px;margin-bottom:14px;
 }
 .alert-title{font-weight:600;margin-bottom:3px}
@@ -361,19 +389,20 @@ a{color:var(--tier-stated)}
 .tbl .mono{font-family:'IBM Plex Mono',monospace;font-size:12.5px}
 .status{
   font-family:'IBM Plex Mono',monospace;font-size:10.5px;
-  letter-spacing:.06em;text-transform:uppercase;padding:2px 6px;border:1px solid;
+  letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border:1px solid;border-radius:5px;
 }
 .status.queued{color:var(--steel-500);border-color:var(--rule);background:var(--paper)}
 .status.running{color:var(--tier-stated);border-color:var(--tier-stated);background:var(--tier-stated-bg)}
 .status.completed{color:var(--tier-verified);border-color:var(--tier-verified);background:var(--tier-verified-bg)}
-.status.failed{color:var(--orange-dark);border-color:var(--orange);background:#fdf2ee}
+.status.failed{color:var(--danger-dark);border-color:var(--danger);background:var(--danger-bg)}
 
 /* ── Dialog ────────────────────────────────────────────── */
 dialog{
-  border:1px solid var(--steel-900);padding:0;max-width:520px;width:calc(100% - 32px);
-  background:var(--surface);box-shadow:0 24px 60px rgba(23,26,29,.25);
+  border:1px solid var(--rule);border-radius:14px;overflow:hidden;padding:0;
+  max-width:520px;width:calc(100% - 32px);
+  background:var(--surface);box-shadow:0 24px 60px rgba(15,27,45,.28);
 }
-dialog::backdrop{background:rgba(23,26,29,.5)}
+dialog::backdrop{background:rgba(15,27,45,.5)}
 .dlg-head{padding:14px 18px;border-bottom:1px solid var(--rule);background:var(--steel-900);color:#fff}
 .dlg-title{
   font-family:'Barlow Condensed',sans-serif;font-weight:700;
@@ -589,27 +618,49 @@ dialog::backdrop{background:rgba(23,26,29,.5)}
   <!-- ══ DISCOVER (AI Discovery/Collection/Verification) ══ -->
   <section id="view-discover" class="hidden">
     <div class="split">
-      <aside class="panel rail">
-        <div class="panel-head"><h2 class="panel-title">Discover suppliers</h2></div>
-        <div class="panel-body">
-          <div class="field">
-            <label class="label" for="dProduct">Product</label>
-            <input class="input" id="dProduct" placeholder="trailer axle" autocomplete="off">
+      <aside class="rail" style="display:flex;flex-direction:column;gap:16px">
+        <div class="panel">
+          <div class="panel-head"><h2 class="panel-title">Discover suppliers</h2></div>
+          <div class="panel-body">
+            <div class="field">
+              <label class="label" for="dProduct">Product</label>
+              <input class="input" id="dProduct" placeholder="trailer axle" autocomplete="off">
+            </div>
+            <div class="field">
+              <label class="label" for="dCategory">Category</label>
+              <input class="input" id="dCategory" placeholder="Axles & Suspension" autocomplete="off">
+            </div>
+            <div class="field">
+              <label class="label" for="dCountry">Country</label>
+              <input class="input" id="dCountry" placeholder="China" autocomplete="off">
+            </div>
+            <div class="field">
+              <label class="label" for="dLimit">Max candidates</label>
+              <input class="input" id="dLimit" type="number" min="1" max="50" placeholder="20">
+            </div>
+            <button class="btn btn-primary btn-block" id="btnDiscover">Search the open web</button>
+            <p class="hint" style="margin-top:10px">AI-grounded discovery, not a marketplace scrape — every result traces to a real search hit and a real fetched website that corroborates it. Never invents a company. Costs a real search plus an AI read per candidate — start small.</p>
           </div>
-          <div class="field">
-            <label class="label" for="dCategory">Category</label>
-            <input class="input" id="dCategory" placeholder="Axles & Suspension" autocomplete="off">
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h2 class="panel-title">Bulk enrichment</h2></div>
+          <div class="panel-body">
+            <p class="hint" style="margin-top:0">Runs across every EXISTING supplier that hasn't been done yet, not just new discoveries — the way to fill in AI Confidence/summary and site collection for suppliers you already have.</p>
+            <div class="field">
+              <label class="label" for="bLimit">Suppliers per run</label>
+              <input class="input" id="bLimit" type="number" min="1" max="200" placeholder="20">
+            </div>
+            <div class="field">
+              <label class="check">
+                <input type="checkbox" id="bForce">
+                <span>Redo suppliers already processed</span>
+              </label>
+            </div>
+            <button class="btn btn-ghost btn-block" id="btnBulkCollect">Collect all pending</button>
+            <button class="btn btn-ghost btn-block" id="btnBulkVerify" style="margin-top:8px">Verify all pending (AI)</button>
+            <p class="hint" style="margin-top:10px">Each supplier costs a real headless-browser visit (collect) or a real OpenAI call (verify) — start with a small "suppliers per run" number.</p>
           </div>
-          <div class="field">
-            <label class="label" for="dCountry">Country</label>
-            <input class="input" id="dCountry" placeholder="China" autocomplete="off">
-          </div>
-          <div class="field">
-            <label class="label" for="dLimit">Max candidates</label>
-            <input class="input" id="dLimit" type="number" min="1" max="50" placeholder="20">
-          </div>
-          <button class="btn btn-primary btn-block" id="btnDiscover">Search the open web</button>
-          <p class="hint" style="margin-top:10px">AI-grounded discovery, not a marketplace scrape — every result traces to a real search hit and a real fetched website that corroborates it. Never invents a company. Costs a real search plus an AI read per candidate — start small.</p>
         </div>
       </aside>
 
@@ -1377,6 +1428,36 @@ $("btnDiscover").addEventListener("click", async () => {
 });
 
 $("btnRefreshDiscoverJobs").addEventListener("click", loadDiscoverJobs);
+
+/* ═══ Bulk enrichment ═══════════════════════════════════════
+   Same collection.jobs/verification.jobs endpoints the per-card
+   buttons use, just with pending:true instead of a single supplier_id
+   -- the existing backend batch mode (get_suppliers_needing_collection/
+   get_suppliers_needing_ai_verification) already skips anything
+   already processed unless "Redo suppliers already processed" is
+   checked, so it's always safe to click again. */
+async function triggerBulkJob(btn, path, label) {
+  const original = btn.textContent;
+  const limit = $("bLimit").value ? Number($("bLimit").value) : 20;
+  const force = $("bForce").checked;
+  btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Queuing`;
+  try {
+    await api(path, { method: "POST", body: JSON.stringify({ pending: true, limit, force }) });
+    alertBox($("discoverAlert"), 0);
+    btn.textContent = "Queued ✓";
+    loadDiscoverJobs();
+  } catch (err) {
+    btn.textContent = original;
+    explain(err, $("discoverAlert"));
+  } finally {
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
+  }
+}
+
+$("btnBulkCollect").addEventListener("click", () =>
+  triggerBulkJob($("btnBulkCollect"), "/collection/jobs", "Collect all pending"));
+$("btnBulkVerify").addEventListener("click", () =>
+  triggerBulkJob($("btnBulkVerify"), "/verification/jobs", "Verify all pending"));
 
 $("btnExport").addEventListener("click", async (e) => {
   e.preventDefault();
