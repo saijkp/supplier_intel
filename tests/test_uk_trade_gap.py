@@ -277,7 +277,7 @@ class TestShipmentRecordsMigrationV4:
         then confirm upgrading preserves that row AND lifts the
         constraint so 'volza' rows can be inserted afterwards."""
         import sqlite3
-        from storage.database import SCHEMA_SQL, connection_scope, initialise_schema, get_schema_version
+        from storage.database import SCHEMA_SQL, SCHEMA_VERSION, connection_scope, initialise_schema, get_schema_version
 
         # Reconstruct the pre-v4 schema: same as current SCHEMA_SQL but
         # with the original restrictive CHECK constraint restored.
@@ -322,7 +322,7 @@ class TestShipmentRecordsMigrationV4:
                 (supplier_id,),
             )
 
-        assert get_schema_version(db_path) == 10  # latest migration at time of writing; bumps as new migrations are added (see storage/database.py MIGRATIONS)
+        assert get_schema_version(db_path) == SCHEMA_VERSION
 
 
 class TestPipelineVolzaIntegration:

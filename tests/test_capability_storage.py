@@ -45,8 +45,8 @@ def _finding(**overrides):
 
 class TestSchemaVersion:
 
-    def test_v5_is_the_current_version(self):
-        assert SCHEMA_VERSION == 10
+    def test_current_schema_version(self):
+        assert SCHEMA_VERSION == 11
 
     def test_fresh_database_has_supplier_capabilities_table(self, db_path):
         conn = sqlite3.connect(str(db_path))
@@ -80,8 +80,8 @@ class TestSchemaVersion:
         conn.close()
 
         initialise_schema(db_path)
-        assert get_schema_version(db_path) == 10
-        assert 10 in MIGRATIONS
+        assert get_schema_version(db_path) == SCHEMA_VERSION
+        assert 5 in MIGRATIONS
 
 
 class TestAddCapabilityFinding:

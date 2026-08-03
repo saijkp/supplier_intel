@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 # ═══════════════════════════════════════════════════════════
@@ -175,10 +175,26 @@ CREATE TABLE IF NOT EXISTS suppliers (
     source_count             INTEGER NOT NULL DEFAULT 1,
     first_seen                TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_updated               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_verified               TIMESTAMP,
+    last_verified               TIMESTAMP,     -- set by verification_ai.VerificationService.verify() (v11) -- declared since Phase 1 but never written until now
     notes                        TEXT,
     flagged                      BOOLEAN NOT NULL DEFAULT 0,
-    flag_reason                  TEXT
+    flag_reason                  TEXT,
+
+    -- AI VERIFICATION (v11) -- see verification_ai/, deliberately separate from
+    -- the rule-based composite_score/manufacturer_confidence above (never blended,
+    -- same precedent as commercial_compatibility_score elsewhere in this codebase)
+    ai_confidence_score          INTEGER,       -- 0-100, validated in storage/repository.py's write path, not a DB CHECK -- SQLite's ALTER TABLE ADD COLUMN can't add one consistently with a fresh-DB CREATE TABLE, so this stays consistent between both paths deliberately (see MIGRATIONS[11])
+    ai_confidence_assessed_at    TIMESTAMP,
+    ai_summary                   TEXT,
+    ai_strengths                 TEXT,          -- JSON array
+    ai_risks                     TEXT,          -- JSON array
+    ai_suitable_customer_types   TEXT,          -- JSON array
+    ai_verification_model        TEXT,          -- e.g. "gpt-4o-mini" -- traceability
+
+    -- DISCOVERY / COLLECTION PROVENANCE (v11)
+    discovery_source              TEXT,         -- 'discovery_service' | NULL (legacy/unset)
+    collection_last_run_at        TIMESTAMP,
+    collection_status             TEXT          -- 'never_run' | 'success' | 'partial' | 'failed'
 );
 
 CREATE INDEX IF NOT EXISTS idx_sup_domain ON suppliers(domain);
@@ -388,6 +404,75 @@ CREATE TABLE IF NOT EXISTS source_query_runs (
 
 CREATE INDEX IF NOT EXISTS idx_sqr_source_query ON source_query_runs(source, query);
 CREATE INDEX IF NOT EXISTS idx_sqr_run_at ON source_query_runs(run_at);
+
+
+-- ═══════════════════════════════════════
+-- AI DISCOVERY/COLLECTION/VERIFICATION PLATFORM (v11)
+-- Append-only history/evidence tables backing verification_ai/,
+-- collection/, and discovery/ -- see storage/database.py's MIGRATIONS[11]
+-- description and CLAUDE.md for the overall architecture. raw_source_data
+-- (above) is reused as-is for discovery evidence (source='discovery');
+-- these four tables are the genuinely new schema surface.
+-- ═══════════════════════════════════════
+CREATE TABLE IF NOT EXISTS verification_history (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id         INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    verification_type   TEXT NOT NULL,   -- 'ai_cross_check' | 'manufacturer_assessment' | 'facility_address' | 'linkedin' | 'uscc' -- deliberately unconstrained, same reasoning as v10's procurement_outcomes.outcome
+    confidence_score    INTEGER,
+    verdict              TEXT,
+    summary               TEXT,
+    evidence_json         TEXT,           -- JSON: sub-check results/citations for this run
+    model_used             TEXT,
+    run_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_vh_supplier ON verification_history(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_vh_type ON verification_history(verification_type);
+
+
+CREATE TABLE IF NOT EXISTS supplier_change_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id     INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    field_name      TEXT NOT NULL,
+    old_value       TEXT,
+    new_value       TEXT,
+    changed_by      TEXT NOT NULL,   -- 'collection_service' | 'verification_service' | 'discovery_service' | 'merge' | 'manual'
+    change_reason   TEXT,
+    changed_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_scl_supplier ON supplier_change_log(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_scl_field ON supplier_change_log(field_name);
+
+
+CREATE TABLE IF NOT EXISTS collection_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id     INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    status          TEXT NOT NULL CHECK (status IN ('success', 'partial', 'failed')),
+    pages_visited   INTEGER NOT NULL DEFAULT 0,
+    artifacts_dir   TEXT,             -- path relative to config.settings.COLLECTION_ARTIFACTS_DIR
+    proxy_provider  TEXT,
+    error_message   TEXT,
+    started_at      TIMESTAMP,
+    completed_at    TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_cr_supplier ON collection_runs(supplier_id);
+
+
+CREATE TABLE IF NOT EXISTS discovery_runs (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_query           TEXT NOT NULL,
+    category                TEXT,
+    country                 TEXT,
+    candidates_found        INTEGER NOT NULL DEFAULT 0,
+    candidates_validated    INTEGER NOT NULL DEFAULT 0,
+    candidates_rejected     INTEGER NOT NULL DEFAULT 0,
+    candidates_duplicate    INTEGER NOT NULL DEFAULT 0,  -- matched an existing supplier via SupplierMatcher
+    run_at                  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_dr_query ON discovery_runs(product_query);
 
 
 -- ═══════════════════════════════════════
@@ -654,6 +739,86 @@ MIGRATIONS: dict[int, dict] = {
             "CREATE INDEX IF NOT EXISTS idx_outcomes_outcome ON procurement_outcomes(outcome)",
         ],
     },
+    11: {
+        "description": (
+            "AI Discovery/Collection/Verification platform: ai_confidence_score and "
+            "related columns on suppliers (deliberately separate from composite_score -- "
+            "see verification_ai/), discovery/collection provenance columns, and four new "
+            "history/evidence tables (verification_history, supplier_change_log, "
+            "collection_runs, discovery_runs)"
+        ),
+        "columns": [
+            ("suppliers", "ai_confidence_score", "INTEGER"),
+            ("suppliers", "ai_confidence_assessed_at", "TIMESTAMP"),
+            ("suppliers", "ai_summary", "TEXT"),
+            ("suppliers", "ai_strengths", "TEXT"),
+            ("suppliers", "ai_risks", "TEXT"),
+            ("suppliers", "ai_suitable_customer_types", "TEXT"),
+            ("suppliers", "ai_verification_model", "TEXT"),
+            ("suppliers", "discovery_source", "TEXT"),
+            ("suppliers", "collection_last_run_at", "TIMESTAMP"),
+            ("suppliers", "collection_status", "TEXT"),
+        ],
+        "statements": [
+            """
+            CREATE TABLE IF NOT EXISTS verification_history (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_id         INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+                verification_type   TEXT NOT NULL,
+                confidence_score    INTEGER,
+                verdict             TEXT,
+                summary             TEXT,
+                evidence_json       TEXT,
+                model_used          TEXT,
+                run_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_vh_supplier ON verification_history(supplier_id)",
+            "CREATE INDEX IF NOT EXISTS idx_vh_type ON verification_history(verification_type)",
+            """
+            CREATE TABLE IF NOT EXISTS supplier_change_log (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_id     INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+                field_name      TEXT NOT NULL,
+                old_value       TEXT,
+                new_value       TEXT,
+                changed_by      TEXT NOT NULL,
+                change_reason   TEXT,
+                changed_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_scl_supplier ON supplier_change_log(supplier_id)",
+            "CREATE INDEX IF NOT EXISTS idx_scl_field ON supplier_change_log(field_name)",
+            """
+            CREATE TABLE IF NOT EXISTS collection_runs (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_id     INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+                status          TEXT NOT NULL CHECK (status IN ('success', 'partial', 'failed')),
+                pages_visited   INTEGER NOT NULL DEFAULT 0,
+                artifacts_dir   TEXT,
+                proxy_provider  TEXT,
+                error_message   TEXT,
+                started_at      TIMESTAMP,
+                completed_at    TIMESTAMP
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_cr_supplier ON collection_runs(supplier_id)",
+            """
+            CREATE TABLE IF NOT EXISTS discovery_runs (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_query           TEXT NOT NULL,
+                category                TEXT,
+                country                 TEXT,
+                candidates_found        INTEGER NOT NULL DEFAULT 0,
+                candidates_validated    INTEGER NOT NULL DEFAULT 0,
+                candidates_rejected     INTEGER NOT NULL DEFAULT 0,
+                candidates_duplicate    INTEGER NOT NULL DEFAULT 0,
+                run_at                  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_dr_query ON discovery_runs(product_query)",
+        ],
+    },
 }
 
 
@@ -797,6 +962,10 @@ def table_counts(db_path: Path | str | None = None) -> dict[str, int]:
         "pipeline_jobs",
         "buyer_profiles",
         "procurement_outcomes",
+        "verification_history",
+        "supplier_change_log",
+        "collection_runs",
+        "discovery_runs",
         "schema_migrations",
     )
     counts: dict[str, int] = {}

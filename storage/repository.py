@@ -55,6 +55,9 @@ SUPPLIER_JSON_FIELDS: Sequence[str] = (
     "currencies_accepted",
     "manufacturer_signals",
     "factory_photo_urls",
+    "ai_strengths",
+    "ai_risks",
+    "ai_suitable_customer_types",
 )
 
 # All columns on `suppliers` that may be set directly via
@@ -85,6 +88,9 @@ SUPPLIER_WRITABLE_FIELDS: Sequence[str] = (
     "factory_photo_assessed_at", "capability_extracted_at", "website_search_attempted_at",
     "facility_address_verified", "facility_address_verification_source", "facility_address_verified_at",
     "linkedin_checked_at", "contact_form_url",
+    "ai_confidence_score", "ai_confidence_assessed_at", "ai_summary", "ai_strengths",
+    "ai_risks", "ai_suitable_customer_types", "ai_verification_model",
+    "discovery_source", "collection_last_run_at", "collection_status", "last_verified",
 )
 
 SCORE_FIELDS: Sequence[str] = (
@@ -541,6 +547,61 @@ class SupplierRepository:
                 f"UPDATE suppliers SET {set_clause} WHERE id = ?",
                 [*payload.values(), supplier_id],
             )
+
+    def update_supplier_fields_with_history(
+        self, supplier_id: int, fields: Dict[str, Any], *, changed_by: str, change_reason: Optional[str] = None,
+    ) -> List[tuple]:
+        """Same authoritative-overwrite semantics as `update_supplier_fields`,
+        but diffs against the current row first and writes one
+        `supplier_change_log` row per field that actually changed --
+        the mechanism behind "update existing records when reverified,
+        never blindly overwrite" for verification_ai/ and collection/.
+        Calls the existing `update_supplier_fields` for the actual
+        write rather than duplicating the SQL. `changed_by` should be
+        one of 'collection_service' | 'verification_service' |
+        'discovery_service' | 'merge' | 'manual', matching
+        supplier_change_log.changed_by's documented (but deliberately
+        unconstrained -- see MIGRATIONS[11]) convention.
+
+        Returns the list of (field_name, old_value, new_value) tuples
+        actually written to the change log, for callers that want to
+        report what changed without a second query.
+        """
+        existing = self.get_supplier(supplier_id)
+        if existing is None:
+            raise ValueError(f"No supplier with id={supplier_id} to update")
+
+        payload = self._prepare_supplier_payload(fields)
+        changes: List[tuple] = []
+        for field, new_value in payload.items():
+            old_value = existing.get(field)
+            old_comparable = json.dumps(old_value, default=_json_default) if isinstance(old_value, (list, dict)) else old_value
+            if old_comparable != new_value:
+                changes.append((field, old_comparable, new_value))
+
+        self.update_supplier_fields(supplier_id, fields)
+
+        if changes:
+            with connection_scope(self.db_path) as conn:
+                conn.executemany(
+                    "INSERT INTO supplier_change_log "
+                    "(supplier_id, field_name, old_value, new_value, changed_by, change_reason) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    [
+                        (supplier_id, field, old_val, new_val, changed_by, change_reason)
+                        for field, old_val, new_val in changes
+                    ],
+                )
+        return changes
+
+    def get_supplier_change_log(self, supplier_id: int, limit: int = 200) -> List[Dict[str, Any]]:
+        with connection_scope(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM supplier_change_log WHERE supplier_id = ? "
+                "ORDER BY changed_at DESC, id DESC LIMIT ?",
+                (supplier_id, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def delete_supplier(self, supplier_id: int) -> None:
         """Hard delete. Cascades to shipment_records and dedup_candidates
@@ -1514,3 +1575,142 @@ class SupplierRepository:
                 params,
             ).fetchall()
             return [dict(row) for row in rows]
+
+    # ═════════════════════════════════════════════════════
+    # AI DISCOVERY / COLLECTION / VERIFICATION PLATFORM (v11)
+    # See verification_ai/, collection/, discovery/ and this module's
+    # own docstring pointer in CLAUDE.md for the overall architecture.
+    # ═════════════════════════════════════════════════════
+
+    def get_suppliers_needing_collection(
+        self, limit: int = 1000, force: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Suppliers with a known domain that Collection Service hasn't
+        run against yet. Mirrors get_suppliers_needing_capability_extraction's
+        never-attempted-vs-attempted timestamp-gated pattern exactly --
+        `collection_status IS NULL` means "never run," not "ran and
+        found nothing." This is also what makes augmenting the ~1,400
+        existing suppliers (all already have a domain, none have ever
+        had collection_status set) work with no special-casing."""
+        with connection_scope(self.db_path) as conn:
+            if force:
+                rows = conn.execute(
+                    "SELECT * FROM suppliers WHERE domain IS NOT NULL AND domain != '' LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM suppliers
+                    WHERE domain IS NOT NULL AND domain != ''
+                    AND collection_status IS NULL
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            return _rows_to_dicts(rows, SUPPLIER_JSON_FIELDS)
+
+    def get_suppliers_needing_ai_verification(
+        self, limit: int = 1000, force: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Suppliers VerificationService.verify_pending() hasn't assessed
+        yet -- gated on ai_confidence_assessed_at, same discipline as
+        every other "needing_X" method in this file."""
+        with connection_scope(self.db_path) as conn:
+            if force:
+                rows = conn.execute("SELECT * FROM suppliers LIMIT ?", (limit,)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM suppliers WHERE ai_confidence_assessed_at IS NULL LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return _rows_to_dicts(rows, SUPPLIER_JSON_FIELDS)
+
+    def record_collection_run(
+        self, *, supplier_id: int, status: str, pages_visited: int = 0,
+        artifacts_dir: Optional[str] = None, proxy_provider: Optional[str] = None,
+        error_message: Optional[str] = None, started_at: Optional[str] = None,
+        completed_at: Optional[str] = None,
+    ) -> int:
+        """Writes one collection_runs row and updates the supplier's own
+        collection_last_run_at/collection_status summary fields in the
+        same call -- callers never need to remember to do both."""
+        with connection_scope(self.db_path) as conn:
+            cur = conn.execute(
+                "INSERT INTO collection_runs "
+                "(supplier_id, status, pages_visited, artifacts_dir, proxy_provider, "
+                "error_message, started_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (supplier_id, status, pages_visited, artifacts_dir, proxy_provider,
+                 error_message, started_at, completed_at),
+            )
+            run_id = cur.lastrowid
+        self.update_supplier_fields(supplier_id, {
+            "collection_status": status,
+            "collection_last_run_at": completed_at or datetime.now(timezone.utc).isoformat(),
+        })
+        return run_id
+
+    def get_collection_runs(self, supplier_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+        with connection_scope(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM collection_runs WHERE supplier_id = ? "
+                "ORDER BY completed_at DESC, id DESC LIMIT ?",
+                (supplier_id, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def record_verification_history(
+        self, *, supplier_id: int, verification_type: str, confidence_score: Optional[int] = None,
+        verdict: Optional[str] = None, summary: Optional[str] = None,
+        evidence: Optional[Any] = None, model_used: Optional[str] = None,
+    ) -> int:
+        """One row per verification RUN (not per field, unlike
+        supplier_change_log) -- written even when nothing changed, since
+        "we checked and confirmed everything's still the same" is
+        itself a useful audit fact. `evidence` is JSON-encoded if not
+        already a string."""
+        evidence_json = evidence
+        if evidence is not None and not isinstance(evidence, str):
+            evidence_json = json.dumps(evidence, default=_json_default)
+        with connection_scope(self.db_path) as conn:
+            cur = conn.execute(
+                "INSERT INTO verification_history "
+                "(supplier_id, verification_type, confidence_score, verdict, summary, "
+                "evidence_json, model_used) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (supplier_id, verification_type, confidence_score, verdict, summary,
+                 evidence_json, model_used),
+            )
+            return cur.lastrowid
+
+    def get_verification_history(self, supplier_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+        with connection_scope(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM verification_history WHERE supplier_id = ? "
+                "ORDER BY run_at DESC, id DESC LIMIT ?",
+                (supplier_id, limit),
+            ).fetchall()
+            results = []
+            for row in rows:
+                d = dict(row)
+                if d.get("evidence_json"):
+                    try:
+                        d["evidence_json"] = json.loads(d["evidence_json"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                results.append(d)
+            return results
+
+    def record_discovery_run(
+        self, *, product_query: str, category: Optional[str] = None, country: Optional[str] = None,
+        candidates_found: int = 0, candidates_validated: int = 0,
+        candidates_rejected: int = 0, candidates_duplicate: int = 0,
+    ) -> int:
+        with connection_scope(self.db_path) as conn:
+            cur = conn.execute(
+                "INSERT INTO discovery_runs "
+                "(product_query, category, country, candidates_found, candidates_validated, "
+                "candidates_rejected, candidates_duplicate) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (product_query, category, country, candidates_found, candidates_validated,
+                 candidates_rejected, candidates_duplicate),
+            )
+            return cur.lastrowid

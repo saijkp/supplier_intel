@@ -79,7 +79,80 @@ class TestSchemaCreation:
         assert counts["shipment_records"] == 0
         assert counts["dedup_candidates"] == 0
         assert counts["search_log"] == 0
-        assert counts["schema_migrations"] == 10  # v1-v9 as noted previously + v10 buyer_profiles/procurement_outcomes
+        assert counts["schema_migrations"] == 11  # v1-v10 as noted previously + v11 AI discovery/collection/verification platform
+
+    def test_v11_columns_and_tables_exist_on_fresh_db(self, db_path):
+        with connection_scope(db_path) as conn:
+            supplier_cols = {row["name"] for row in conn.execute("PRAGMA table_info(suppliers)").fetchall()}
+            table_names = {
+                row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+        for col in (
+            "ai_confidence_score", "ai_confidence_assessed_at", "ai_summary", "ai_strengths",
+            "ai_risks", "ai_suitable_customer_types", "ai_verification_model",
+            "discovery_source", "collection_last_run_at", "collection_status",
+        ):
+            assert col in supplier_cols
+        for table in ("verification_history", "supplier_change_log", "collection_runs", "discovery_runs"):
+            assert table in table_names
+
+    def test_v11_migration_upgrades_a_real_pre_v11_database(self, tmp_path):
+        """The production Railway DB is at v10 right now -- this proves
+        initialise_schema() safely ALTERs an existing suppliers table
+        (not just a fresh CREATE) to add the v11 columns, which
+        test_v11_columns_and_tables_exist_on_fresh_db alone can't prove
+        since a fresh DB gets everything from SCHEMA_SQL directly.
+        Uses a minimal standalone old-shape suppliers table (not derived
+        from the current SCHEMA_SQL) -- SQLite's ALTER TABLE DROP COLUMN
+        chokes on the inline SQL comments in the real schema string, and
+        the exact historical column set doesn't matter for what this
+        test proves (that missing columns get added, not what else is
+        already there)."""
+        from storage.database import MIGRATIONS
+
+        old_db_path = tmp_path / "pre_v11.db"
+        conn = sqlite3.connect(str(old_db_path))
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """
+            CREATE TABLE suppliers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                canonical_name TEXT NOT NULL,
+                domain TEXT UNIQUE,
+                country TEXT,
+                uscc TEXT,
+                is_manufacturer BOOLEAN,
+                e_mark_certified BOOLEAN NOT NULL DEFAULT 0,
+                composite_score INTEGER NOT NULL DEFAULT 0,
+                recommendation TEXT NOT NULL DEFAULT 'unverified',
+                last_verified TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, "
+            "applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, description TEXT)"
+        )
+        remaining_cols = {row["name"] for row in conn.execute("PRAGMA table_info(suppliers)").fetchall()}
+        assert "ai_confidence_score" not in remaining_cols
+        for version in range(1, 11):
+            desc = MIGRATIONS.get(version, {}).get("description", f"migration {version}")
+            conn.execute("INSERT INTO schema_migrations (version, description) VALUES (?, ?)", (version, desc))
+        conn.commit()
+        conn.close()
+
+        initialise_schema(old_db_path)
+
+        assert get_schema_version(old_db_path) == SCHEMA_VERSION
+        with connection_scope(old_db_path) as conn:
+            supplier_cols = {row["name"] for row in conn.execute("PRAGMA table_info(suppliers)").fetchall()}
+            table_names = {
+                row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+        assert "ai_confidence_score" in supplier_cols
+        assert "collection_status" in supplier_cols
+        for table in ("verification_history", "supplier_change_log", "collection_runs", "discovery_runs"):
+            assert table in table_names
 
     def test_foreign_keys_enforced(self, db_path):
         with connection_scope(db_path) as conn:
@@ -280,6 +353,33 @@ class TestSupplierGoldenRecords:
         supplier = repo.get_supplier(supplier_id)
         assert supplier["flagged"] == 1
         assert supplier["flag_reason"] == "Duplicate ABN"
+
+    def test_update_supplier_fields_with_history_records_a_real_diff(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Foo Co", "primary_phone": "+44 20 1234 5678"})
+        changes = repo.update_supplier_fields_with_history(
+            supplier_id, {"primary_phone": "+44 20 9999 0000"},
+            changed_by="verification_service", change_reason="reverify found a different number",
+        )
+        assert changes == [("primary_phone", "+44 20 1234 5678", "+44 20 9999 0000")]
+
+        log = repo.get_supplier_change_log(supplier_id)
+        assert len(log) == 1
+        assert log[0]["field_name"] == "primary_phone"
+        assert log[0]["old_value"] == "+44 20 1234 5678"
+        assert log[0]["new_value"] == "+44 20 9999 0000"
+        assert log[0]["changed_by"] == "verification_service"
+
+    def test_update_supplier_fields_with_history_records_nothing_when_value_unchanged(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Foo Co", "primary_phone": "+44 20 1234 5678"})
+        changes = repo.update_supplier_fields_with_history(
+            supplier_id, {"primary_phone": "+44 20 1234 5678"}, changed_by="verification_service",
+        )
+        assert changes == []
+        assert repo.get_supplier_change_log(supplier_id) == []
+
+    def test_update_supplier_fields_with_history_raises_on_missing_supplier(self, repo):
+        with pytest.raises(ValueError):
+            repo.update_supplier_fields_with_history(999999, {"primary_phone": "x"}, changed_by="manual")
 
     def test_delete_supplier(self, repo):
         supplier_id = repo.create_golden_record({"canonical_name": "Foo Co"})
