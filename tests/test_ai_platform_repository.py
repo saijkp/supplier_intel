@@ -85,6 +85,39 @@ class TestGetSuppliersNeedingAiVerification:
         assert [s["id"] for s in results] == [supplier_id]
 
 
+class TestGetSuppliersNeedingReverification:
+
+    def test_never_verified_supplier_is_included(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme"})
+        results = repo.get_suppliers_needing_reverification(older_than_days=30)
+        assert [s["id"] for s in results] == [supplier_id]
+
+    def test_recently_verified_supplier_is_excluded(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme"})
+        repo.update_supplier_fields(supplier_id, {"last_verified": "2026-08-01T00:00:00+00:00"})
+        results = repo.get_suppliers_needing_reverification(older_than_days=30)
+        assert results == []
+
+    def test_stale_verified_supplier_is_included(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme"})
+        repo.update_supplier_fields(supplier_id, {"last_verified": "2020-01-01T00:00:00+00:00"})
+        results = repo.get_suppliers_needing_reverification(older_than_days=30)
+        assert [s["id"] for s in results] == [supplier_id]
+
+    def test_ordering_never_verified_first_then_oldest(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        stale_id = repo.create_golden_record({"canonical_name": "Stale Co"})
+        repo.update_supplier_fields(stale_id, {"last_verified": "2020-01-01T00:00:00+00:00"})
+        never_id = repo.create_golden_record({"canonical_name": "Never Co"})
+
+        results = repo.get_suppliers_needing_reverification(older_than_days=30)
+
+        assert [s["id"] for s in results] == [never_id, stale_id]
+
+
 class TestCollectionRuns:
 
     def test_record_collection_run_updates_supplier_summary_fields(self, tmp_path):

@@ -310,3 +310,101 @@ class TestRunCollectionJob:
         job = repo.get_pipeline_job("job23")
         assert job["status"] == "failed"
         assert "browser crashed" in job["error"]
+
+
+class FakeVerificationService:
+    last_instance = None
+
+    def __init__(self, repo=None):
+        self.repo = repo
+        self.last_verify_call = None
+        self.last_verify_pending_call = None
+        self.last_reverify_call = None
+        FakeVerificationService.last_instance = self
+
+    def verify(self, supplier_id):
+        self.last_verify_call = supplier_id
+        return {"supplier_id": supplier_id, "confidence_score": 75, "verdict": "corroborated",
+                "inconsistencies": [], "narrative_generated": True}
+
+    def verify_pending(self, limit=20, force=False):
+        self.last_verify_pending_call = {"limit": limit, "force": force}
+        return {"attempted": 3, "succeeded": 3, "failed": 0, "total_eligible": 3}
+
+    def reverify(self, supplier_id, collection_service=None):
+        self.last_reverify_call = supplier_id
+        return {
+            "collection": {"supplier_id": supplier_id, "status": "success", "pages_visited": 2},
+            "verification": {"supplier_id": supplier_id, "confidence_score": 80, "verdict": "corroborated",
+                              "inconsistencies": [], "narrative_generated": True},
+        }
+
+
+class FailingFakeVerificationService(FakeVerificationService):
+    def verify(self, supplier_id):
+        raise RuntimeError("LLM call failed")
+
+    def verify_pending(self, limit=20, force=False):
+        raise RuntimeError("LLM call failed")
+
+    def reverify(self, supplier_id, collection_service=None):
+        raise RuntimeError("browser crashed")
+
+
+class TestRunVerificationJob:
+
+    def test_supplier_id_dispatches_to_verify(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "VerificationService", FakeVerificationService)
+
+        repo.create_pipeline_job(job_id="job30", query="[verification] supplier #5", options={"supplier_id": 5})
+        jobs_module.run_verification_job("job30", {"supplier_id": 5, "pending": False, "limit": 20, "force": False})
+
+        assert FakeVerificationService.last_instance.last_verify_call == 5
+        job = repo.get_pipeline_job("job30")
+        assert job["status"] == "completed"
+        assert job["stats"]["confidence_score"] == 75
+
+    def test_pending_dispatches_to_verify_pending(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "VerificationService", FakeVerificationService)
+
+        repo.create_pipeline_job(job_id="job31", query="[verification] pending batch",
+                                  options={"pending": True, "limit": 10, "force": False})
+        jobs_module.run_verification_job("job31", {"supplier_id": None, "pending": True, "limit": 10, "force": False})
+
+        assert FakeVerificationService.last_instance.last_verify_pending_call == {"limit": 10, "force": False}
+        job = repo.get_pipeline_job("job31")
+        assert job["stats"]["attempted"] == 3
+
+    def test_failing_job_marks_failed_not_raised(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "VerificationService", FailingFakeVerificationService)
+
+        repo.create_pipeline_job(job_id="job32", query="x", options={"supplier_id": 5})
+        jobs_module.run_verification_job("job32", {"supplier_id": 5, "pending": False, "limit": 20, "force": False})
+
+        job = repo.get_pipeline_job("job32")
+        assert job["status"] == "failed"
+        assert "LLM call failed" in job["error"]
+
+
+class TestRunReverifyJob:
+
+    def test_calls_reverify_with_supplier_id(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "VerificationService", FakeVerificationService)
+
+        repo.create_pipeline_job(job_id="job40", query="[reverify] supplier #7", options={"supplier_id": 7})
+        jobs_module.run_reverify_job("job40", 7)
+
+        assert FakeVerificationService.last_instance.last_reverify_call == 7
+        job = repo.get_pipeline_job("job40")
+        assert job["status"] == "completed"
+        assert job["stats"]["verification"]["confidence_score"] == 80
+
+    def test_failing_job_marks_failed_not_raised(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "VerificationService", FailingFakeVerificationService)
+
+        repo.create_pipeline_job(job_id="job41", query="x", options={"supplier_id": 7})
+        jobs_module.run_reverify_job("job41", 7)  # must not raise
+
+        job = repo.get_pipeline_job("job41")
+        assert job["status"] == "failed"
+        assert "browser crashed" in job["error"]

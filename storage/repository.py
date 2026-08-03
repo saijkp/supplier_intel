@@ -1626,6 +1626,27 @@ class SupplierRepository:
                 ).fetchall()
             return _rows_to_dicts(rows, SUPPLIER_JSON_FIELDS)
 
+    def get_suppliers_needing_reverification(
+        self, older_than_days: int, limit: int = 1000
+    ) -> List[Dict[str, Any]]:
+        """Backs `main.py reverify --older-than-days` / a future
+        scheduled reverify sweep -- suppliers never verified at all
+        (`last_verified IS NULL`) OR verified more than `older_than_days`
+        days ago. Ordered oldest-first so the most stale records get
+        reverified before ones only marginally past the threshold."""
+        with connection_scope(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM suppliers
+                WHERE last_verified IS NULL
+                   OR last_verified < datetime('now', ? || ' days')
+                ORDER BY last_verified IS NOT NULL, last_verified ASC
+                LIMIT ?
+                """,
+                (f"-{older_than_days}", limit),
+            ).fetchall()
+            return _rows_to_dicts(rows, SUPPLIER_JSON_FIELDS)
+
     def record_collection_run(
         self, *, supplier_id: int, status: str, pages_visited: int = 0,
         artifacts_dir: Optional[str] = None, proxy_provider: Optional[str] = None,

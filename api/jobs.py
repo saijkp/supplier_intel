@@ -20,6 +20,7 @@ from typing import Any, Dict
 from collection.collection_service import CollectionService
 from pipeline.orchestrator import SupplierIntelligencePipeline, build_limit_scraper_kwargs
 from storage.repository import SupplierRepository
+from verification_ai.verification_service import VerificationService
 
 logger = logging.getLogger(__name__)
 
@@ -117,4 +118,41 @@ def run_collection_job(job_id: str, options: Dict[str, Any]) -> None:
         repo.mark_pipeline_job_completed(job_id, stats=stats)
     except Exception as e:
         logger.error("Collection job %s failed: %s", job_id, e)
+        repo.mark_pipeline_job_failed(job_id, error=str(e))
+
+
+def run_verification_job(job_id: str, options: Dict[str, Any]) -> None:
+    """The HTTP equivalent of `main.py verify-ai` -- either one named
+    supplier or a batch of every supplier needing it. Same pattern as
+    run_collection_job."""
+    repo = SupplierRepository()
+    repo.mark_pipeline_job_running(job_id)
+    try:
+        service = VerificationService(repo=repo)
+        supplier_id = options.get("supplier_id")
+        if supplier_id:
+            stats = service.verify(supplier_id)
+        else:
+            stats = service.verify_pending(
+                limit=options.get("limit", 20), force=options.get("force", False),
+            )
+        repo.mark_pipeline_job_completed(job_id, stats=stats)
+    except Exception as e:
+        logger.error("Verification job %s failed: %s", job_id, e)
+        repo.mark_pipeline_job_failed(job_id, error=str(e))
+
+
+def run_reverify_job(job_id: str, supplier_id: int) -> None:
+    """The HTTP equivalent of `main.py reverify --supplier-id` -- always
+    single-supplier (re-collect then re-verify); the batch
+    `--older-than-days` mode is CLI-only for now, since it's meant for
+    an operator-run sweep, not a single HTTP-triggered job."""
+    repo = SupplierRepository()
+    repo.mark_pipeline_job_running(job_id)
+    try:
+        service = VerificationService(repo=repo)
+        stats = service.reverify(supplier_id)
+        repo.mark_pipeline_job_completed(job_id, stats=stats)
+    except Exception as e:
+        logger.error("Reverify job %s (supplier #%s) failed: %s", job_id, supplier_id, e)
         repo.mark_pipeline_job_failed(job_id, error=str(e))

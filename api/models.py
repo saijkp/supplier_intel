@@ -35,6 +35,15 @@ class SupplierSearchResult(BaseModel):
     year_established: Optional[int] = None
     alibaba_years: Optional[int] = None
     matched_capabilities: List[Dict[str, Any]] = Field(default_factory=list)
+    # Additive fields from the AI Discovery/Collection/Verification
+    # platform (v11) -- all Optional/absent-safe so existing frontend
+    # consumers are unaffected until they choose to read them.
+    ai_confidence_score: Optional[int] = None
+    ai_summary: Optional[str] = None
+    ai_strengths: List[str] = Field(default_factory=list)
+    ai_risks: List[str] = Field(default_factory=list)
+    ai_suitable_customer_types: List[str] = Field(default_factory=list)
+    collection_status: Optional[str] = None
 
 
 class PipelineJobRequest(BaseModel):
@@ -119,6 +128,32 @@ class CollectionJobRequest(BaseModel):
         default=False,
         description="In pending mode, re-collect every supplier with a domain, not just ones "
                      "never collected.",
+    )
+
+
+class VerificationJobRequest(BaseModel):
+    """Triggers verification_ai.verification_service.VerificationService
+    against either one named supplier or a batch of every supplier
+    needing it -- the HTTP equivalent of `main.py verify-ai`. Same
+    job/poll pattern as CollectionJobRequest."""
+
+    supplier_id: Optional[int] = Field(
+        default=None,
+        description="Verify one specific supplier. Ignores pending/limit/force.",
+    )
+    pending: bool = Field(
+        default=False,
+        description="Batch mode: verify every supplier needing it. Exactly one of supplier_id "
+                     "or pending must be set.",
+    )
+    limit: int = Field(
+        default=20,
+        description="Stop after this many suppliers in pending mode. Each one costs a real "
+                     "OpenAI call -- start small on a first run.",
+    )
+    force: bool = Field(
+        default=False,
+        description="In pending mode, re-verify every supplier, not just ones never assessed.",
     )
 
 

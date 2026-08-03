@@ -364,6 +364,111 @@ def collect(supplier_id: Optional[int], pending: bool, limit: int, force: bool) 
         console.print(table)
 
 
+@cli.command("verify-ai")
+@click.option("--supplier-id", type=int, default=None,
+              help="Verify one specific supplier (ignores --pending/--limit/--force).")
+@click.option("--pending", is_flag=True,
+              help="Batch mode: verify every supplier needing it (never AI-assessed before).")
+@click.option("--limit", default=20, show_default=True,
+              help="Stop after this many suppliers in --pending mode. Each one costs a real "
+                   "OpenAI call, so start small on a first run.")
+@click.option("--force", is_flag=True,
+              help="In --pending mode, re-verify every supplier, not just ones never assessed.")
+def verify_ai(supplier_id: Optional[int], pending: bool, limit: int, force: bool) -> None:
+    """Cross-check a supplier's data against existing verification signals
+    (manufacturer assessment, facility address, LinkedIn presence, phone/
+    certification consistency), assign a 0-100 ai_confidence_score
+    (deliberately separate from composite_score -- see verification_ai/
+    confidence_scorer.py), and generate an AI summary/strengths/risks/
+    suitable-customer-types. Either --supplier-id ONE or --pending a batch."""
+    from verification_ai.verification_service import VerificationService
+
+    if not supplier_id and not pending:
+        console.print("[red]✗[/red] Specify either --supplier-id or --pending.")
+        return
+
+    service = VerificationService()
+    if supplier_id:
+        outcome = service.verify(supplier_id)
+        console.print(f"[green]✓[/green] Supplier #{supplier_id}: confidence {outcome['confidence_score']}/100 "
+                       f"({outcome['verdict']}), narrative_generated={outcome['narrative_generated']}")
+        if outcome["inconsistencies"]:
+            console.print("[yellow]Inconsistencies found:[/yellow]")
+            for inconsistency in outcome["inconsistencies"]:
+                console.print(f"  - {inconsistency}")
+    else:
+        stats = service.verify_pending(limit=limit, force=force)
+        table = Table(show_header=False)
+        table.add_column("Metric", style="cyan")
+        table.add_column("Count", justify="right", style="magenta")
+        for key in ("attempted", "succeeded", "failed", "total_eligible"):
+            table.add_row(key.replace("_", " "), str(stats.get(key, "")))
+        console.print(table)
+
+
+@cli.command("reverify")
+@click.option("--supplier-id", type=int, default=None, help="Reverify one specific supplier.")
+@click.option("--older-than-days", type=int, default=None,
+              help="Batch mode: reverify every supplier last verified more than this many days "
+                   "ago (or never verified at all).")
+@click.option("--limit", default=20, show_default=True,
+              help="Stop after this many suppliers in --older-than-days mode.")
+def reverify(supplier_id: Optional[int], older_than_days: Optional[int], limit: int) -> None:
+    """Re-collect (real headless browser) then re-verify (AI cross-check) an
+    already-known supplier -- the "update existing records when reverified"
+    workflow. Genuine changes are appended to the supplier's change log, not
+    silently overwritten -- see `main.py history` to inspect it."""
+    from storage.repository import SupplierRepository
+    from verification_ai.verification_service import VerificationService
+
+    if not supplier_id and older_than_days is None:
+        console.print("[red]✗[/red] Specify either --supplier-id or --older-than-days.")
+        return
+
+    service = VerificationService()
+    if supplier_id:
+        outcome = service.reverify(supplier_id)
+        console.print(f"[green]✓[/green] Supplier #{supplier_id}: collection={outcome['collection']['status']}, "
+                       f"confidence={outcome['verification']['confidence_score']}/100")
+        return
+
+    repo = SupplierRepository()
+    candidates = repo.get_suppliers_needing_reverification(older_than_days=older_than_days, limit=limit)
+    console.print(f"[bold]Reverifying {len(candidates)} supplier(s) last verified more than "
+                   f"{older_than_days} day(s) ago (or never)...[/bold]")
+    succeeded = 0
+    for supplier in candidates:
+        try:
+            service.reverify(supplier["id"])
+            succeeded += 1
+        except Exception as e:
+            console.print(f"[red]✗[/red] Supplier #{supplier['id']}: {e}")
+    console.print(f"[green]✓[/green] Reverified {succeeded}/{len(candidates)} supplier(s).")
+
+
+@cli.command("history")
+@click.option("--supplier-id", type=int, required=True)
+def history(supplier_id: int) -> None:
+    """Show verification history and field-change log for one supplier --
+    the audit trail behind ai_confidence_score/ai_summary and every other
+    field verification_ai/collection writes."""
+    from storage.repository import SupplierRepository
+
+    repo = SupplierRepository()
+    verification_rows = repo.get_verification_history(supplier_id)
+    change_rows = repo.get_supplier_change_log(supplier_id)
+
+    console.print(f"[bold]Verification history for supplier #{supplier_id}[/bold] ({len(verification_rows)} run(s))")
+    for row in verification_rows:
+        console.print(f"  {row['run_at']}  [{row['verification_type']}]  "
+                       f"confidence={row['confidence_score']}  verdict={row['verdict']}")
+
+    console.print(f"\n[bold]Change log[/bold] ({len(change_rows)} change(s))")
+    for row in change_rows:
+        console.print(f"  {row['changed_at']}  {row['field_name']}: "
+                       f"{row['old_value']!r} -> {row['new_value']!r}  (by {row['changed_by']})")
+
+
 @cli.command("check-linkedin")
 @click.option("--force", is_flag=True, help="Re-check every supplier, not just ones never checked.")
 def check_linkedin(force: bool) -> None:

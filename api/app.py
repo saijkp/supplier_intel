@@ -41,7 +41,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, Response
 
 from api.auth import require_api_token
-from api.jobs import run_collection_job, run_enrichment_job, run_pipeline_job
+from api.jobs import (
+    run_collection_job,
+    run_enrichment_job,
+    run_pipeline_job,
+    run_reverify_job,
+    run_verification_job,
+)
 from api.models import (
     BuyerProfileRequest,
     BuyerProfileResponse,
@@ -53,6 +59,7 @@ from api.models import (
     ProcurementOutcomeRequest,
     ProcurementOutcomeResponse,
     SupplierSearchResult,
+    VerificationJobRequest,
 )
 from config.settings import ALLOWED_ORIGINS
 from storage.database import initialise_schema
@@ -115,6 +122,12 @@ def _to_search_result(row: Dict[str, Any]) -> SupplierSearchResult:
         year_established=row.get("year_established"),
         alibaba_years=row.get("alibaba_years"),
         matched_capabilities=row.get("matched_capabilities") or [],
+        ai_confidence_score=row.get("ai_confidence_score"),
+        ai_summary=row.get("ai_summary"),
+        ai_strengths=row.get("ai_strengths") or [],
+        ai_risks=row.get("ai_risks") or [],
+        ai_suitable_customer_types=row.get("ai_suitable_customer_types") or [],
+        collection_status=row.get("collection_status"),
     )
 
 
@@ -262,6 +275,81 @@ def create_collection_job(
     background_tasks.add_task(run_collection_job, job_id, options)
     job = repo.get_pipeline_job(job_id)
     return _to_job_response(job)
+
+
+@app.post(
+    "/verification/jobs",
+    response_model=PipelineJobResponse,
+    status_code=202,
+    dependencies=[Depends(require_api_token)],
+)
+def create_verification_job(
+    request: VerificationJobRequest,
+    background_tasks: BackgroundTasks,
+    repo: SupplierRepository = Depends(get_repo),
+) -> PipelineJobResponse:
+    """Same async job/poll pattern as POST /collection/jobs, but for
+    verification_ai.verification_service.VerificationService (AI
+    cross-check, 0-100 ai_confidence_score, summary/strengths/risks) --
+    the HTTP equivalent of `main.py verify-ai`."""
+    if not request.supplier_id and not request.pending:
+        raise HTTPException(status_code=422, detail="Specify either supplier_id or pending.")
+    job_id = str(uuid.uuid4())
+    options = request.model_dump()
+    label = f"[verification] supplier #{request.supplier_id}" if request.supplier_id else "[verification] pending batch"
+    repo.create_pipeline_job(job_id=job_id, query=label, options=options)
+    background_tasks.add_task(run_verification_job, job_id, options)
+    job = repo.get_pipeline_job(job_id)
+    return _to_job_response(job)
+
+
+@app.post(
+    "/suppliers/{supplier_id}/reverify",
+    response_model=PipelineJobResponse,
+    status_code=202,
+    dependencies=[Depends(require_api_token)],
+)
+def create_reverify_job(
+    supplier_id: int,
+    background_tasks: BackgroundTasks,
+    repo: SupplierRepository = Depends(get_repo),
+) -> PipelineJobResponse:
+    """Re-collect then re-verify one already-known supplier -- the HTTP
+    equivalent of `main.py reverify --supplier-id`. Genuine changes are
+    appended to the supplier's change log (see GET
+    /suppliers/{id}/change-log), never silently overwritten."""
+    if repo.get_supplier(supplier_id) is None:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    job_id = str(uuid.uuid4())
+    label = f"[reverify] supplier #{supplier_id}"
+    repo.create_pipeline_job(job_id=job_id, query=label, options={"supplier_id": supplier_id})
+    background_tasks.add_task(run_reverify_job, job_id, supplier_id)
+    job = repo.get_pipeline_job(job_id)
+    return _to_job_response(job)
+
+
+@app.get(
+    "/suppliers/{supplier_id}/verification-history",
+    dependencies=[Depends(require_api_token)],
+)
+def get_verification_history(
+    supplier_id: int, repo: SupplierRepository = Depends(get_repo),
+) -> List[Dict[str, Any]]:
+    if repo.get_supplier(supplier_id) is None:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    return repo.get_verification_history(supplier_id)
+
+
+@app.get(
+    "/suppliers/{supplier_id}/change-log",
+    dependencies=[Depends(require_api_token)],
+)
+def get_supplier_change_log(
+    supplier_id: int, repo: SupplierRepository = Depends(get_repo),
+) -> List[Dict[str, Any]]:
+    if repo.get_supplier(supplier_id) is None:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    return repo.get_supplier_change_log(supplier_id)
 
 
 @app.get(

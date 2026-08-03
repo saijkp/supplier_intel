@@ -73,6 +73,18 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api.app, "run_collection_job", fake_run_collection_job)
 
+    def fake_run_verification_job(job_id, options):
+        test_repo.mark_pipeline_job_running(job_id)
+        test_repo.mark_pipeline_job_completed(job_id, stats={"confidence_score": 0})
+
+    monkeypatch.setattr(api.app, "run_verification_job", fake_run_verification_job)
+
+    def fake_run_reverify_job(job_id, supplier_id):
+        test_repo.mark_pipeline_job_running(job_id)
+        test_repo.mark_pipeline_job_completed(job_id, stats={"supplier_id": supplier_id})
+
+    monkeypatch.setattr(api.app, "run_reverify_job", fake_run_reverify_job)
+
     with TestClient(api.app.app) as test_client:
         test_client.repo = test_repo
         yield test_client
@@ -315,6 +327,83 @@ class TestCollectionJobEndpoints:
     def test_requires_auth(self, client):
         response = client.post("/collection/jobs", json={"supplier_id": 5})
         assert response.status_code == 401
+
+
+class TestVerificationJobEndpoints:
+
+    def test_creating_a_supplier_id_job_returns_202_with_a_job_id(self, client):
+        response = client.post("/verification/jobs", json={"supplier_id": 5}, headers=auth_headers())
+        assert response.status_code == 202
+        body = response.json()
+        assert body["status"] == "queued"
+        assert body["query"] == "[verification] supplier #5"
+
+    def test_creating_a_pending_batch_job(self, client):
+        response = client.post("/verification/jobs", json={"pending": True}, headers=auth_headers())
+        assert response.status_code == 202
+        assert response.json()["query"] == "[verification] pending batch"
+
+    def test_neither_supplier_id_nor_pending_is_a_validation_error(self, client):
+        response = client.post("/verification/jobs", json={}, headers=auth_headers())
+        assert response.status_code == 422
+
+    def test_requires_auth(self, client):
+        response = client.post("/verification/jobs", json={"supplier_id": 5})
+        assert response.status_code == 401
+
+
+class TestReverifyEndpoint:
+
+    def test_creates_a_job_for_an_existing_supplier(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        response = client.post(f"/suppliers/{supplier_id}/reverify", headers=auth_headers())
+        assert response.status_code == 202
+        assert response.json()["query"] == f"[reverify] supplier #{supplier_id}"
+
+    def test_unknown_supplier_returns_404(self, client):
+        response = client.post("/suppliers/999999/reverify", headers=auth_headers())
+        assert response.status_code == 404
+
+    def test_requires_auth(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme"})
+        response = client.post(f"/suppliers/{supplier_id}/reverify")
+        assert response.status_code == 401
+
+
+class TestVerificationHistoryAndChangeLogEndpoints:
+
+    def test_verification_history_returns_recorded_entries(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme"})
+        client.repo.record_verification_history(
+            supplier_id=supplier_id, verification_type="ai_cross_check", confidence_score=80, verdict="corroborated",
+        )
+        response = client.get(f"/suppliers/{supplier_id}/verification-history", headers=auth_headers())
+        assert response.status_code == 200
+        assert len(response.json()) == 1
+        assert response.json()[0]["confidence_score"] == 80
+
+    def test_verification_history_unknown_supplier_returns_404(self, client):
+        response = client.get("/suppliers/999999/verification-history", headers=auth_headers())
+        assert response.status_code == 404
+
+    def test_change_log_returns_recorded_entries(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme", "primary_phone": "+44 20 1234 5678"})
+        client.repo.update_supplier_fields_with_history(
+            supplier_id, {"primary_phone": "+44 20 9999 0000"}, changed_by="verification_service",
+        )
+        response = client.get(f"/suppliers/{supplier_id}/change-log", headers=auth_headers())
+        assert response.status_code == 200
+        assert len(response.json()) == 1
+        assert response.json()[0]["field_name"] == "primary_phone"
+
+    def test_change_log_unknown_supplier_returns_404(self, client):
+        response = client.get("/suppliers/999999/change-log", headers=auth_headers())
+        assert response.status_code == 404
+
+    def test_endpoints_require_auth(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme"})
+        assert client.get(f"/suppliers/{supplier_id}/verification-history").status_code == 401
+        assert client.get(f"/suppliers/{supplier_id}/change-log").status_code == 401
 
 
 class TestExportEndpoint:
