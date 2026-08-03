@@ -52,6 +52,15 @@ at time of writing. See `DEPLOY.md` for how to run it.
 11. **Export** — CSV, or a full HTTP API (`api/app.py`) for a frontend
     to build against, with async job handling for the slow stages.
 
+Layered on top of this original pipeline is a separate AI Discovery/
+Collection/Verification platform (`discovery/`, `collection/`,
+`verification_ai/`, plus a shared `llm/` wrapper) — an AI-grounded
+supplier search that never invents a company, a real-headless-browser
+site collector, and an AI-synthesized cross-check/confidence score on
+top of (not replacing) every verification stage above. Not to be
+confused with stage 1's "Discovery" above (marketplace scraping) —
+see `docs/ARCHITECTURE.md` for the full design and how the two relate.
+
 ## How to run it
 
 - CLI: `python main.py search "wheel bearings" --require "iso 9001" --manufacturers-only`

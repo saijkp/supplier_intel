@@ -20,9 +20,11 @@ from diagnostics.live_environment_check import (
     check_dns_resolution,
     check_google_places,
     check_openai,
+    check_playwright_chromium,
     check_qichacha,
     check_serpapi,
     check_site_reachable,
+    check_webshare_proxy,
     run_all_checks,
     source_base_url,
 )
@@ -147,6 +149,27 @@ class TestCheckQichacha:
         assert result.status == "skipped"
 
 
+class TestCheckWebshareProxy:
+
+    def test_no_credentials_is_skipped(self, monkeypatch):
+        monkeypatch.setattr("config.settings.WEBSHARE_PROXY_USERNAME", None)
+        monkeypatch.setattr("config.settings.WEBSHARE_PROXY_PASSWORD", None)
+        result = check_webshare_proxy()
+        assert result.status == "skipped"
+
+
+class TestCheckPlaywrightChromium:
+    """Unlike every other check in this module, this doesn't call an
+    external paid service -- it launches a local browser process, so
+    (matching tests/test_site_collector.py's own precedent) this is
+    exercised for real, not just proven to skip correctly."""
+
+    def test_chromium_launches_and_renders_a_page(self):
+        result = check_playwright_chromium()
+        assert result.status == "pass"
+        assert "rendered a page successfully" in result.detail
+
+
 class TestCheckSiteReachable:
 
     def test_2xx_response_passes(self):
@@ -216,6 +239,8 @@ class TestRunAllChecks:
         assert "database" in names
         assert "dns_resolution" in names
         assert "apify" in names
+        assert "webshare_proxy" in names
+        assert "playwright_chromium" in names
         # Every no-key-required site-reachability check -- hktdc/importyeti
         # plus volza and every DIRECTORY_SOURCES/EXHIBITION_SOURCES entry --
         # must be present. Named explicitly (not just a count) so a source

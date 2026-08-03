@@ -220,6 +220,62 @@ def check_qichacha() -> CheckResult:
         return CheckResult("qichacha", "fail", f"request failed: {e}")
 
 
+def check_webshare_proxy() -> CheckResult:
+    """Confirms Webshare credentials actually route real traffic, not
+    just that they're present -- makes one minimal request through the
+    proxy to an IP-echo endpoint and confirms it succeeds. See
+    collection/proxy_provider.py for why Webshare specifically (the
+    only rotating-proxy provider actually implemented so far)."""
+    from collection.proxy_provider import WebshareProxyProvider
+
+    provider = WebshareProxyProvider()
+    if not provider.is_configured():
+        return CheckResult(
+            "webshare_proxy", "skipped",
+            "WEBSHARE_PROXY_USERNAME/WEBSHARE_PROXY_PASSWORD not configured",
+        )
+    try:
+        import httpx
+
+        config = provider.get_proxy_config()
+        proxy_url = f"http://{config['username']}:{config['password']}@{config['server'].removeprefix('http://')}"
+        with httpx.Client(proxy=proxy_url, timeout=15) as client:
+            response = client.get("https://httpbin.org/ip")
+        if response.status_code == 200:
+            return CheckResult("webshare_proxy", "pass", f"proxied request succeeded: {response.text.strip()}")
+        return CheckResult("webshare_proxy", "fail", f"proxied request returned HTTP {response.status_code}")
+    except Exception as e:
+        return CheckResult("webshare_proxy", "fail", f"request through proxy failed: {e}")
+
+
+def check_playwright_chromium() -> CheckResult:
+    """Confirms the actual Chromium browser binary collection.SiteCollector
+    needs is installed and launchable -- NOT the same question as "is
+    the playwright Python package installed." On Railway specifically,
+    this is the check that would have caught the real deploy issue
+    found while building Collection Service: RAILPACK_PYTHON_PLAYWRIGHT_INSTALL=1
+    must be set or the browser binary is silently absent even though
+    `pip install` succeeds cleanly (see DEPLOY.md)."""
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_content("<html><body>ok</body></html>")
+            text = page.inner_text("body")
+            browser.close()
+        if text.strip() == "ok":
+            return CheckResult("playwright_chromium", "pass", "Chromium launched and rendered a page successfully")
+        return CheckResult("playwright_chromium", "fail", f"unexpected page content: {text!r}")
+    except Exception as e:
+        return CheckResult(
+            "playwright_chromium", "fail",
+            f"Chromium launch failed: {e} -- on Railway, confirm RAILPACK_PYTHON_PLAYWRIGHT_INSTALL=1 is set "
+            f"(see DEPLOY.md); a bare 'pip install playwright' does not download the browser binary",
+        )
+
+
 def check_site_reachable(name: str, url: str, http_client: Optional[object] = None) -> CheckResult:
     """Plain reachability, not a scrape -- for the direct-HTTP
     scrapers (HKTDC, ImportYeti, Volza) that need no API key at all,
@@ -279,6 +335,8 @@ def run_all_checks() -> List[CheckResult]:
         ("google_places", check_google_places),
         ("amap", check_amap),
         ("qichacha", check_qichacha),
+        ("webshare_proxy", check_webshare_proxy),
+        ("playwright_chromium", check_playwright_chromium),
         ("hktdc", lambda: check_site_reachable("hktdc", "https://www.hktdc.com")),
         ("importyeti", lambda: check_site_reachable("importyeti", "https://www.importyeti.com")),
     ]
