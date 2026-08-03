@@ -155,6 +155,18 @@ class DiscoveryService:
             "domain": candidate.domain,
             "country": validation.extracted_country or country,
             "discovery_source": "discovery_service",
+            # Grounded, not invented: validation gate #5 in
+            # candidate_validator.py already deterministically confirmed
+            # `product` appears on the supplier's own fetched page text
+            # before a candidate can reach this point. Without this, a
+            # discovered supplier is invisible to storage.repository's
+            # search_suppliers_full() product-term search (LIKE across
+            # canonical_name/product_keywords/primary_categories/
+            # trailer_components) unless the company's own name happens
+            # to contain the search term -- searching for the exact
+            # product just discovered them for would silently return
+            # nothing.
+            "product_keywords": [product],
         }
         try:
             result = self.matcher.resolve_and_store(supplier_data)

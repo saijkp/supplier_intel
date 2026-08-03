@@ -107,6 +107,22 @@ class TestDiscoverCreatesNewSuppliers:
         assert supplier["domain"] == "acmetrailer.com"
         assert supplier["discovery_source"] == "discovery_service"
 
+    def test_discovered_supplier_is_findable_by_the_product_it_was_discovered_for(self, repo):
+        """Real bug: without product_keywords set, a supplier discovered
+        for "trailer axle" was invisible to search_suppliers_full's own
+        product-term search unless the company's name happened to
+        contain "trailer axle" -- searching for the exact term that
+        found them returned nothing."""
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        service = _service(repo, results, "acmetrailer.com")
+
+        outcome = service.discover("trailer axle", country="China")
+
+        supplier = repo.get_supplier(outcome.new_supplier_ids[0])
+        assert supplier["product_keywords"] == ["trailer axle"]
+        found = repo.search_suppliers_full(product_query="trailer axle")
+        assert [s["id"] for s in found] == [outcome.new_supplier_ids[0]]
+
     def test_writes_a_discovery_runs_summary_row(self, repo):
         results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
         service = _service(repo, results, "acmetrailer.com")
