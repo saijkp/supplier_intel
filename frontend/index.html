@@ -3,15 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Supplier Intel — procurement intelligence</title>
+<title>Supplier Intel</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{
-  /* Blue and white. --steel-* keep their old names (avoids re-touching
-     every usage below) but are now a cool slate-blue neutral scale,
-     not warm grey. */
   --steel-900:#0f1b2d;
   --steel-700:#334862;
   --steel-500:#5c7593;
@@ -21,47 +18,19 @@
   --paper:#f4f8fd;
   --surface:#ffffff;
 
-  /* Brand/primary -- true "call to action" blue. Kept under the old
-     --orange/--orange-dark names deliberately: every *brand* usage
-     below (top bar, primary buttons, active nav, focus ring) already
-     points at these two variables, so repointing the values is enough.
-     Anything that was actually a WARNING/ERROR/NEGATIVE signal wearing
-     orange (failed status, "confirmed trader", risks, the disconnected
-     dot) was moved to --danger below instead, on purpose -- a failed
-     job must never look like the same colour as "click here". */
   --orange:#2563eb;
   --orange-dark:#1d4ed8;
-  --brand-bg:#eaf1fd;
 
-  /* Genuine warnings/errors/negative signals -- kept a warm colour
-     deliberately, so it never gets lost against an otherwise all-blue
-     interface. */
   --danger:#c0311a;
   --danger-dark:#9c2513;
   --danger-bg:#fdece8;
 
-  /* The Commercial score's own accent -- was orange, now needs a third
-     colour distinct from brand blue (Technical) and AI purple (below),
-     so three scores on one card still read as three different
-     questions, not one blended number. */
-  --gold:#a1690f;
-  --gold-bg:#faf1de;
-
-  /* Evidence tiers. These are load-bearing, not decorative: they encode
-     how much a claim can actually be trusted. */
   --tier-verified:#0b6b4f;
   --tier-verified-bg:#e4f2ec;
   --tier-stated:#1a5fb4;
-  --tier-stated-bg:#e5edf8;
   --tier-claimed:#9a6300;
   --tier-claimed-bg:#f8efdd;
-  --tier-unknown:#7d848a;
-  --tier-unknown-bg:#eceef0;
 
-  /* AI cross-check assessment — a synthesis across sources, deliberately
-     a distinct colour from Technical (brand blue), Commercial (gold),
-     since it's answering a different question: not "how strong is this
-     listing" but "how much do independent sources corroborate it." */
   --ai:#6d4fb0;
   --ai-bg:#f2eefa;
 
@@ -76,18 +45,18 @@ body{
   font-size:15px;line-height:1.5;
   -webkit-font-smoothing:antialiased;
 }
-button,input,select,textarea{font:inherit;color:inherit}
+button,input,select{font:inherit;color:inherit}
 button{cursor:pointer;background:none;border:none}
 a{color:var(--tier-stated)}
 
-/* ── Structural: top bar ───────────────────────────────── */
+/* ── Top bar ───────────────────────────────── */
 .topbar{
   position:sticky;top:0;z-index:60;
   background:var(--steel-900);color:#fff;
   border-bottom:3px solid var(--orange);
 }
 .topbar-in{
-  max-width:1440px;margin:0 auto;padding:0 20px;
+  max-width:1200px;margin:0 auto;padding:0 20px;
   height:56px;display:flex;align-items:center;gap:24px;
 }
 .brand{display:flex;align-items:baseline;gap:10px;margin-right:auto}
@@ -100,11 +69,6 @@ a{color:var(--tier-stated)}
   font-family:'Barlow Condensed',sans-serif;font-weight:700;
   font-size:22px;letter-spacing:.06em;text-transform:uppercase;
 }
-.brand-sub{
-  font-family:'IBM Plex Mono',monospace;font-size:11px;
-  color:var(--steel-300);letter-spacing:.04em;
-}
-@media(max-width:720px){.brand-sub{display:none}}
 
 .nav{display:flex;gap:2px}
 .nav button{
@@ -130,7 +94,7 @@ a{color:var(--tier-stated)}
 .conn button:hover{color:#fff}
 
 /* ── Layout ────────────────────────────────────────────── */
-.wrap{max-width:1440px;margin:0 auto;padding:24px 20px 80px}
+.wrap{max-width:1200px;margin:0 auto;padding:24px 20px 80px}
 .split{display:grid;grid-template-columns:296px 1fr;gap:24px;align-items:start}
 @media(max-width:960px){.split{grid-template-columns:1fr}}
 
@@ -155,12 +119,12 @@ a{color:var(--tier-stated)}
   font-size:10px;letter-spacing:.12em;text-transform:uppercase;
   color:var(--steel-500);margin-bottom:6px;
 }
-.input,.select{
+.input{
   width:100%;padding:9px 11px;background:var(--surface);
   border:1px solid var(--rule);border-radius:8px;
   font-size:14px;transition:border-color .12s,box-shadow .12s;
 }
-.input:focus,.select:focus{
+.input:focus{
   outline:none;border-color:var(--orange);
   box-shadow:0 0 0 3px rgba(37,99,235,.14);
 }
@@ -187,29 +151,12 @@ a{color:var(--tier-stated)}
 .btn-sm{padding:6px 11px;font-size:13px}
 :focus-visible{outline:2px solid var(--orange);outline-offset:2px}
 
-/* ── Capability chips ──────────────────────────────────── */
-.chips{display:flex;flex-wrap:wrap;gap:5px}
-.chip{
-  font-family:'IBM Plex Mono',monospace;font-size:11px;
-  padding:4px 10px;border:1px solid var(--rule);border-radius:999px;
-  background:var(--surface);color:var(--steel-700);
-  transition:border-color .12s,background .12s,color .12s;
-}
-.chip:hover{border-color:var(--orange);color:var(--orange-dark)}
-.chip.on{background:var(--orange);border-color:var(--orange);color:#fff}
-.chip-group-label{
-  font-family:'IBM Plex Mono',monospace;font-size:10px;
-  letter-spacing:.1em;text-transform:uppercase;color:var(--steel-300);
-  margin:12px 0 6px;
-}
-.chip-group-label:first-child{margin-top:0}
-
 /* ── Result cards ──────────────────────────────────────── */
 .results{display:flex;flex-direction:column;gap:12px}
 .card{
   background:var(--surface);border:1px solid var(--rule);
   border-radius:12px;overflow:hidden;
-  box-shadow:var(--shadow);transition:box-shadow .15s,transform .15s;
+  box-shadow:var(--shadow);transition:box-shadow .15s;
 }
 .card:hover{box-shadow:0 2px 6px rgba(15,27,45,.08),0 12px 28px rgba(15,27,45,.09)}
 .card-head{
@@ -229,7 +176,6 @@ a{color:var(--tier-stated)}
 .card-meta a{color:var(--steel-500);text-decoration:underline;text-underline-offset:2px}
 .card-meta a:hover{color:var(--steel-900)}
 
-/* Two scores, deliberately never merged into one number */
 .scores{display:flex;gap:2px;align-self:start}
 .score{
   min-width:74px;padding:7px 10px 8px;border:1px solid var(--rule);
@@ -245,7 +191,6 @@ a{color:var(--tier-stated)}
   font-size:26px;line-height:1.1;display:block;font-variant-numeric:tabular-nums;
 }
 .score-val.na{color:var(--steel-300);font-size:20px}
-.score.commercial{border-color:var(--gold);background:var(--gold-bg)}
 .score.ai{border-color:var(--ai);background:var(--ai-bg)}
 
 .badges{display:flex;flex-wrap:wrap;gap:5px;padding:10px 16px 0}
@@ -260,58 +205,10 @@ a{color:var(--tier-stated)}
 .badge.warn{color:var(--tier-claimed);border-color:var(--tier-claimed);background:var(--tier-claimed-bg)}
 
 .card-body{padding:12px 16px 16px}
-
-/* ── THE SIGNATURE: the evidence stamp ─────────────────── */
-/* Every claim carries where it came from and how strongly it's held —
-   modelled on the riveted approval plates on a trailer lamp. */
-.ev{
-  display:grid;grid-template-columns:auto 1fr;gap:10px;
-  padding:9px 0;border-top:1px solid var(--rule-soft);
-}
-.ev:first-child{border-top:none}
-.stamp{
-  display:flex;flex-direction:column;gap:3px;width:104px;flex:none;
-}
-.stamp-tier{
-  font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:9.5px;
-  letter-spacing:.1em;text-transform:uppercase;
-  padding:2px 5px;border:1px solid;text-align:center;
-}
-.stamp-tier.verified{color:var(--tier-verified);border-color:var(--tier-verified);background:var(--tier-verified-bg)}
-.stamp-tier.stated{color:var(--tier-stated);border-color:var(--tier-stated);background:var(--tier-stated-bg)}
-.stamp-tier.claimed{color:var(--tier-claimed);border-color:var(--tier-claimed);background:var(--tier-claimed-bg)}
-.stamp-tier.unknown{color:var(--tier-unknown);border-color:var(--rule);background:var(--tier-unknown-bg)}
-.conf{height:3px;background:var(--rule-soft);overflow:hidden}
-.conf-fill{height:100%;width:0;transition:width .5s cubic-bezier(.2,.7,.3,1)}
-.conf-fill.verified{background:var(--tier-verified)}
-.conf-fill.stated{background:var(--tier-stated)}
-.conf-fill.claimed{background:var(--tier-claimed)}
-.conf-fill.unknown{background:var(--tier-unknown)}
-.stamp-conf{
-  font-family:'IBM Plex Mono',monospace;font-size:9.5px;
-  color:var(--steel-500);text-align:center;font-variant-numeric:tabular-nums;
-}
-.ev-main{min-width:0}
-.ev-term{
-  font-weight:600;font-size:14px;
-  display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;
-}
-.ev-rel{
-  font-family:'IBM Plex Mono',monospace;font-size:10.5px;
-  color:var(--steel-500);font-weight:400;
-}
-.ev-quote{
-  font-family:'IBM Plex Mono',monospace;font-size:12px;
-  color:var(--steel-700);margin-top:4px;
-  padding-left:9px;border-left:2px solid var(--rule);
-  overflow-wrap:anywhere;
-}
-.ev-why{font-size:12px;color:var(--steel-500);margin-top:4px;line-height:1.4}
-
 .section-rule{
   font-family:'IBM Plex Mono',monospace;font-size:10px;
   letter-spacing:.12em;text-transform:uppercase;color:var(--steel-500);
-  display:flex;align-items:center;gap:10px;margin:16px 0 8px;
+  display:flex;align-items:center;gap:10px;margin:0 0 8px;
 }
 .section-rule::after{content:"";flex:1;height:1px;background:var(--rule-soft)}
 
@@ -323,39 +220,10 @@ a{color:var(--tier-stated)}
   letter-spacing:.08em;text-transform:uppercase;color:var(--steel-500);
   display:block;margin:10px 0 4px;
 }
-.ai-sublabel:first-of-type{margin-top:10px}
 .ai-list{margin:0;padding:0;list-style:none;font-size:13px;line-height:1.5}
 .ai-list li{padding-left:16px;position:relative;margin-bottom:3px}
 .ai-list.strengths li::before{content:"+";color:var(--tier-verified);position:absolute;left:0;font-weight:700}
 .ai-list.risks li::before{content:"!";color:var(--danger-dark);position:absolute;left:0;font-weight:700}
-.ai-meta{
-  font-family:'IBM Plex Mono',monospace;font-size:10.5px;
-  color:var(--steel-500);margin-top:10px;padding-top:8px;
-  border-top:1px solid rgba(109,79,176,.2);line-height:1.4;
-}
-
-/* ── Probability block ─────────────────────────────────── */
-.prob{border:1px solid var(--rule);border-radius:10px;background:var(--paper);padding:12px;margin-top:12px}
-.prob-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
-.prob-q{font-weight:600;font-size:14px}
-.prob-num{
-  font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:24px;
-  font-variant-numeric:tabular-nums;
-}
-.prob-caveat{
-  font-size:11.5px;color:var(--steel-500);margin-top:2px;line-height:1.4;
-}
-.sig{
-  display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;
-  font-family:'IBM Plex Mono',monospace;font-size:11px;
-  padding:4px 0;border-top:1px solid var(--rule-soft);
-}
-.sig-mark{width:14px;text-align:center;font-weight:600}
-.sig-mark.yes{color:var(--tier-verified)}
-.sig-mark.no{color:var(--steel-300)}
-.sig-mark.unk{color:var(--tier-claimed)}
-.sig-detail{color:var(--steel-500);overflow-wrap:anywhere}
-.sig-w{color:var(--steel-300);font-variant-numeric:tabular-nums}
 
 /* ── States ────────────────────────────────────────────── */
 .empty{
@@ -377,7 +245,7 @@ a{color:var(--tier-stated)}
   font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--steel-500);
 }
 
-/* ── Tables (profiles / jobs) ──────────────────────────── */
+/* ── Table (jobs) ──────────────────────────────────────── */
 .tbl{width:100%;border-collapse:collapse;font-size:14px}
 .tbl th{
   font-family:'IBM Plex Mono',monospace;font-size:10px;
@@ -392,7 +260,7 @@ a{color:var(--tier-stated)}
   letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border:1px solid;border-radius:5px;
 }
 .status.queued{color:var(--steel-500);border-color:var(--rule);background:var(--paper)}
-.status.running{color:var(--tier-stated);border-color:var(--tier-stated);background:var(--tier-stated-bg)}
+.status.running{color:var(--tier-stated);border-color:var(--tier-stated);background:#e5edf8}
 .status.completed{color:var(--tier-verified);border-color:var(--tier-verified);background:var(--tier-verified-bg)}
 .status.failed{color:var(--danger-dark);border-color:var(--danger);background:var(--danger-bg)}
 
@@ -410,9 +278,6 @@ dialog::backdrop{background:rgba(15,27,45,.5)}
 }
 .dlg-body{padding:18px}
 .dlg-foot{padding:14px 18px;border-top:1px solid var(--rule);display:flex;gap:8px;justify-content:flex-end}
-
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-@media(max-width:520px){.grid2{grid-template-columns:1fr}}
 
 .spin{
   display:inline-block;width:12px;height:12px;border:2px solid rgba(255,255,255,.35);
@@ -436,13 +301,10 @@ dialog::backdrop{background:rgba(15,27,45,.5)}
     <div class="brand">
       <span class="brand-mark">SI</span>
       <span class="brand-name">Supplier Intel</span>
-      <span class="brand-sub">evidence-backed sourcing</span>
     </div>
     <nav class="nav" id="nav">
       <button data-view="search" aria-current="page">Search</button>
-      <button data-view="profiles">Buyer profiles</button>
-      <button data-view="pipeline">Pipeline</button>
-      <button data-view="discover">Discover</button>
+      <button data-view="discover">Discover &amp; enrich</button>
     </nav>
     <div class="conn">
       <span class="dot" id="connDot"></span>
@@ -466,23 +328,16 @@ dialog::backdrop{background:rgba(15,27,45,.5)}
           <div class="field">
             <label class="label" for="fCountry">Country</label>
             <input class="input" id="fCountry" placeholder="United Kingdom" autocomplete="off">
-            <p class="hint">Exact match, so "UK" won't find "United Kingdom" — that's deliberate, to stop "UK" quietly matching "Ukraine".</p>
           </div>
           <div class="field">
             <label class="check">
               <input type="checkbox" id="fMfr">
               <span>Verified manufacturers only</span>
             </label>
-            <p class="hint">Excludes companies confirmed to be traders rather than makers. Off by default — manufacturer verification hasn't been run against most suppliers yet, so checking this excludes everyone not yet checked, not just confirmed traders.</p>
           </div>
           <div class="field">
             <label class="label" for="fMinScore">Minimum score</label>
             <input class="input" id="fMinScore" type="number" min="0" max="100" placeholder="any">
-          </div>
-          <div class="field">
-            <span class="label">Must have evidence of</span>
-            <div id="chipHost"></div>
-            <p class="hint">All selected terms must be evidenced — this is AND, not OR.</p>
           </div>
           <button class="btn btn-primary btn-block" id="btnSearch">Search suppliers</button>
         </div>
@@ -499,123 +354,7 @@ dialog::backdrop{background:rgba(15,27,45,.5)}
     </div>
   </section>
 
-  <!-- ══ BUYER PROFILES ══════════════════════════════════ -->
-  <section id="view-profiles" class="hidden">
-    <div class="split">
-      <aside class="panel rail">
-        <div class="panel-head"><h2 class="panel-title">New profile</h2></div>
-        <div class="panel-body">
-          <div class="field">
-            <label class="label" for="pName">Profile name</label>
-            <input class="input" id="pName" placeholder="UK OEM buyer" autocomplete="off">
-          </div>
-          <div class="field">
-            <label class="label" for="pCountry">Destination country</label>
-            <input class="input" id="pCountry" placeholder="United Kingdom" autocomplete="off">
-          </div>
-          <div class="field">
-            <label class="label" for="pIncoterm">Preferred incoterm</label>
-            <select class="select" id="pIncoterm">
-              <option value="">No preference</option>
-              <option value="ddp shipping">DDP</option>
-              <option value="dap shipping">DAP</option>
-              <option value="cif shipping">CIF</option>
-              <option value="fob shipping">FOB</option>
-              <option value="door to door shipping">Door to door</option>
-            </select>
-          </div>
-          <div class="grid2">
-            <div class="field">
-              <label class="label" for="pPayment">Payment days</label>
-              <input class="input" id="pPayment" type="number" min="0" placeholder="60">
-            </div>
-            <div class="field">
-              <label class="label" for="pExport">Min export yrs</label>
-              <input class="input" id="pExport" type="number" min="0" placeholder="5">
-            </div>
-          </div>
-          <div class="field">
-            <label class="label" for="pTarget">Target market</label>
-            <select class="select" id="pTarget">
-              <option value="">Any</option>
-              <option value="oem">OEM</option>
-              <option value="aftermarket">Aftermarket</option>
-            </select>
-          </div>
-          <div class="field">
-            <span class="label">Required certifications</span>
-            <div id="pChipHost"></div>
-          </div>
-          <div class="field">
-            <label class="check">
-              <input type="checkbox" id="pMfr">
-              <span>Verified manufacturers only</span>
-            </label>
-          </div>
-          <button class="btn btn-primary btn-block" id="btnCreateProfile">Create profile</button>
-          <p class="hint" style="margin-top:10px">Required fields exclude suppliers. Preferences only affect ranking — a supplier with no DDP evidence still appears, just lower.</p>
-        </div>
-      </aside>
-
-      <div>
-        <div id="profileAlert"></div>
-        <div class="panel" style="margin-bottom:12px">
-          <div class="panel-head">
-            <h2 class="panel-title">Saved profiles</h2>
-            <span class="count" id="profileCount"></span>
-          </div>
-          <div id="profileList"></div>
-        </div>
-        <div id="commercialHead" class="hidden panel" style="margin-bottom:12px">
-          <div class="panel-head">
-            <h2 class="panel-title" id="commercialTitle">Matches</h2>
-            <span class="count" id="commercialCount"></span>
-          </div>
-        </div>
-        <div class="results" id="commercialResults"></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ══ PIPELINE ════════════════════════════════════════ -->
-  <section id="view-pipeline" class="hidden">
-    <div class="split">
-      <aside class="panel rail">
-        <div class="panel-head"><h2 class="panel-title">Run the pipeline</h2></div>
-        <div class="panel-body">
-          <div class="field">
-            <label class="label" for="jQuery">Search term</label>
-            <input class="input" id="jQuery" placeholder="wheel bearings" autocomplete="off">
-          </div>
-          <div class="field">
-            <span class="label">Optional stages</span>
-            <div style="display:flex;flex-direction:column;gap:8px">
-              <label class="check"><input type="checkbox" id="jWebsites"><span>Find missing websites</span></label>
-              <label class="check"><input type="checkbox" id="jCapabilities"><span>Read supplier websites</span></label>
-              <label class="check"><input type="checkbox" id="jFacilities"><span>Verify addresses</span></label>
-              <label class="check"><input type="checkbox" id="jLinkedIn"><span>Check LinkedIn</span></label>
-            </div>
-            <p class="hint">Each of these spends real API credit per supplier. All are off by default for that reason.</p>
-          </div>
-          <button class="btn btn-primary btn-block" id="btnRunJob">Start run</button>
-          <a class="btn btn-ghost btn-block" id="btnExport" style="margin-top:8px" href="#">Download CSV</a>
-        </div>
-      </aside>
-
-      <div>
-        <div id="jobAlert"></div>
-        <div class="panel">
-          <div class="panel-head">
-            <h2 class="panel-title">Runs</h2>
-            <button class="btn btn-ghost btn-sm" id="btnRefreshJobs">Refresh</button>
-          </div>
-          <div id="jobList"></div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ══ DISCOVER (AI Discovery/Collection/Verification) ══ -->
+  <!-- ══ DISCOVER & ENRICH ═════════════════════════════════ -->
   <section id="view-discover" class="hidden">
     <div class="split">
       <aside class="rail" style="display:flex;flex-direction:column;gap:16px">
@@ -639,14 +378,14 @@ dialog::backdrop{background:rgba(15,27,45,.5)}
               <input class="input" id="dLimit" type="number" min="1" max="50" placeholder="20">
             </div>
             <button class="btn btn-primary btn-block" id="btnDiscover">Search the open web</button>
-            <p class="hint" style="margin-top:10px">AI-grounded discovery, not a marketplace scrape — every result traces to a real search hit and a real fetched website that corroborates it. Never invents a company. Costs a real search plus an AI read per candidate — start small.</p>
+            <p class="hint" style="margin-top:10px">Every result traces to a real search hit and a real fetched website. Costs a real search plus an AI read per candidate — start small.</p>
           </div>
         </div>
 
         <div class="panel">
           <div class="panel-head"><h2 class="panel-title">Bulk enrichment</h2></div>
           <div class="panel-body">
-            <p class="hint" style="margin-top:0">Runs across every EXISTING supplier that hasn't been done yet, not just new discoveries — the way to fill in AI Confidence/summary and site collection for suppliers you already have.</p>
+            <p class="hint" style="margin-top:0;margin-bottom:16px">Runs across existing suppliers that haven't been done yet.</p>
             <div class="field">
               <label class="label" for="bLimit">Suppliers per run</label>
               <input class="input" id="bLimit" type="number" min="1" max="200" placeholder="20">
@@ -659,7 +398,7 @@ dialog::backdrop{background:rgba(15,27,45,.5)}
             </div>
             <button class="btn btn-ghost btn-block" id="btnBulkCollect">Collect all pending</button>
             <button class="btn btn-ghost btn-block" id="btnBulkVerify" style="margin-top:8px">Verify all pending (AI)</button>
-            <p class="hint" style="margin-top:10px">Each supplier costs a real headless-browser visit (collect) or a real OpenAI call (verify) — start with a small "suppliers per run" number.</p>
+            <p class="hint" style="margin-top:10px">Each supplier costs a real headless-browser visit (collect) or a real OpenAI call (verify) — start small.</p>
           </div>
         </div>
       </aside>
@@ -668,12 +407,11 @@ dialog::backdrop{background:rgba(15,27,45,.5)}
         <div id="discoverAlert"></div>
         <div class="panel">
           <div class="panel-head">
-            <h2 class="panel-title">Discovery / collection / verification runs</h2>
-            <button class="btn btn-ghost btn-sm" id="btnRefreshDiscoverJobs">Refresh</button>
+            <h2 class="panel-title">Recent runs</h2>
+            <button class="btn btn-ghost btn-sm" id="btnRefreshJobs">Refresh</button>
           </div>
-          <div id="discoverJobList"></div>
+          <div id="jobList"></div>
         </div>
-        <p class="hint" style="margin-top:10px">Per-supplier collection/verification/reverify jobs are also triggered from each result's card on the Search tab — they show up in this same list.</p>
       </div>
     </div>
   </section>
@@ -703,48 +441,12 @@ dialog::backdrop{background:rgba(15,27,45,.5)}
   </form>
 </dialog>
 
-<!-- ══ OUTCOME DIALOG ════════════════════════════════════ -->
-<dialog id="outcomeDialog">
-  <form method="dialog">
-    <div class="dlg-head"><h2 class="dlg-title">Record what happened</h2></div>
-    <div class="dlg-body">
-      <p class="hint" style="margin-bottom:14px">Logged against <strong id="oSupplierName"></strong>. This builds the history the scoring can eventually be calibrated against.</p>
-      <div class="field">
-        <label class="label" for="oOutcome">Outcome</label>
-        <select class="select" id="oOutcome">
-          <option value="nda_signed">NDA signed</option>
-          <option value="rfq_submitted">RFQ submitted</option>
-          <option value="quoted">Quoted</option>
-          <option value="accepted_ddp">Accepted DDP</option>
-          <option value="accepted_30_day_payment">Accepted 30-day payment</option>
-          <option value="accepted_60_day_payment">Accepted 60-day payment</option>
-          <option value="tooling_order_won">Tooling order won</option>
-          <option value="quality_approved">Quality approved</option>
-          <option value="supplier_rejected">Supplier rejected</option>
-        </select>
-      </div>
-      <div class="field">
-        <label class="label" for="oNotes">Notes</label>
-        <textarea class="input" id="oNotes" rows="3" placeholder="Lead time quoted at 8 weeks"></textarea>
-      </div>
-      <div id="outcomeResult"></div>
-    </div>
-    <div class="dlg-foot">
-      <button class="btn btn-ghost" value="cancel">Cancel</button>
-      <button class="btn btn-primary" id="btnSaveOutcome" value="default">Save outcome</button>
-    </div>
-  </form>
-</dialog>
-
 <script>
 "use strict";
 
-/* ═══════════════════════════════════════════════════════════
-   Storage. localStorage is the right tool on a real Netlify
-   deployment, but some sandboxed preview frames block it — so
-   every access falls back to memory rather than throwing and
-   taking the whole app down with it.
-   ═══════════════════════════════════════════════════════════ */
+/* localStorage is the right tool on a real Netlify deployment, but some
+   sandboxed preview frames block it -- every access falls back to memory
+   rather than throwing and taking the whole app down with it. */
 const mem = {};
 const store = {
   get(k){ try{ return localStorage.getItem(k); }catch{ return k in mem ? mem[k] : null; } },
@@ -755,43 +457,13 @@ const state = {
   base: store.get("si.base") || "",
   token: store.get("si.token") || "",
   connected: false,
-  selectedCaps: new Set(),
-  profileCaps: new Set(),
-  profiles: [],
-  activeProfile: null,
-  jobTimer: null,
-  discoverJobTimer: null
+  jobTimer: null
 };
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => (
   {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]
 ));
-
-/* Curated from the API's own controlled vocabulary. Offering these as
-   chips instead of a free-text box means a search can't fail on an
-   unrecognised term — the API rejects those with a 400. */
-const VOCAB = {
-  "Certifications": ["iso 9001","iatf 16949","iso 14001","ce marking","e-mark approval","ece r10","ece r48"],
-  "Shipping": ["ddp shipping","dap shipping","fob shipping","cif shipping","door to door shipping","uk warehouse","eu warehouse","customs expertise"],
-  "OEM readiness": ["ppap capability","cad engineering support","traceability system","design for manufacture"],
-  "Markets served": ["serves uk market","serves eu market","serves north america market","oem supplier"],
-  "Processes": ["rotational moulding","injection moulding","cnc machining","welding","laser cutting","press brake forming","stamping","hot dip galvanising","powder coating","die casting","forging","tube bending"],
-  "Assembly": ["sub-assembly","wiring harness assembly","in-house tool room","bespoke low volume manufacture"]
-};
-
-/* Source → evidence tier. This mapping is the product's core idea:
-   the same claim is worth different amounts depending on where it
-   came from, and the interface should never hide which. */
-const TIER = {
-  trade_data:        { key:"verified", label:"Verified",  note:"customs record" },
-  registry:          { key:"verified", label:"Verified",  note:"business registry" },
-  supplier_location: { key:"stated",   label:"Located",   note:"based in market" },
-  own_website:       { key:"stated",   label:"Stated",    note:"own website" },
-  directory_listing: { key:"claimed",  label:"Claimed",   note:"directory listing" },
-  unavailable:       { key:"unknown",  label:"No data",   note:"nothing found" }
-};
-const tierFor = (src) => TIER[src] || TIER.unavailable;
 
 /* ═══ API ═══════════════════════════════════════════════════ */
 async function api(path, opts = {}) {
@@ -807,15 +479,6 @@ async function api(path, opts = {}) {
 
   if (res.status === 204) return null;
 
-  // A non-JSON body here is almost always an HTML page, not an API
-  // error -- most commonly it means `state.base` isn't actually this
-  // API at all, e.g. it's pointed at this very Netlify site, whose
-  // own catch-all redirect (see netlify.toml) serves index.html back
-  // for any unmatched path with a 200 status. Every real endpoint on
-  // this API always sends application/json (or 204 with no body), so
-  // checking Content-Type here catches that misconfiguration with a
-  // clear message instead of letting a caller try to .map() a string
-  // and get a cryptic "x.map is not a function" instead.
   const contentType = res.headers.get("content-type") || "";
   const text = await res.text();
   if (!contentType.includes("application/json")) {
@@ -853,7 +516,7 @@ function explain(err, host) {
       `Check the address is right and the service is running. If both look fine, this page's origin <code>${esc(location.origin)}</code> probably isn't in <code>ALLOWED_ORIGINS</code> on Railway.`);
   } else if (err.message === "NOT_JSON") {
     alertBox(host, 1, "Got a webpage instead of data",
-      `The response from <code>${esc(state.base)}</code> wasn't JSON. This usually means the API address is wrong — most commonly it's pointed at this Netlify site itself rather than your Railway service. Check the address in the connection dialog.`);
+      `The response from <code>${esc(state.base)}</code> wasn't JSON. Check the address in the connection dialog.`);
   } else if (err.status === 401) {
     alertBox(host, 1, "Token rejected", "The access token doesn't match the one set on the server.");
   } else if (err.status === 503) {
@@ -900,7 +563,7 @@ $("btnConnect").addEventListener("click", (e) => {
   state.base = url; state.token = token;
   store.set("si.base", url); store.set("si.token", token);
   $("connDialog").close();
-  checkHealth().then(loadProfiles);
+  checkHealth();
 });
 
 /* ═══ Navigation ════════════════════════════════════════════ */
@@ -910,97 +573,22 @@ $("nav").addEventListener("click", (e) => {
   const view = btn.dataset.view;
   document.querySelectorAll("#nav button").forEach(b =>
     b.setAttribute("aria-current", b === btn ? "page" : "false"));
-  ["search","profiles","pipeline","discover"].forEach(v =>
+  ["search","discover"].forEach(v =>
     $("view-" + v).classList.toggle("hidden", v !== view));
-  if (view === "profiles") loadProfiles();
-  if (view === "pipeline") loadJobs();
-  if (view === "discover") loadDiscoverJobs();
+  if (view === "discover") loadJobs();
 });
 
-/* ═══ Capability chips ══════════════════════════════════════ */
-function renderChips(host, selected) {
-  host.innerHTML = Object.entries(VOCAB).map(([group, terms]) => `
-    <div class="chip-group-label">${esc(group)}</div>
-    <div class="chips">
-      ${terms.map(t => `<button type="button" class="chip${selected.has(t) ? " on" : ""}" data-term="${esc(t)}">${esc(t)}</button>`).join("")}
-    </div>
-  `).join("");
-}
-function wireChips(host, selected) {
-  host.addEventListener("click", (e) => {
-    const chip = e.target.closest(".chip");
-    if (!chip) return;
-    const term = chip.dataset.term;
-    selected.has(term) ? selected.delete(term) : selected.add(term);
-    chip.classList.toggle("on", selected.has(term));
-  });
-}
-renderChips($("chipHost"), state.selectedCaps);
-wireChips($("chipHost"), state.selectedCaps);
-renderChips($("pChipHost"), state.profileCaps);
-wireChips($("pChipHost"), state.profileCaps);
-
-/* ═══ Evidence rendering — the signature element ════════════ */
-function stamp(source, confidence) {
-  const t = tierFor(source);
-  const pct = Math.round((confidence || 0) * 100);
-  return `
-    <div class="stamp">
-      <span class="stamp-tier ${t.key}">${esc(t.label)}</span>
-      <div class="conf"><div class="conf-fill ${t.key}" data-w="${pct}"></div></div>
-      <span class="stamp-conf">${confidence == null ? "—" : pct + "%"}</span>
-    </div>`;
-}
-
-function capabilityRow(cap) {
-  const rel = cap.relationship === "in_house" ? "in-house"
-            : cap.relationship === "subcontracted" ? "subcontracted"
-            : "stated";
-  return `
-    <div class="ev">
-      ${stamp("own_website", cap.confidence)}
-      <div class="ev-main">
-        <div class="ev-term">${esc(cap.canonical_term || cap.reported_term)}<span class="ev-rel">${esc(rel)}</span></div>
-        ${cap.evidence ? `<div class="ev-quote">${esc(cap.evidence)}</div>` : ""}
-      </div>
-    </div>`;
-}
-
-function factorRow(f) {
-  const t = tierFor(f.source);
-  const known = f.value !== null && f.value !== undefined;
-  const name = f.factor_name.replace(/^(logistics|certification|oem_readiness|market_presence):/, "").replace(/_/g, " ");
-  const shown = (typeof f.value === "boolean" || !known) ? "" :
-    `<span class="ev-rel">${esc(String(f.value))}</span>`;
-  return `
-    <div class="ev">
-      ${stamp(f.source, f.confidence)}
-      <div class="ev-main">
-        <div class="ev-term" style="${known ? "" : "color:var(--steel-500);font-weight:500"}">${esc(name)}${shown}</div>
-        ${f.evidence ? `<div class="ev-quote">${esc(f.evidence)}</div>` : ""}
-        <div class="ev-why">${esc(f.reasoning)}</div>
-      </div>
-    </div>`;
-}
-
-/* verification_ai's AI cross-check assessment -- a synthesis across
-   every existing signal, deliberately never merged into composite_score
-   (see the .scores comment above) and rendered separately here for the
-   same reason: it answers "how much do independent sources corroborate
-   this," not "how strong is this listing." */
+/* ═══ Supplier cards ════════════════════════════════════════ */
 function aiBlock(s) {
   const strengths = s.ai_strengths || [];
   const risks = s.ai_risks || [];
-  const customers = s.ai_suitable_customer_types || [];
   if (!s.ai_summary && !strengths.length && !risks.length) return "";
   return `
     <div class="ai-block">
-      <div class="section-rule" style="margin-top:0">AI cross-check assessment</div>
+      <div class="section-rule">AI assessment</div>
       ${s.ai_summary ? `<p class="ai-summary">${esc(s.ai_summary)}</p>` : ""}
       ${strengths.length ? `<span class="ai-sublabel">Strengths</span><ul class="ai-list strengths">${strengths.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
       ${risks.length ? `<span class="ai-sublabel">Risks</span><ul class="ai-list risks">${risks.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
-      ${customers.length ? `<span class="ai-sublabel">Good fit for</span><div class="chips">${customers.map(c => `<span class="chip">${esc(c)}</span>`).join("")}</div>` : ""}
-      <div class="ai-meta">A synthesis across the checks below, not independent verification on its own — see "Show all evidence" for what it's based on.</div>
     </div>`;
 }
 
@@ -1035,17 +623,13 @@ function badges(s) {
   else if (s.is_manufacturer === false) out.push(`<span class="badge trader">Confirmed trader</span>`);
   if (s.facility_address_verified === true) out.push(`<span class="badge mfr">Address verified</span>`);
   else if (s.facility_address_verified === false) out.push(`<span class="badge warn">Address unverified</span>`);
-  if (s.factory_photo_verdict === "plausible_factory") out.push(`<span class="badge mfr">Factory photos check out</span>`);
-  else if (s.factory_photo_verdict === "implausible") out.push(`<span class="badge warn">Factory photos doubtful</span>`);
   if (s.linkedin_url) out.push(`<span class="badge neutral">LinkedIn found</span>`);
   if (s.collection_status === "success") out.push(`<span class="badge neutral">Site collected</span>`);
   else if (s.collection_status === "failed") out.push(`<span class="badge warn">Collection failed</span>`);
-  if (s.recommendation) out.push(`<span class="badge neutral">${esc(s.recommendation)}</span>`);
   return out.length ? `<div class="badges">${out.join("")}</div>` : "";
 }
 
 function supplierCard(s, i) {
-  const caps = s.matched_capabilities || [];
   return `
     <article class="card" style="animation-delay:${Math.min(i * 35, 280)}ms">
       <div class="card-head">
@@ -1061,80 +645,14 @@ function supplierCard(s, i) {
       </div>
       ${badges(s)}
       <div class="card-body">
-        ${caps.length ? `<div class="section-rule">Matched your requirements</div>${caps.map(capabilityRow).join("")}` : ""}
         ${aiBlock(s)}
-        <div id="ev-${s.id}"></div>
         <div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">
-          <button class="btn btn-ghost btn-sm" data-evidence-id="${s.id}">Show all evidence</button>
-          <button class="btn btn-ghost btn-sm" data-outcome-id="${s.id}" data-outcome-name="${esc(s.canonical_name)}">Record outcome</button>
           <button class="btn btn-ghost btn-sm" data-collect-id="${s.id}">Collect site</button>
           <button class="btn btn-ghost btn-sm" data-verify-id="${s.id}">Verify (AI)</button>
           <button class="btn btn-ghost btn-sm" data-reverify-id="${s.id}">Reverify</button>
         </div>
       </div>
     </article>`;
-}
-
-function commercialCard(s, i) {
-  const cc = s.commercial_compatibility || {};
-  const factors = cc.factors || [];
-  const scale = (cc.scale || []).filter(f => f.value !== null && f.value !== undefined);
-  const prob = cc.payment_terms_probability;
-
-  return `
-    <article class="card" style="animation-delay:${Math.min(i * 35, 280)}ms">
-      <div class="card-head">
-        <div>
-          <h3 class="card-name">${esc(s.canonical_name)}</h3>
-          <div class="card-meta">${supplierMeta(s)}</div>
-        </div>
-        <div class="scores">
-          ${scoreBlock("Technical", s.composite_score)}
-          ${scoreBlock("Commercial", s.commercial_compatibility_score, "commercial")}
-        </div>
-      </div>
-      ${badges(s)}
-      <div class="card-body">
-        ${factors.length ? `<div class="section-rule">Commercial fit</div>${factors.map(factorRow).join("")}` : ""}
-        ${scale.length ? `<div class="section-rule">Company scale</div>${scale.map(factorRow).join("")}` : ""}
-        ${prob ? probabilityBlock(prob) : ""}
-        <div style="margin-top:12px">
-          <button class="btn btn-ghost btn-sm" data-outcome-id="${s.id}" data-outcome-name="${esc(s.canonical_name)}">Record outcome</button>
-        </div>
-      </div>
-    </article>`;
-}
-
-function probabilityBlock(p) {
-  const sigs = p.contributing_signals || [];
-  return `
-    <div class="prob">
-      <div class="prob-head">
-        <div>
-          <div class="prob-q">Could they accept ${esc(p.outcome)}?</div>
-          <div class="prob-caveat">An estimate from the signals below, not a fact. Nobody has asked them.</div>
-        </div>
-        <div style="text-align:right">
-          <div class="prob-num">${p.probability}%</div>
-          <div class="stamp-conf">${esc(p.confidence_level)} confidence</div>
-        </div>
-      </div>
-      <div style="margin-top:10px">
-        ${sigs.map(s => {
-          const mark = !s.available ? `<span class="sig-mark unk">?</span>`
-                     : s.present ? `<span class="sig-mark yes">✓</span>`
-                     : `<span class="sig-mark no">·</span>`;
-          return `<div class="sig">${mark}<span class="sig-detail">${esc(s.detail)}</span><span class="sig-w">${s.weight}</span></div>`;
-        }).join("")}
-      </div>
-    </div>`;
-}
-
-/* Confidence bars fill after paint, so the transition actually runs. */
-function animateBars(root) {
-  requestAnimationFrame(() => {
-    root.querySelectorAll(".conf-fill").forEach(el => { el.style.width = el.dataset.w + "%"; });
-  });
 }
 
 /* ═══ Search ════════════════════════════════════════════════ */
@@ -1153,7 +671,6 @@ async function runSearch() {
   if (minScore) p.set("min_score", minScore);
   p.set("manufacturers_only", $("fMfr").checked ? "true" : "false");
   p.set("limit", "50");
-  state.selectedCaps.forEach(t => p.append("require", t));
 
   try {
     const rows = await api("/suppliers/search?" + p.toString());
@@ -1161,12 +678,11 @@ async function runSearch() {
     if (!rows.length) {
       host.innerHTML = `<div class="empty">
         <div class="empty-title">Nothing matched</div>
-        <p class="empty-text">Try removing a required capability, or widening the country filter. Requirements are combined with AND — every one has to be evidenced.</p>
+        <p class="empty-text">Try widening the country filter or removing the minimum score.</p>
       </div>`;
       return;
     }
     host.innerHTML = rows.map(supplierCard).join("");
-    animateBars(host);
   } catch (err) {
     $("searchCount").textContent = "";
     explain(err, alertHost);
@@ -1176,351 +692,9 @@ $("btnSearch").addEventListener("click", runSearch);
 $("fProduct").addEventListener("keydown", e => { if (e.key === "Enter") runSearch(); });
 $("fCountry").addEventListener("keydown", e => { if (e.key === "Enter") runSearch(); });
 
-/* ═══ Buyer profiles ════════════════════════════════════════ */
-async function loadProfiles() {
-  const host = $("profileList");
-  try {
-    state.profiles = await api("/buyer-profiles");
-    $("profileCount").textContent = state.profiles.length + (state.profiles.length === 1 ? " profile" : " profiles");
-    if (!state.profiles.length) {
-      host.innerHTML = `<div style="padding:32px 16px;text-align:center;color:var(--steel-500);font-size:14px">
-        No profiles yet. Create one to score suppliers against what a specific buyer actually needs.
-      </div>`;
-      return;
-    }
-    host.innerHTML = `<table class="tbl">
-      <thead><tr><th>Name</th><th>Requires</th><th>Prefers</th><th></th></tr></thead>
-      <tbody>${state.profiles.map(pr => `
-        <tr>
-          <td>
-            <strong>${esc(pr.name)}</strong>
-            ${pr.destination_country ? `<div class="mono" style="color:var(--steel-500)">${esc(pr.destination_country)}</div>` : ""}
-          </td>
-          <td class="mono">${(pr.required_capabilities || []).map(esc).join("<br>") || "—"}</td>
-          <td class="mono">${[
-            pr.preferred_incoterm,
-            pr.preferred_payment_terms_days ? pr.preferred_payment_terms_days + "-day terms" : null,
-            pr.target_market
-          ].filter(Boolean).map(esc).join("<br>") || "—"}</td>
-          <td style="white-space:nowrap;text-align:right">
-            <button class="btn btn-primary btn-sm" data-run-profile="${pr.id}" data-profile-name="${esc(pr.name)}">Find matches</button>
-            <button class="btn btn-ghost btn-sm" data-del-profile="${pr.id}">Delete</button>
-          </td>
-        </tr>`).join("")}</tbody>
-    </table>`;
-  } catch (err) {
-    explain(err, $("profileAlert"));
-  }
-}
-
-$("btnCreateProfile").addEventListener("click", async () => {
-  const name = $("pName").value.trim();
-  if (!name) {
-    alertBox($("profileAlert"), 1, "Name needed", "Give the profile a name so you can find it again.");
-    return;
-  }
-  const body = {
-    name,
-    destination_country: $("pCountry").value.trim() || null,
-    required_capabilities: [...state.profileCaps],
-    preferred_incoterm: $("pIncoterm").value || null,
-    preferred_payment_terms_days: $("pPayment").value ? Number($("pPayment").value) : null,
-    min_export_experience_years: $("pExport").value ? Number($("pExport").value) : null,
-    target_market: $("pTarget").value || null,
-    manufacturers_only: $("pMfr").checked
-  };
-  try {
-    await api("/buyer-profiles", { method: "POST", body: JSON.stringify(body) });
-    alertBox($("profileAlert"), 0);
-    $("pName").value = ""; $("pCountry").value = ""; $("pPayment").value = ""; $("pExport").value = "";
-    state.profileCaps.clear();
-    renderChips($("pChipHost"), state.profileCaps);
-    loadProfiles();
-  } catch (err) {
-    if (err.status === 409) {
-      alertBox($("profileAlert"), 1, "Name already used", "A profile with that name exists. Pick a different one.");
-    } else {
-      explain(err, $("profileAlert"));
-    }
-  }
-});
-
-$("profileList").addEventListener("click", async (e) => {
-  const run = e.target.closest("[data-run-profile]");
-  const del = e.target.closest("[data-del-profile]");
-
-  if (run) {
-    const id = run.dataset.runProfile;
-    const host = $("commercialResults");
-    $("commercialHead").classList.remove("hidden");
-    $("commercialTitle").textContent = "Matches for " + run.dataset.profileName;
-    $("commercialCount").textContent = "scoring…";
-    host.innerHTML = "";
-    try {
-      const rows = await api(`/buyer-profiles/${id}/search?limit=50`);
-      $("commercialCount").textContent = rows.length + (rows.length === 1 ? " supplier" : " suppliers");
-      if (!rows.length) {
-        host.innerHTML = `<div class="empty">
-          <div class="empty-title">No supplier clears the requirements</div>
-          <p class="empty-text">Required certifications and country are hard filters. Loosen them on the profile, or run the pipeline to collect more evidence first.</p>
-        </div>`;
-        return;
-      }
-      host.innerHTML = rows.map(commercialCard).join("");
-      animateBars(host);
-    } catch (err) {
-      $("commercialCount").textContent = "";
-      explain(err, $("profileAlert"));
-    }
-  }
-
-  if (del) {
-    const id = del.dataset.delProfile;
-    if (!confirm("Delete this profile? Outcomes recorded against it are kept.")) return;
-    try {
-      await api(`/buyer-profiles/${id}`, { method: "DELETE" });
-      $("commercialHead").classList.add("hidden");
-      $("commercialResults").innerHTML = "";
-      loadProfiles();
-    } catch (err) { explain(err, $("profileAlert")); }
-  }
-});
-
-/* ═══ Pipeline ══════════════════════════════════════════════ */
-/* One shared job table renders both this tab's runs and Discover's --
-   /pipeline/jobs already returns every job type (pipeline, enrichment,
-   collection, verification, discovery, reverify), discriminated by
-   query's own prefix ("[discovery] ...", "[collection] ...", etc.),
-   not a separate endpoint per type. */
-function summarizeJobStats(j) {
-  if (j.status !== "completed") return j.error ? esc(j.error).slice(0, 70) : "—";
-  const st = j.stats || {};
-  const q = j.query || "";
-  if (q.startsWith("[discovery]")) {
-    return `${st.candidates_validated ?? 0} validated · ${(st.new_supplier_ids || []).length} new`;
-  }
-  if (q.startsWith("[collection]")) {
-    return "pages_visited" in st
-      ? `${st.status ?? "?"} · ${st.pages_visited ?? 0} page(s)`
-      : `${st.succeeded ?? 0}/${st.attempted ?? 0} succeeded`;
-  }
-  if (q.startsWith("[verification]")) {
-    return "confidence_score" in st
-      ? `confidence ${st.confidence_score}`
-      : `${st.succeeded ?? 0}/${st.attempted ?? 0} succeeded`;
-  }
-  if (q.startsWith("[reverify]")) {
-    const v = st.verification || {};
-    return v.confidence_score != null ? `confidence ${v.confidence_score}` : "done";
-  }
-  if (q.startsWith("[enrichment]")) {
-    return Object.entries(st).slice(0, 2).map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(", ");
-  }
-  return `${st.created ?? 0} new · ${st.merged ?? 0} merged`;
-}
-
-function renderJobsTable(jobs) {
-  if (!jobs.length) {
-    return `<div style="padding:32px 16px;text-align:center;color:var(--steel-500);font-size:14px">
-      No runs yet.
-    </div>`;
-  }
-  return `<table class="tbl">
-    <thead><tr><th>Run</th><th>Status</th><th>Result</th><th>Started</th></tr></thead>
-    <tbody>${jobs.map(j => `
-      <tr>
-        <td><strong>${esc(j.query)}</strong></td>
-        <td><span class="status ${esc(j.status)}">${esc(j.status)}</span></td>
-        <td class="mono">${summarizeJobStats(j)}</td>
-        <td class="mono" style="color:var(--steel-500)">${esc(j.created_at || "")}</td>
-      </tr>`).join("")}</tbody>
-  </table>`;
-}
-
-async function loadJobs() {
-  try {
-    const jobs = await api("/pipeline/jobs?limit=25");
-    $("jobList").innerHTML = renderJobsTable(jobs.filter(j =>
-      !/^\[(discovery|collection|verification|reverify)\]/.test(j.query || "")));
-    const active = jobs.some(j => j.status === "queued" || j.status === "running");
-    active ? startPolling() : stopPolling();
-  } catch (err) {
-    explain(err, $("jobAlert"));
-    stopPolling();
-  }
-}
-
-async function loadDiscoverJobs() {
-  try {
-    const jobs = await api("/pipeline/jobs?limit=25");
-    $("discoverJobList").innerHTML = renderJobsTable(jobs.filter(j =>
-      /^\[(discovery|collection|verification|reverify)\]/.test(j.query || "")));
-    const active = jobs.some(j => j.status === "queued" || j.status === "running");
-    active ? startDiscoverPolling() : stopDiscoverPolling();
-  } catch (err) {
-    explain(err, $("discoverAlert"));
-    stopDiscoverPolling();
-  }
-}
-
-function startPolling() { if (!state.jobTimer) state.jobTimer = setInterval(loadJobs, 4000); }
-function stopPolling() { if (state.jobTimer) { clearInterval(state.jobTimer); state.jobTimer = null; } }
-function startDiscoverPolling() { if (!state.discoverJobTimer) state.discoverJobTimer = setInterval(loadDiscoverJobs, 4000); }
-function stopDiscoverPolling() { if (state.discoverJobTimer) { clearInterval(state.discoverJobTimer); state.discoverJobTimer = null; } }
-
-$("btnRunJob").addEventListener("click", async () => {
-  const query = $("jQuery").value.trim();
-  if (!query) {
-    alertBox($("jobAlert"), 1, "Search term needed", "Enter what to look for, for example \"wheel bearings\".");
-    return;
-  }
-  const btn = $("btnRunJob");
-  btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Starting`;
-  try {
-    await api("/pipeline/jobs", {
-      method: "POST",
-      body: JSON.stringify({
-        query,
-        run_website_discovery: $("jWebsites").checked,
-        run_capability_extraction: $("jCapabilities").checked,
-        run_facility_verification: $("jFacilities").checked,
-        run_linkedin_check: $("jLinkedIn").checked
-      })
-    });
-    alertBox($("jobAlert"), 0);
-    $("jQuery").value = "";
-    loadJobs();
-  } catch (err) {
-    explain(err, $("jobAlert"));
-  } finally {
-    btn.disabled = false; btn.textContent = "Start run";
-  }
-});
-
-$("btnRefreshJobs").addEventListener("click", loadJobs);
-
-/* ═══ Discover ══════════════════════════════════════════════ */
-$("btnDiscover").addEventListener("click", async () => {
-  const product = $("dProduct").value.trim();
-  if (!product) {
-    alertBox($("discoverAlert"), 1, "Product needed", "Enter what to search for, for example \"trailer axle\".");
-    return;
-  }
-  const btn = $("btnDiscover");
-  btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Searching`;
-  try {
-    await api("/discovery/jobs", {
-      method: "POST",
-      body: JSON.stringify({
-        product,
-        category: $("dCategory").value.trim() || null,
-        country: $("dCountry").value.trim() || null,
-        max_candidates: $("dLimit").value ? Number($("dLimit").value) : 20
-      })
-    });
-    alertBox($("discoverAlert"), 0);
-    loadDiscoverJobs();
-  } catch (err) {
-    explain(err, $("discoverAlert"));
-  } finally {
-    btn.disabled = false; btn.textContent = "Search the open web";
-  }
-});
-
-$("btnRefreshDiscoverJobs").addEventListener("click", loadDiscoverJobs);
-
-/* ═══ Bulk enrichment ═══════════════════════════════════════
-   Same collection.jobs/verification.jobs endpoints the per-card
-   buttons use, just with pending:true instead of a single supplier_id
-   -- the existing backend batch mode (get_suppliers_needing_collection/
-   get_suppliers_needing_ai_verification) already skips anything
-   already processed unless "Redo suppliers already processed" is
-   checked, so it's always safe to click again. */
-async function triggerBulkJob(btn, path, label) {
-  const original = btn.textContent;
-  const limit = $("bLimit").value ? Number($("bLimit").value) : 20;
-  const force = $("bForce").checked;
-  btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Queuing`;
-  try {
-    await api(path, { method: "POST", body: JSON.stringify({ pending: true, limit, force }) });
-    alertBox($("discoverAlert"), 0);
-    btn.textContent = "Queued ✓";
-    loadDiscoverJobs();
-  } catch (err) {
-    btn.textContent = original;
-    explain(err, $("discoverAlert"));
-  } finally {
-    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
-  }
-}
-
-$("btnBulkCollect").addEventListener("click", () =>
-  triggerBulkJob($("btnBulkCollect"), "/collection/jobs", "Collect all pending"));
-$("btnBulkVerify").addEventListener("click", () =>
-  triggerBulkJob($("btnBulkVerify"), "/verification/jobs", "Verify all pending"));
-
-$("btnExport").addEventListener("click", async (e) => {
-  e.preventDefault();
-  try {
-    const res = await fetch(state.base + "/export/csv", {
-      headers: { "Authorization": "Bearer " + state.token }
-    });
-    if (!res.ok) throw Object.assign(new Error("Export failed"), { status: res.status });
-    const blob = await res.blob();
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "suppliers.csv";
-    a.click();
-    URL.revokeObjectURL(a.href);
-  } catch (err) { explain(err, $("jobAlert")); }
-});
-
-/* ═══ Full evidence on demand ═══════════════════════════════
-   /suppliers/search returns matched_capabilities, which means only
-   the capabilities that satisfied the search's own requirements — an
-   unfiltered search returns none, even for a supplier with plenty on
-   file. So rather than let a card imply "no evidence exists", this
-   pulls the complete set from the detail endpoint when asked.
-   ═══════════════════════════════════════════════════════════ */
-document.addEventListener("click", async (e) => {
-  const btn = e.target.closest("[data-evidence-id]");
-  if (!btn) return;
-  const id = btn.dataset.evidenceId;
-  const slot = $("ev-" + id);
-  if (!slot) return;
-
-  if (slot.dataset.loaded === "1") {
-    const open = slot.style.display !== "none";
-    slot.style.display = open ? "none" : "";
-    btn.textContent = open ? "Show all evidence" : "Hide evidence";
-    return;
-  }
-
-  btn.disabled = true; btn.textContent = "Loading…";
-  try {
-    const full = await api("/suppliers/" + id);
-    const caps = full.matched_capabilities || [];
-    slot.innerHTML = caps.length
-      ? `<div class="section-rule">All evidence on file</div>${caps.map(capabilityRow).join("")}`
-      : `<div class="section-rule">All evidence on file</div>
-         <p class="ev-why">Nothing collected from this supplier's own website yet. Run the website-reading stage from Pipeline to gather it.</p>`;
-    slot.dataset.loaded = "1";
-    animateBars(slot);
-    btn.textContent = "Hide evidence";
-  } catch (err) {
-    explain(err, $("searchAlert"));
-    btn.textContent = "Show all evidence";
-  } finally {
-    btn.disabled = false;
-  }
-});
-
 /* ═══ Per-supplier Collect / Verify / Reverify ═════════════════
-   Each queues a background job (same pipeline_jobs table the
-   Discover/Pipeline tabs poll) -- there's no immediate result to show
-   inline, so this just confirms the job was queued and points at
-   where to watch it, rather than pretending the card updates itself.
-   ═══════════════════════════════════════════════════════════ */
+   Each queues a background job -- there's no immediate result to show
+   inline, so this just confirms the job was queued. */
 async function triggerSupplierJob(btn, path, body) {
   const original = btn.textContent;
   btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Queuing`;
@@ -1548,31 +722,118 @@ document.addEventListener("click", (e) => {
   }
 });
 
-/* ═══ Outcomes ══════════════════════════════════════════════ */
-let outcomeSupplierId = null;
-document.addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-outcome-id]");
-  if (!btn) return;
-  outcomeSupplierId = btn.dataset.outcomeId;
-  $("oSupplierName").textContent = btn.dataset.outcomeName;
-  $("oNotes").value = "";
-  $("outcomeResult").innerHTML = "";
-  $("outcomeDialog").showModal();
-});
-
-$("btnSaveOutcome").addEventListener("click", async (e) => {
-  e.preventDefault();
+/* ═══ Discover ══════════════════════════════════════════════ */
+$("btnDiscover").addEventListener("click", async () => {
+  const product = $("dProduct").value.trim();
+  if (!product) {
+    alertBox($("discoverAlert"), 1, "Product needed", "Enter what to search for, for example \"trailer axle\".");
+    return;
+  }
+  const btn = $("btnDiscover");
+  btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Searching`;
   try {
-    await api(`/suppliers/${outcomeSupplierId}/procurement-outcomes`, {
+    await api("/discovery/jobs", {
       method: "POST",
       body: JSON.stringify({
-        outcome: $("oOutcome").value,
-        notes: $("oNotes").value.trim() || null
+        product,
+        category: $("dCategory").value.trim() || null,
+        country: $("dCountry").value.trim() || null,
+        max_candidates: $("dLimit").value ? Number($("dLimit").value) : 20
       })
     });
-    $("outcomeDialog").close();
-  } catch (err) { explain(err, $("outcomeResult")); }
+    alertBox($("discoverAlert"), 0);
+    loadJobs();
+  } catch (err) {
+    explain(err, $("discoverAlert"));
+  } finally {
+    btn.disabled = false; btn.textContent = "Search the open web";
+  }
 });
+
+/* ═══ Bulk enrichment ═══════════════════════════════════════
+   Same collection.jobs/verification.jobs endpoints the per-card
+   buttons use, just with pending:true instead of a single supplier_id
+   -- already safe to click again since already-processed suppliers are
+   skipped unless "Redo suppliers already processed" is checked. */
+async function triggerBulkJob(btn, path) {
+  const original = btn.textContent;
+  const limit = $("bLimit").value ? Number($("bLimit").value) : 20;
+  const force = $("bForce").checked;
+  btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Queuing`;
+  try {
+    await api(path, { method: "POST", body: JSON.stringify({ pending: true, limit, force }) });
+    alertBox($("discoverAlert"), 0);
+    btn.textContent = "Queued ✓";
+    loadJobs();
+  } catch (err) {
+    btn.textContent = original;
+    explain(err, $("discoverAlert"));
+  } finally {
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
+  }
+}
+
+$("btnBulkCollect").addEventListener("click", () => triggerBulkJob($("btnBulkCollect"), "/collection/jobs"));
+$("btnBulkVerify").addEventListener("click", () => triggerBulkJob($("btnBulkVerify"), "/verification/jobs"));
+
+/* ═══ Jobs list ═════════════════════════════════════════════ */
+function summarizeJobStats(j) {
+  if (j.status !== "completed") return j.error ? esc(j.error).slice(0, 70) : "—";
+  const st = j.stats || {};
+  const q = j.query || "";
+  if (q.startsWith("[discovery]")) {
+    return `${st.candidates_validated ?? 0} validated · ${(st.new_supplier_ids || []).length} new`;
+  }
+  if (q.startsWith("[collection]")) {
+    return "pages_visited" in st
+      ? `${st.status ?? "?"} · ${st.pages_visited ?? 0} page(s)`
+      : `${st.succeeded ?? 0}/${st.attempted ?? 0} succeeded`;
+  }
+  if (q.startsWith("[verification]")) {
+    return "confidence_score" in st
+      ? `confidence ${st.confidence_score}`
+      : `${st.succeeded ?? 0}/${st.attempted ?? 0} succeeded`;
+  }
+  if (q.startsWith("[reverify]")) {
+    const v = st.verification || {};
+    return v.confidence_score != null ? `confidence ${v.confidence_score}` : "done";
+  }
+  return Object.entries(st).slice(0, 2).map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(", ");
+}
+
+function renderJobsTable(jobs) {
+  if (!jobs.length) {
+    return `<div style="padding:32px 16px;text-align:center;color:var(--steel-500);font-size:14px">
+      No runs yet.
+    </div>`;
+  }
+  return `<table class="tbl">
+    <thead><tr><th>Run</th><th>Status</th><th>Result</th><th>Started</th></tr></thead>
+    <tbody>${jobs.map(j => `
+      <tr>
+        <td><strong>${esc(j.query)}</strong></td>
+        <td><span class="status ${esc(j.status)}">${esc(j.status)}</span></td>
+        <td class="mono">${summarizeJobStats(j)}</td>
+        <td class="mono" style="color:var(--steel-500)">${esc(j.created_at || "")}</td>
+      </tr>`).join("")}</tbody>
+  </table>`;
+}
+
+async function loadJobs() {
+  try {
+    const jobs = await api("/pipeline/jobs?limit=25");
+    $("jobList").innerHTML = renderJobsTable(jobs);
+    const active = jobs.some(j => j.status === "queued" || j.status === "running");
+    active ? startPolling() : stopPolling();
+  } catch (err) {
+    explain(err, $("discoverAlert"));
+    stopPolling();
+  }
+}
+function startPolling() { if (!state.jobTimer) state.jobTimer = setInterval(loadJobs, 4000); }
+function stopPolling() { if (state.jobTimer) { clearInterval(state.jobTimer); state.jobTimer = null; } }
+
+$("btnRefreshJobs").addEventListener("click", loadJobs);
 
 /* ═══ Boot ══════════════════════════════════════════════════ */
 (async function init() {
@@ -1580,15 +841,14 @@ $("btnSaveOutcome").addEventListener("click", async (e) => {
   if (!state.base) {
     $("searchResults").innerHTML = `<div class="empty">
       <div class="empty-title">Connect to get started</div>
-      <p class="empty-text">Point this at your API and every supplier you search will come back with the evidence behind it — where each claim came from, and how strongly it's held.</p>
+      <p class="empty-text">Point this at your API and search will return suppliers with their contact details and evidence-backed scores.</p>
       <button class="btn btn-primary" style="margin-top:16px" onclick="document.getElementById('connBtn').click()">Add API details</button>
     </div>`;
   } else {
     $("searchResults").innerHTML = `<div class="empty">
       <div class="empty-title">Search the supplier database</div>
-      <p class="empty-text">Add a product, pick the certifications that matter, and every result will show the evidence behind each claim — and stay honest about what isn't known.</p>
+      <p class="empty-text">Add a product and any filters, then search.</p>
     </div>`;
-    loadProfiles();
   }
 })();
 </script>
