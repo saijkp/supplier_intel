@@ -289,6 +289,25 @@ class TestExportEndpoint:
         response = client.get("/export/csv")
         assert response.status_code == 401
 
+    def test_excel_export_returns_xlsx_content_type(self, client):
+        from io import BytesIO
+
+        from openpyxl import load_workbook
+
+        client.repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        response = client.get("/export/excel", headers=auth_headers())
+        assert response.status_code == 200
+        assert response.headers["content-type"] == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        workbook = load_workbook(BytesIO(response.content))
+        rows = list(workbook.active.iter_rows(values_only=True))
+        assert any("Acme" in row for row in rows)
+
+    def test_excel_export_requires_auth(self, client):
+        response = client.get("/export/excel")
+        assert response.status_code == 401
+
 
 class TestCORSConfiguration:
     """CORSMiddleware is added once, at module-import time, using

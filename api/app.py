@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 
 from api.auth import require_api_token
 from api.jobs import run_enrichment_job, run_pipeline_job
@@ -271,6 +271,26 @@ def export_csv(
     return PlainTextResponse(
         csv_text, media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=suppliers.csv"},
+    )
+
+
+@app.get("/export/excel", dependencies=[Depends(require_api_token)])
+def export_excel(
+    recommendation: Optional[str] = None,
+    min_score: Optional[int] = None,
+    limit: int = 1000,
+    repo: SupplierRepository = Depends(get_repo),
+) -> Response:
+    from reports.generator import suppliers_to_excel_bytes
+
+    suppliers = repo.list_suppliers(
+        recommendation=recommendation, min_composite_score=min_score, limit=limit
+    )
+    excel_bytes = suppliers_to_excel_bytes(suppliers)
+    return Response(
+        excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=suppliers.xlsx"},
     )
 
 

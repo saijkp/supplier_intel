@@ -19,6 +19,7 @@ Usage:
     python main.py list                        List suppliers (filterable)
     python main.py report                      Generate a Markdown supplier report
     python main.py export-csv                  Export suppliers to CSV
+    python main.py export-excel                 Export suppliers to Excel (.xlsx), with contact/address enrichment columns
 """
 
 from __future__ import annotations
@@ -648,6 +649,22 @@ def export_csv(recommendation: str, min_score: int, limit: int, output: str) -> 
 
     repo = SupplierRepository()
     path = export_suppliers_csv(repo, output, recommendation=recommendation, min_score=min_score, limit=limit)
+    console.print(f"[green]✓[/green] Exported to [bold]{path}[/bold]")
+
+
+@cli.command("export-excel")
+@click.option("--recommendation", type=click.Choice(["recommended", "review", "unverified", "avoid"]))
+@click.option("--min-score", type=int, default=None)
+@click.option("--limit", default=1000)
+@click.option("--output", "-o", default="data/exports/suppliers.xlsx")
+def export_excel(recommendation: str, min_score: int, limit: int, output: str) -> None:
+    """Export suppliers to an Excel (.xlsx) file -- same filters as export-csv,
+    plus the contact/address-enrichment columns (secondary emails, contact
+    form URL, facility address verification, LinkedIn) CSV leaves out."""
+    from reports.generator import export_suppliers_excel
+
+    repo = SupplierRepository()
+    path = export_suppliers_excel(repo, output, recommendation=recommendation, min_score=min_score, limit=limit)
     console.print(f"[green]✓[/green] Exported to [bold]{path}[/bold]")
 
 

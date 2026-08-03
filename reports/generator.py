@@ -100,7 +100,7 @@ def save_markdown_report(
 # storage.repository.SUPPLIER_WRITABLE_FIELDS rather than every column,
 # since a spreadsheet with 60+ columns is unusable in practice.
 CSV_COLUMNS: List[str] = [
-    "id", "canonical_name", "country", "city", "domain",
+    "id", "canonical_name", "country", "city", "address", "domain",
     "is_manufacturer", "manufacturer_confidence",
     "uscc", "uscc_verified", "business_scope", "registered_capital_rmb",
     "iso_9001", "e_mark_certified", "ukca_certified", "ce_certified",
@@ -111,15 +111,30 @@ CSV_COLUMNS: List[str] = [
     "manufacturer_signals",
 ]
 
+# Excel export is the fuller sibling of CSV_COLUMNS — same curated base
+# plus the contact/address-enrichment fields (secondary_emails,
+# contact_form_url, facility address verification, LinkedIn) that
+# CSV_COLUMNS deliberately leaves out to stay a lean, quick-glance
+# subset. These are exactly the fields
+# verification/website_contact_extractor.py and
+# verification/facility_address_verifier.py populate, so a spreadsheet
+# pulled after an enrichment run actually shows what was found.
+EXCEL_COLUMNS: List[str] = CSV_COLUMNS + [
+    "secondary_emails", "contact_form_url",
+    "facility_address_verified", "facility_address_verification_source",
+    "linkedin_url",
+]
 
-def _prepare_supplier_for_csv(supplier: Dict[str, Any]) -> Dict[str, Any]:
-    """CSV cells can't hold a Python list — flatten manufacturer_signals
-    into a single semicolon-joined string so the evidence is still
-    visible in a spreadsheet, not silently dropped."""
+
+def _prepare_supplier_for_export(supplier: Dict[str, Any]) -> Dict[str, Any]:
+    """Neither CSV cells nor Excel cells can hold a Python list —
+    flatten any list-valued field (manufacturer_signals,
+    secondary_emails) into a single semicolon-joined string so the
+    evidence is still visible in a spreadsheet, not silently dropped."""
     row = dict(supplier)
-    signals = row.get("manufacturer_signals")
-    if isinstance(signals, list):
-        row["manufacturer_signals"] = "; ".join(signals)
+    for key, value in row.items():
+        if isinstance(value, list):
+            row[key] = "; ".join(str(v) for v in value)
     return row
 
 
@@ -128,7 +143,7 @@ def suppliers_to_csv_string(suppliers: List[Dict[str, Any]]) -> str:
     writer = csv.DictWriter(buffer, fieldnames=CSV_COLUMNS, extrasaction="ignore")
     writer.writeheader()
     for supplier in suppliers:
-        row = _prepare_supplier_for_csv(supplier)
+        row = _prepare_supplier_for_export(supplier)
         writer.writerow({col: row.get(col, "") for col in CSV_COLUMNS})
     return buffer.getvalue()
 
@@ -146,4 +161,46 @@ def export_suppliers_csv(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(suppliers_to_csv_string(suppliers), encoding="utf-8", newline="")
+    return output_path
+
+
+def suppliers_to_excel_bytes(suppliers: List[Dict[str, Any]]) -> bytes:
+    """Same data/columns philosophy as suppliers_to_csv_string, as an
+    actual .xlsx workbook instead of a text format -- a frozen header
+    row and auto-sized-ish column widths so the file is usable the
+    moment it's opened, not just technically correct."""
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Suppliers"
+    sheet.append(EXCEL_COLUMNS)
+    sheet.freeze_panes = "A2"
+
+    for supplier in suppliers:
+        row = _prepare_supplier_for_export(supplier)
+        sheet.append([row.get(col, "") for col in EXCEL_COLUMNS])
+
+    for i, col in enumerate(EXCEL_COLUMNS, start=1):
+        width = max(len(col), 12)
+        sheet.column_dimensions[sheet.cell(row=1, column=i).column_letter].width = min(width + 4, 40)
+
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def export_suppliers_excel(
+    repo: SupplierRepository,
+    output_path: Union[Path, str],
+    recommendation: Optional[str] = None,
+    min_score: Optional[int] = None,
+    limit: int = 1000,
+) -> Path:
+    suppliers = repo.list_suppliers(
+        recommendation=recommendation, min_composite_score=min_score, limit=limit,
+    )
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(suppliers_to_excel_bytes(suppliers))
     return output_path

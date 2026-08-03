@@ -11,10 +11,13 @@ import csv
 
 from reports.generator import (
     CSV_COLUMNS,
+    EXCEL_COLUMNS,
     export_suppliers_csv,
+    export_suppliers_excel,
     generate_markdown_report,
     save_markdown_report,
     suppliers_to_csv_string,
+    suppliers_to_excel_bytes,
 )
 from storage.database import initialise_schema
 from storage.repository import SupplierRepository
@@ -197,3 +200,92 @@ class TestCSVExport:
         assert "Signal one" in row["manufacturer_signals"]
         assert "Signal two" in row["manufacturer_signals"]
         assert "[" not in row["manufacturer_signals"]  # not a raw Python list repr
+
+    def test_address_is_included(self, tmp_path):
+        """address was missing from CSV_COLUMNS despite being one of
+        the fields buyers most need -- regression guard against
+        losing it again."""
+        assert "address" in CSV_COLUMNS
+
+
+class TestExcelExport:
+
+    def _read_rows(self, excel_bytes: bytes):
+        from io import BytesIO
+
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(BytesIO(excel_bytes))
+        sheet = workbook.active
+        rows = list(sheet.iter_rows(values_only=True))
+        header, data_rows = rows[0], rows[1:]
+        return header, [dict(zip(header, row)) for row in data_rows]
+
+    def test_suppliers_to_excel_bytes_includes_header_and_rows(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_golden_record({
+            "canonical_name": "Foo Co", "country": "China", "is_manufacturer": True,
+        })
+        excel_bytes = suppliers_to_excel_bytes(repo.list_suppliers())
+
+        header, rows = self._read_rows(excel_bytes)
+        assert list(header) == EXCEL_COLUMNS
+        assert len(rows) == 1
+        assert rows[0]["canonical_name"] == "Foo Co"
+        assert rows[0]["country"] == "China"
+
+    def test_excel_columns_are_a_superset_of_csv_columns(self):
+        assert set(CSV_COLUMNS).issubset(set(EXCEL_COLUMNS))
+        assert "secondary_emails" in EXCEL_COLUMNS
+        assert "contact_form_url" in EXCEL_COLUMNS
+        assert "facility_address_verified" in EXCEL_COLUMNS
+        assert "linkedin_url" in EXCEL_COLUMNS
+
+    def test_secondary_emails_flattened_to_readable_string(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_golden_record({
+            "canonical_name": "Foo Co",
+            "primary_email": "sales@foo.com",
+            "secondary_emails": ["info@foo.com", "support@foo.com"],
+        })
+        excel_bytes = suppliers_to_excel_bytes(repo.list_suppliers())
+        _, rows = self._read_rows(excel_bytes)
+
+        assert "info@foo.com" in rows[0]["secondary_emails"]
+        assert "support@foo.com" in rows[0]["secondary_emails"]
+        assert "[" not in rows[0]["secondary_emails"]
+
+    def test_export_suppliers_excel_writes_a_readable_file(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_golden_record({"canonical_name": "Foo Co", "country": "China"})
+        repo.create_golden_record({"canonical_name": "Bar Co", "country": "India"})
+
+        output_path = tmp_path / "exports" / "suppliers.xlsx"
+        result_path = export_suppliers_excel(repo, output_path)
+
+        assert result_path.exists()
+        header, rows = self._read_rows(result_path.read_bytes())
+        assert len(rows) == 2
+        names = {row["canonical_name"] for row in rows}
+        assert names == {"Foo Co", "Bar Co"}
+
+    def test_export_respects_filters(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        id_a = repo.create_golden_record({"canonical_name": "High Co"})
+        id_b = repo.create_golden_record({"canonical_name": "Low Co"})
+        repo.update_scores(id_a, {"composite_score": 90, "recommendation": "recommended"})
+        repo.update_scores(id_b, {"composite_score": 5, "recommendation": "avoid"})
+
+        output_path = tmp_path / "filtered.xlsx"
+        export_suppliers_excel(repo, output_path, recommendation="recommended")
+
+        _, rows = self._read_rows(output_path.read_bytes())
+        assert len(rows) == 1
+        assert rows[0]["canonical_name"] == "High Co"
+
+    def test_empty_supplier_list_produces_header_only(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        excel_bytes = suppliers_to_excel_bytes(repo.list_suppliers())
+        header, rows = self._read_rows(excel_bytes)
+        assert list(header) == EXCEL_COLUMNS
+        assert rows == []
