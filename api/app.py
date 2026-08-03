@@ -43,6 +43,7 @@ from fastapi.responses import PlainTextResponse, Response
 from api.auth import require_api_token
 from api.jobs import (
     run_collection_job,
+    run_discovery_job,
     run_enrichment_job,
     run_pipeline_job,
     run_reverify_job,
@@ -53,6 +54,7 @@ from api.models import (
     BuyerProfileResponse,
     CollectionJobRequest,
     CommercialSearchResult,
+    DiscoveryJobRequest,
     EnrichmentJobRequest,
     PipelineJobRequest,
     PipelineJobResponse,
@@ -299,6 +301,30 @@ def create_verification_job(
     label = f"[verification] supplier #{request.supplier_id}" if request.supplier_id else "[verification] pending batch"
     repo.create_pipeline_job(job_id=job_id, query=label, options=options)
     background_tasks.add_task(run_verification_job, job_id, options)
+    job = repo.get_pipeline_job(job_id)
+    return _to_job_response(job)
+
+
+@app.post(
+    "/discovery/jobs",
+    response_model=PipelineJobResponse,
+    status_code=202,
+    dependencies=[Depends(require_api_token)],
+)
+def create_discovery_job(
+    request: DiscoveryJobRequest,
+    background_tasks: BackgroundTasks,
+    repo: SupplierRepository = Depends(get_repo),
+) -> PipelineJobResponse:
+    """Same async job/poll pattern as POST /collection/jobs, but for
+    discovery.discovery_service.DiscoveryService -- AI-assisted supplier
+    discovery grounded entirely in real SerpAPI search results (see
+    discovery/discovery_service.py's module docstring). The HTTP
+    equivalent of `main.py discover`."""
+    job_id = str(uuid.uuid4())
+    options = request.model_dump()
+    repo.create_pipeline_job(job_id=job_id, query=f"[discovery] {request.product}", options=options)
+    background_tasks.add_task(run_discovery_job, job_id, options)
     job = repo.get_pipeline_job(job_id)
     return _to_job_response(job)
 

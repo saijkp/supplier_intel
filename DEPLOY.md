@@ -171,6 +171,7 @@ Core endpoints:
 | POST | `/pipeline/enrichment-jobs` | Trigger find-websites/extract-capabilities/verify-facilities across every existing supplier needing it |
 | POST | `/collection/jobs` | Trigger Collection Service (real headless browser) against one supplier or a batch — same job/poll pattern |
 | POST | `/verification/jobs` | Trigger Verification Service (AI cross-check, `ai_confidence_score`) against one supplier or a batch |
+| POST | `/discovery/jobs` | Trigger Discovery Service — AI-assisted supplier search, grounded entirely in real SerpAPI results |
 | POST | `/suppliers/{id}/reverify` | Re-collect then re-verify one already-known supplier — changes append to its change log, never silently overwritten |
 | GET | `/suppliers/{id}/verification-history` | Every verification_ai run for one supplier, newest first |
 | GET | `/suppliers/{id}/change-log` | Every field-level change collection/verification_ai have made to one supplier, newest first |

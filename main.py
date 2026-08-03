@@ -20,6 +20,10 @@ Usage:
     python main.py report                      Generate a Markdown supplier report
     python main.py export-csv                  Export suppliers to CSV
     python main.py export-excel                 Export suppliers to Excel (.xlsx), with contact/address enrichment columns
+    python main.py discover "trailer axle" --country China   AI-assisted supplier discovery, grounded in real search results
+    python main.py collect --supplier-id 123     Visit a supplier's website with a real headless browser (collection.SiteCollector)
+    python main.py verify-ai --supplier-id 123   AI cross-check + confidence score against existing verification signals
+    python main.py reverify --supplier-id 123    Re-collect then re-verify an already-known supplier
 """
 
 from __future__ import annotations
@@ -322,6 +326,38 @@ def verify_facilities(force: bool, limit: int) -> None:
     pipeline = SupplierIntelligencePipeline()
     stats = pipeline.run_facility_verification_only(force=force, limit=limit)
     console.print(f"[green]✓[/green] Verified {stats['facility_address_verified']} address(es) as real places.")
+
+
+@cli.command("discover")
+@click.argument("product")
+@click.option("--category", default=None, help="Optional product category, recorded on discovery_runs.")
+@click.option("--country", default=None, help="Optional country to qualify the search (e.g. China).")
+@click.option("--limit", "max_candidates", default=20, show_default=True,
+              help="Stop after this many candidate companies. Each one costs a paid SerpAPI "
+                   "search plus, for candidates that pass initial filtering, a real HTTP fetch "
+                   "and an OpenAI call -- start small on a first run.")
+def discover(product: str, category: Optional[str], country: Optional[str], max_candidates: int) -> None:
+    """AI-assisted supplier discovery, grounded entirely in real SerpAPI search
+    results -- every accepted supplier traces to a real search hit, a real
+    fetched website, and that website's own text corroborating the identity
+    (see discovery/discovery_service.py's module docstring for the full
+    anti-hallucination pipeline). Rediscovering an existing supplier merges
+    via the same dedup engine main.py run already uses, never duplicates."""
+    from discovery.discovery_service import DiscoveryService
+
+    service = DiscoveryService()
+    outcome = service.discover(product, category=category, country=country, max_candidates=max_candidates)
+
+    table = Table(show_header=False)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Count", justify="right", style="magenta")
+    table.add_row("candidates found", str(outcome.candidates_found))
+    table.add_row("candidates validated", str(outcome.candidates_validated))
+    table.add_row("candidates rejected", str(outcome.candidates_rejected))
+    table.add_row("merged into existing supplier", str(outcome.candidates_duplicate))
+    table.add_row("new suppliers created", str(len(outcome.new_supplier_ids)))
+    table.add_row("  (queued for dedup review)", str(len(outcome.review_queued_supplier_ids)))
+    console.print(table)
 
 
 @cli.command("collect")

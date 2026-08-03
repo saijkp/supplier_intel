@@ -157,6 +157,23 @@ class VerificationJobRequest(BaseModel):
     )
 
 
+class DiscoveryJobRequest(BaseModel):
+    """Triggers discovery.discovery_service.DiscoveryService -- the HTTP
+    equivalent of `main.py discover`. AI-assisted supplier discovery,
+    grounded entirely in real SerpAPI search results (see
+    discovery/discovery_service.py's module docstring)."""
+
+    product: str = Field(description="Product/component search term, e.g. 'trailer axle'.")
+    category: Optional[str] = Field(default=None, description="Optional product category, recorded on discovery_runs.")
+    country: Optional[str] = Field(default=None, description="Optional country to qualify the search.")
+    max_candidates: int = Field(
+        default=20,
+        description="Stop after this many candidate companies. Each one costs a paid SerpAPI "
+                     "search plus, for candidates that pass initial filtering, a real HTTP "
+                     "fetch and an OpenAI call -- start small on a first run.",
+    )
+
+
 class PipelineJobResponse(BaseModel):
     id: str
     status: str

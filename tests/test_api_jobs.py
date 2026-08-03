@@ -408,3 +408,66 @@ class TestRunReverifyJob:
         job = repo.get_pipeline_job("job41")
         assert job["status"] == "failed"
         assert "browser crashed" in job["error"]
+
+
+class FakeDiscoveryService:
+    last_instance = None
+
+    def __init__(self, repo=None):
+        self.repo = repo
+        self.last_discover_call = None
+        FakeDiscoveryService.last_instance = self
+
+    def discover(self, product, category=None, country=None, max_candidates=20):
+        from discovery.discovery_service import DiscoveryOutcome
+
+        self.last_discover_call = {
+            "product": product, "category": category, "country": country, "max_candidates": max_candidates,
+        }
+        return DiscoveryOutcome(candidates_found=5, candidates_validated=2, candidates_rejected=3,
+                                 new_supplier_ids=[10, 11])
+
+
+class FailingFakeDiscoveryService(FakeDiscoveryService):
+    def discover(self, product, category=None, country=None, max_candidates=20):
+        raise RuntimeError("search API down")
+
+
+class TestRunDiscoveryJob:
+
+    def test_dispatches_with_all_options(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "DiscoveryService", FakeDiscoveryService)
+
+        repo.create_pipeline_job(job_id="job50", query="[discovery] trailer axle",
+                                  options={"product": "trailer axle", "category": "Axles", "country": "China", "max_candidates": 15})
+        jobs_module.run_discovery_job("job50", {
+            "product": "trailer axle", "category": "Axles", "country": "China", "max_candidates": 15,
+        })
+
+        assert FakeDiscoveryService.last_instance.last_discover_call == {
+            "product": "trailer axle", "category": "Axles", "country": "China", "max_candidates": 15,
+        }
+        job = repo.get_pipeline_job("job50")
+        assert job["status"] == "completed"
+        assert job["stats"]["candidates_found"] == 5
+        assert job["stats"]["new_supplier_ids"] == [10, 11]
+
+    def test_missing_optional_options_default_correctly(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "DiscoveryService", FakeDiscoveryService)
+
+        repo.create_pipeline_job(job_id="job51", query="[discovery] trailer axle", options={"product": "trailer axle"})
+        jobs_module.run_discovery_job("job51", {"product": "trailer axle"})
+
+        assert FakeDiscoveryService.last_instance.last_discover_call == {
+            "product": "trailer axle", "category": None, "country": None, "max_candidates": 20,
+        }
+
+    def test_failing_job_marks_failed_not_raised(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "DiscoveryService", FailingFakeDiscoveryService)
+
+        repo.create_pipeline_job(job_id="job52", query="[discovery] trailer axle", options={"product": "trailer axle"})
+        jobs_module.run_discovery_job("job52", {"product": "trailer axle"})  # must not raise
+
+        job = repo.get_pipeline_job("job52")
+        assert job["status"] == "failed"
+        assert "search API down" in job["error"]

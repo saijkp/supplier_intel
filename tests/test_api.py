@@ -85,6 +85,12 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api.app, "run_reverify_job", fake_run_reverify_job)
 
+    def fake_run_discovery_job(job_id, options):
+        test_repo.mark_pipeline_job_running(job_id)
+        test_repo.mark_pipeline_job_completed(job_id, stats={"candidates_found": 0})
+
+    monkeypatch.setattr(api.app, "run_discovery_job", fake_run_discovery_job)
+
     with TestClient(api.app.app) as test_client:
         test_client.repo = test_repo
         yield test_client
@@ -349,6 +355,43 @@ class TestVerificationJobEndpoints:
 
     def test_requires_auth(self, client):
         response = client.post("/verification/jobs", json={"supplier_id": 5})
+        assert response.status_code == 401
+
+
+class TestDiscoveryJobEndpoints:
+
+    def test_creating_a_job_returns_202_with_a_job_id(self, client):
+        response = client.post("/discovery/jobs", json={"product": "trailer axle"}, headers=auth_headers())
+        assert response.status_code == 202
+        body = response.json()
+        assert body["status"] == "queued"
+        assert body["query"] == "[discovery] trailer axle"
+        assert body["id"]
+
+    def test_created_job_is_retrievable_by_id(self, client):
+        create_response = client.post(
+            "/discovery/jobs", json={"product": "trailer axle", "country": "China", "max_candidates": 10},
+            headers=auth_headers(),
+        )
+        job_id = create_response.json()["id"]
+        get_response = client.get(f"/pipeline/jobs/{job_id}", headers=auth_headers())
+        assert get_response.status_code == 200
+        assert get_response.json()["query"] == "[discovery] trailer axle"
+
+    def test_missing_product_is_a_validation_error(self, client):
+        response = client.post("/discovery/jobs", json={}, headers=auth_headers())
+        assert response.status_code == 422
+
+    def test_defaults_match_documented_behaviour(self, client):
+        response = client.post("/discovery/jobs", json={"product": "trailer axle"}, headers=auth_headers())
+        job_id = response.json()["id"]
+        job = client.repo.get_pipeline_job(job_id)
+        assert job["options"]["category"] is None
+        assert job["options"]["country"] is None
+        assert job["options"]["max_candidates"] == 20
+
+    def test_requires_auth(self, client):
+        response = client.post("/discovery/jobs", json={"product": "trailer axle"})
         assert response.status_code == 401
 
 

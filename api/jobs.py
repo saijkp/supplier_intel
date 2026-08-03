@@ -14,10 +14,12 @@ received the HTTP request, so a second replica polling
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import Any, Dict
 
 from collection.collection_service import CollectionService
+from discovery.discovery_service import DiscoveryService
 from pipeline.orchestrator import SupplierIntelligencePipeline, build_limit_scraper_kwargs
 from storage.repository import SupplierRepository
 from verification_ai.verification_service import VerificationService
@@ -155,4 +157,23 @@ def run_reverify_job(job_id: str, supplier_id: int) -> None:
         repo.mark_pipeline_job_completed(job_id, stats=stats)
     except Exception as e:
         logger.error("Reverify job %s (supplier #%s) failed: %s", job_id, supplier_id, e)
+        repo.mark_pipeline_job_failed(job_id, error=str(e))
+
+
+def run_discovery_job(job_id: str, options: Dict[str, Any]) -> None:
+    """The HTTP equivalent of `main.py discover`. DiscoveryOutcome is a
+    dataclass, not a plain dict -- converted via dataclasses.asdict()
+    before mark_pipeline_job_completed's own json.dumps(stats) call,
+    which can't serialise a dataclass instance directly."""
+    repo = SupplierRepository()
+    repo.mark_pipeline_job_running(job_id)
+    try:
+        service = DiscoveryService(repo=repo)
+        outcome = service.discover(
+            options["product"], category=options.get("category"), country=options.get("country"),
+            max_candidates=options.get("max_candidates", 20),
+        )
+        repo.mark_pipeline_job_completed(job_id, stats=dataclasses.asdict(outcome))
+    except Exception as e:
+        logger.error("Discovery job %s failed: %s", job_id, e)
         repo.mark_pipeline_job_failed(job_id, error=str(e))
