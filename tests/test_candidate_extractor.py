@@ -66,6 +66,17 @@ class TestExtractCandidates:
         results = [SimpleNamespace(success=True, raw_data={"title": "No link here"})]
         assert extract_candidates(results) == []
 
+    def test_filters_out_cloudflare_email_protection_links(self):
+        """Real production bug: a search result pointing at
+        https://toyota-4runner.org/cdn-cgi/l/email-protection (an
+        obfuscated-mailto redirect that 404s outside a real browser,
+        on a domain with no relevance to the search at all) was treated
+        as a real candidate and burned a discovery pass on a dead
+        fetch. The path marker is the signal, not the domain -- this
+        must be excluded regardless of which domain it appears on."""
+        results = [_result("https://toyota-4runner.org/cdn-cgi/l/email-protection", title="some forum post")]
+        assert extract_candidates(results) == []
+
     def test_filters_out_industry_portal_domains(self):
         """Real production bug: marklines.com and gasgoo.com (automotive
         industry data/news portals) surfaced as Discovery Service

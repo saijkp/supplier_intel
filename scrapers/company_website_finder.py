@@ -105,6 +105,18 @@ class WebsiteFindingResult:
     reason: str
 
 
+def _is_cloudflare_internal_path(link: Optional[str]) -> bool:
+    """True for a link pointing at Cloudflare's own internal routing
+    path (most commonly `/cdn-cgi/l/email-protection`, an obfuscated-
+    mailto redirect that 404s to anything but a real browser executing
+    its decode script) -- never a usable "read this company's homepage"
+    URL, on ANY domain. Real Discovery Service failure this guards
+    against: a search result pointing at exactly this path on an
+    unrelated forum was treated as a candidate company site and burned
+    an entire discovery pass on a dead fetch."""
+    return bool(link) and "/cdn-cgi/" in link
+
+
 def _is_usable_candidate_domain(domain: Optional[str]) -> bool:
     """True only for a domain that's plausibly a company's own site --
     not a known B2B platform, not a social network or general
@@ -166,6 +178,8 @@ class CompanyWebsiteFinder:
             if not getattr(result, "success", True):
                 continue
             link = (result.raw_data or {}).get("link")
+            if _is_cloudflare_internal_path(link):
+                continue
             domain = extract_domain(link) if link else None
             if _is_usable_candidate_domain(domain):
                 candidate_url = link

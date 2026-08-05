@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any, List
 
 from deduplication.domain_utils import extract_domain
-from scrapers.company_website_finder import _is_usable_candidate_domain
+from scrapers.company_website_finder import _is_cloudflare_internal_path, _is_usable_candidate_domain
 
 
 @dataclass
@@ -40,6 +40,8 @@ def extract_candidates(search_results: List[Any]) -> List[Candidate]:
         raw = result.raw_data or {}
         link = raw.get("link")
         if not link:
+            continue
+        if _is_cloudflare_internal_path(link):
             continue
         domain = extract_domain(link)
         if not _is_usable_candidate_domain(domain):

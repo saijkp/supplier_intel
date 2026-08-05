@@ -127,6 +127,14 @@ class TestExcludesNonCompanyDomains:
             result = finder.find_website("Acme Trailer Parts")
             assert result.domain is None, f"{domain} should have been excluded"
 
+    def test_cloudflare_email_protection_links_are_skipped(self):
+        """Same real bug as discovery/candidate_extractor.py's
+        equivalent fix -- a /cdn-cgi/ link is never a real page,
+        regardless of domain."""
+        finder = _finder([FakeSearchResult("https://some-forum.example.com/cdn-cgi/l/email-protection")])
+        result = finder.find_website("Acme Trailer Parts")
+        assert result.domain is None
+
     def test_industry_portal_domains_are_skipped(self):
         """Real bug this guards against: marklines.com and gasgoo.com
         (automotive industry data/news portals, not individual
