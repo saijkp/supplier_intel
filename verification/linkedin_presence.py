@@ -45,6 +45,7 @@ class LinkedInPresenceResult:
     linkedin_url: Optional[str]
     snippet: Optional[str]
     reason: str
+    source: str = "linkedin_search"  # 'linkedin_search' (a real search completed) | 'unavailable'
 
 
 class LinkedInPresenceChecker:
@@ -70,13 +71,32 @@ class LinkedInPresenceChecker:
             )
         except Exception as e:
             return LinkedInPresenceResult(
-                company_name=company_name, presence_confirmed=False,
+                company_name=company_name, presence_confirmed=False, source="unavailable",
                 linkedin_url=None, snippet=None, reason=f"search failed: {e}",
             )
 
+        # GoogleSearchScraper.scrape() doesn't raise for an ordinary
+        # failure (e.g. SERPAPI_KEY not configured, quota exhausted) --
+        # it returns [error_result(...)] instead (see scrapers/
+        # base_scraper.py's own convention), which is a NON-EMPTY list
+        # with success=False, distinct from a genuinely empty list
+        # (a successful call that simply found zero organic results --
+        # see GoogleSearchScraper.scrape's own contract). Real bug this
+        # guards against: if every entry in a non-empty list failed, the
+        # loop below would previously fall through to "no LinkedIn page
+        # found" -- indistinguishable from a real negative even though
+        # the search never actually ran.
+        if not results:
+            return LinkedInPresenceResult(
+                company_name=company_name, presence_confirmed=False,
+                linkedin_url=None, snippet=None, reason="no LinkedIn page found",
+            )
+
+        any_successful = False
         for result in results:
             if not getattr(result, "success", True):
                 continue
+            any_successful = True
             raw = result.raw_data or {}
             link = raw.get("link")
             if link and "linkedin.com" in link:
@@ -85,6 +105,16 @@ class LinkedInPresenceChecker:
                     linkedin_url=link, snippet=raw.get("snippet"),
                     reason="LinkedIn page found via search",
                 )
+
+        if not any_successful:
+            first_error = next(
+                (getattr(r, "error", None) for r in results if not getattr(r, "success", True)), None,
+            )
+            return LinkedInPresenceResult(
+                company_name=company_name, presence_confirmed=False, source="unavailable",
+                linkedin_url=None, snippet=None,
+                reason=first_error or "LinkedIn search could not be completed",
+            )
 
         return LinkedInPresenceResult(
             company_name=company_name, presence_confirmed=False,

@@ -147,6 +147,12 @@ class CrossChecker:
             return
         try:
             li_result = self.linkedin_checker.check(supplier["canonical_name"])
+            if li_result.source == "unavailable":
+                # The search itself never ran (SerpAPI not configured,
+                # quota exhausted, a request exception) -- not evidence
+                # of an absent LinkedIn page, same "silence isn't itself
+                # a red flag" discipline as the facility_address check.
+                return
             result.sub_checks.append(SubCheckResult(
                 name="linkedin_presence", verdict=li_result.presence_confirmed, detail=li_result.reason,
             ))

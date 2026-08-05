@@ -70,7 +70,32 @@ class TestLinkedInPresenceCheck:
         checker = LinkedInPresenceChecker(FakeGoogleScraper(raise_error=RuntimeError("SerpAPI down")))
         result = checker.check("Acme Trailer Parts")
         assert result.presence_confirmed is False
+        assert result.source == "unavailable"
         assert "search failed" in result.reason
+
+    def test_serpapi_not_configured_is_reported_as_unavailable_not_a_false_negative(self):
+        """Real production bug this guards against: GoogleSearchScraper.
+        scrape() doesn't raise when SERPAPI_KEY is missing/quota
+        exhausted -- it returns [error_result(...)] (success=False),
+        which the check() loop used to silently treat as "searched,
+        found nothing" (presence_confirmed=False, indistinguishable
+        from a genuine negative). source="unavailable" is what lets
+        cross_checker.py skip this as no signal instead."""
+        google = FakeGoogleScraper([FakeSearchResult("", success=False)])
+        checker = LinkedInPresenceChecker(google)
+        result = checker.check("Acme Trailer Parts")
+        assert result.presence_confirmed is False
+        assert result.source == "unavailable"
+
+    def test_genuinely_empty_result_list_is_a_real_negative_not_unavailable(self):
+        """Distinct from the all-failed case above: GoogleSearchScraper.
+        scrape() returns a genuinely empty list (not [error_result])
+        when the search itself succeeded and simply found zero organic
+        results -- that IS real evidence, not "the check couldn't run"."""
+        checker = LinkedInPresenceChecker(FakeGoogleScraper([]))
+        result = checker.check("Totally Obscure Company")
+        assert result.presence_confirmed is False
+        assert result.source == "linkedin_search"
 
     def test_non_linkedin_result_in_the_list_is_ignored(self):
         """Defensive: even though site_filter should already restrict

@@ -139,6 +139,21 @@ class TestLinkedInSubCheck:
         result = checker.run_checks({"canonical_name": "Acme"})
         assert not any(c.name == "linkedin_presence" for c in result.sub_checks)
 
+    def test_unavailable_source_is_no_signal_never_a_false_negative(self):
+        """Real production bug this guards against: GoogleSearchScraper.
+        scrape() doesn't raise when SERPAPI_KEY is missing/quota
+        exhausted -- it returns an error result, which used to be
+        silently treated as "searched, found nothing" (a contradicted
+        signal). source="unavailable" is what lets this be skipped as
+        no signal instead, same fix as the facility_address check."""
+        linkedin = FakeLinkedInChecker(LinkedInPresenceResult(
+            company_name="Acme", presence_confirmed=False, linkedin_url=None,
+            snippet=None, reason="SERPAPI_KEY is not configured", source="unavailable",
+        ))
+        checker = CrossChecker(linkedin_checker=linkedin)
+        result = checker.run_checks({"canonical_name": "Acme"})
+        assert not any(c.name == "linkedin_presence" for c in result.sub_checks)
+
 
 class TestPhoneConsistencySubCheck:
 
