@@ -81,6 +81,32 @@ class TestFetch:
         scraper.fetch("acme.example.com")
         assert not any("other-domain.com" in url for url in client.requested_urls)
 
+    def test_never_follows_a_mailto_contact_link(self):
+        """Real production bug this guards against: a genuine mailto:
+        href (no netloc, so the off-domain check alone doesn't catch
+        it) was being resolved and attempted as if it were a fetchable
+        page, producing a URL-parsing crash from httpx."""
+        html = """
+        <html><body>
+        <a href="mailto:contact@acme.example.com">Contact Us</a>
+        <a href="/about-us">About Us</a>
+        </body></html>
+        """
+        client = FakeOwnWebsiteClient({
+            "https://acme.example.com": FakeResponse(html),
+            "https://acme.example.com/about-us": FakeResponse("<html><body>About Acme.</body></html>"),
+        })
+        scraper = OwnWebsiteScraper(http_client=client, enable_delays=False)
+        scraper.fetch("acme.example.com")
+        assert not any("mailto" in url for url in client.requested_urls)
+
+    def test_never_follows_a_tel_contact_link(self):
+        html = '<html><body><a href="tel:+15551234567">Call us</a></body></html>'
+        client = FakeOwnWebsiteClient({"https://acme.example.com": FakeResponse(html)})
+        scraper = OwnWebsiteScraper(http_client=client, enable_delays=False)
+        scraper.fetch("acme.example.com")
+        assert not any("tel:" in url for url in client.requested_urls)
+
     def test_bare_domain_is_prefixed_with_https(self):
         client = FakeOwnWebsiteClient({"https://acme.example.com": FakeResponse("<html><body>hi</body></html>")})
         scraper = OwnWebsiteScraper(http_client=client, enable_delays=False)

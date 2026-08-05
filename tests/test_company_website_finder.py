@@ -135,6 +135,17 @@ class TestExcludesNonCompanyDomains:
         result = finder.find_website("Acme Trailer Parts")
         assert result.domain is None
 
+    def test_additional_b2b_marketplace_domains_are_skipped(self):
+        """Real bug this guards against: tradekey.com surfaced as a
+        candidate for a real "trailer axle China" brief -- a malformed
+        contact-page href on it also crashed the sub-page fetcher
+        (see test_own_website_scraper.py's mailto: fix)."""
+        for domain in ("tradekey.com", "dhgate.com", "ec21.com",
+                        "exportersindia.com", "go4worldbusiness.com"):
+            finder = _finder([FakeSearchResult(f"https://{domain}/acme-trailer")])
+            result = finder.find_website("Acme Trailer Parts")
+            assert result.domain is None, f"{domain} should have been excluded"
+
     def test_industry_portal_domains_are_skipped(self):
         """Real bug this guards against: marklines.com and gasgoo.com
         (automotive industry data/news portals, not individual

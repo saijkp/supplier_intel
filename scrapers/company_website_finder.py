@@ -89,6 +89,15 @@ _NON_COMPANY_DOMAINS = {
     # (DNS failure, expired/self-signed cert) before this fix.
     "marklines.com", "gasgoo.com", "thomasnet.com", "globalspec.com",
     "kompass.com", "panjiva.com", "importgenius.com", "just-auto.com",
+    # Additional B2B marketplaces (same class as
+    # PLATFORM_REGISTERED_DOMAINS's Alibaba/IndiaMART/etc., listed here
+    # instead since that set is specifically "sources this codebase
+    # already scrapes structured listings from"). tradekey.com confirmed
+    # live: surfaced as a candidate for a real "trailer axle China"
+    # brief, and a malformed contact-page href on it crashed
+    # OwnWebsiteScraper with a URL-parsing error before that fix.
+    "tradekey.com", "dhgate.com", "ec21.com", "exportersindia.com",
+    "go4worldbusiness.com",
 }
 
 _DEFAULT_MIN_NAME_SIMILARITY = 55.0  # rapidfuzz partial_ratio is 0-100, not 0-1

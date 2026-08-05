@@ -163,6 +163,8 @@ class OwnWebsiteScraper:
             absolute = urllib.parse.urljoin(base_url, href)
             parsed_base = urllib.parse.urlsplit(base_url)
             parsed_link = urllib.parse.urlsplit(absolute)
+            if parsed_link.scheme not in ("http", "https"):
+                continue  # never try to fetch a mailto:/tel:/javascript: href as a page
             if parsed_link.netloc and parsed_link.netloc != parsed_base.netloc:
                 continue  # never follow off-domain links
             normalised = absolute.split("#")[0]
