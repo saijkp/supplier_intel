@@ -91,6 +91,9 @@ SUPPLIER_WRITABLE_FIELDS: Sequence[str] = (
     "ai_confidence_score", "ai_confidence_assessed_at", "ai_summary", "ai_strengths",
     "ai_risks", "ai_suitable_customer_types", "ai_verification_model",
     "discovery_source", "collection_last_run_at", "collection_status", "last_verified",
+    "sourcing_oem_odm_notes", "sourcing_factory_notes", "sourcing_engineering_notes",
+    "sourcing_export_notes", "sourcing_volume_suitability", "sourcing_payment_terms_notes",
+    "sourcing_verification_status",
 )
 
 SCORE_FIELDS: Sequence[str] = (
@@ -261,10 +264,14 @@ class SupplierRepository:
         recommendation: Optional[str] = None,
         country: Optional[str] = None,
         min_composite_score: Optional[int] = None,
+        ids: Optional[Sequence[int]] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """General-purpose filtered listing, used by reports and the CLI."""
+        """General-purpose filtered listing, used by reports and the CLI.
+        `ids`, if given, scopes to exactly those supplier ids -- used by
+        GET /sourcing/runs/{id}/export.csv to download exactly the
+        suppliers one sourcing_runs row qualified, not the whole table."""
         clauses: List[str] = []
         params: List[Any] = []
 
@@ -277,6 +284,12 @@ class SupplierRepository:
         if min_composite_score is not None:
             clauses.append("composite_score >= ?")
             params.append(min_composite_score)
+        if ids is not None:
+            if not ids:
+                return []
+            placeholders = ", ".join("?" for _ in ids)
+            clauses.append(f"id IN ({placeholders})")
+            params.extend(ids)
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.extend([limit, offset])
@@ -1442,7 +1455,7 @@ class SupplierRepository:
             if row is None:
                 return None
             job = dict(row)
-            for field in ("options", "stats"):
+            for field in ("options", "stats", "progress"):
                 if job.get(field):
                     job[field] = json.loads(job[field])
             return job
@@ -1455,11 +1468,22 @@ class SupplierRepository:
             jobs = []
             for row in rows:
                 job = dict(row)
-                for field in ("options", "stats"):
+                for field in ("options", "stats", "progress"):
                     if job.get(field):
                         job[field] = json.loads(job[field])
                 jobs.append(job)
             return jobs
+
+    def update_pipeline_job_progress(self, job_id: str, progress: Dict[str, Any]) -> None:
+        """Live incremental status for a long-running job (currently only
+        written by sourcing/sourcing_agent.py's per-candidate progress
+        callback) -- polled by GET /pipeline/jobs/{id} the same way
+        `stats` already is, just before the job actually completes."""
+        with connection_scope(self.db_path) as conn:
+            conn.execute(
+                "UPDATE pipeline_jobs SET progress = ? WHERE id = ?",
+                (json.dumps(progress, default=_json_default), job_id),
+            )
 
     # ═════════════════════════════════════════════════════
     # Buyer profiles (v10) -- named, reusable search + commercial
@@ -1748,3 +1772,63 @@ class SupplierRepository:
                  candidates_rejected, candidates_duplicate),
             )
             return cur.lastrowid
+
+    # ═════════════════════════════════════════════════════
+    # Sourcing Agent runs (v12) -- one row per chat brief, scoping its
+    # qualified results + CSV download to exactly that request. See
+    # sourcing/sourcing_agent.py.
+    # ═════════════════════════════════════════════════════
+
+    def record_sourcing_run(
+        self, *, brief_text: str, target_count: int, structured_brief: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        with connection_scope(self.db_path) as conn:
+            cur = conn.execute(
+                "INSERT INTO sourcing_runs (brief_text, structured_brief_json, target_count) "
+                "VALUES (?, ?, ?)",
+                (
+                    brief_text,
+                    json.dumps(structured_brief, default=_json_default) if structured_brief is not None else None,
+                    target_count,
+                ),
+            )
+            return cur.lastrowid
+
+    def complete_sourcing_run(
+        self, run_id: int, *, qualified_supplier_ids: List[int], examined_count: int,
+        status: str = "completed", error_message: Optional[str] = None,
+    ) -> None:
+        with connection_scope(self.db_path) as conn:
+            conn.execute(
+                "UPDATE sourcing_runs SET status = ?, examined_count = ?, "
+                "qualified_supplier_ids_json = ?, error_message = ?, completed_at = ? WHERE id = ?",
+                (
+                    status, examined_count, json.dumps(qualified_supplier_ids), error_message,
+                    datetime.now(timezone.utc).isoformat(), run_id,
+                ),
+            )
+
+    def get_sourcing_run(self, run_id: int) -> Optional[Dict[str, Any]]:
+        with connection_scope(self.db_path) as conn:
+            row = conn.execute("SELECT * FROM sourcing_runs WHERE id = ?", (run_id,)).fetchone()
+            if row is None:
+                return None
+            run = dict(row)
+            for field in ("structured_brief_json", "qualified_supplier_ids_json"):
+                if run.get(field):
+                    run[field] = json.loads(run[field])
+            return run
+
+    def list_sourcing_runs(self, *, limit: int = 50) -> List[Dict[str, Any]]:
+        with connection_scope(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM sourcing_runs ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+            runs = []
+            for row in rows:
+                run = dict(row)
+                for field in ("structured_brief_json", "qualified_supplier_ids_json"):
+                    if run.get(field):
+                        run[field] = json.loads(run[field])
+                runs.append(run)
+            return runs

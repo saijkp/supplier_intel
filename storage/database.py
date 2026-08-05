@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 # ═══════════════════════════════════════════════════════════
@@ -194,7 +194,20 @@ CREATE TABLE IF NOT EXISTS suppliers (
     -- DISCOVERY / COLLECTION PROVENANCE (v11)
     discovery_source              TEXT,         -- 'discovery_service' | NULL (legacy/unset)
     collection_last_run_at        TIMESTAMP,
-    collection_status             TEXT          -- 'never_run' | 'success' | 'partial' | 'failed'
+    collection_status             TEXT,         -- 'never_run' | 'success' | 'partial' | 'failed'
+
+    -- SOURCING AGENT procurement dossier (v12) -- see sourcing/dossier_generator.py.
+    -- Deliberately separate from ai_summary/ai_strengths/ai_risks above (different
+    -- question: "does this supplier satisfy THIS chat brief's checklist," not a
+    -- general-purpose assessment) -- never blended, same precedent as
+    -- ai_confidence_score vs composite_score.
+    sourcing_oem_odm_notes         TEXT,
+    sourcing_factory_notes         TEXT,
+    sourcing_engineering_notes     TEXT,
+    sourcing_export_notes          TEXT,
+    sourcing_volume_suitability    TEXT,
+    sourcing_payment_terms_notes   TEXT,
+    sourcing_verification_status   TEXT          -- 'verified' | 'partially verified' | 'unverified' -- no CHECK, same "avoid a fixed enum that breaks the moment a new value is needed" precedent as procurement_outcomes.outcome
 );
 
 CREATE INDEX IF NOT EXISTS idx_sup_domain ON suppliers(domain);
@@ -308,6 +321,10 @@ CREATE TABLE IF NOT EXISTS pipeline_jobs (
     status          TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed')),
     stats           TEXT,                 -- JSON: run()'s own stats dict, once complete
     error           TEXT,
+    progress        TEXT,                 -- JSON (v12): live incremental status for a long-running job
+                                           -- (currently only written by sourcing/ -- see
+                                           -- SupplierRepository.update_pipeline_job_progress), polled
+                                           -- the same way `stats` already is, just before completion
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at      TIMESTAMP,
     completed_at    TIMESTAMP
@@ -473,6 +490,25 @@ CREATE TABLE IF NOT EXISTS discovery_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_dr_query ON discovery_runs(product_query);
+
+
+-- Sourcing Agent (v12): one row per chat brief, scoping its qualified
+-- results + CSV download to exactly this request rather than the whole
+-- suppliers table. See sourcing/sourcing_agent.py.
+CREATE TABLE IF NOT EXISTS sourcing_runs (
+    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+    brief_text                  TEXT NOT NULL,
+    structured_brief_json       TEXT,
+    target_count                INTEGER NOT NULL,
+    examined_count              INTEGER NOT NULL DEFAULT 0,
+    qualified_supplier_ids_json TEXT,
+    status                      TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'completed', 'failed')),
+    error_message                TEXT,
+    created_at                  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at                TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_sruns_status ON sourcing_runs(status);
 
 
 -- ═══════════════════════════════════════
@@ -817,6 +853,44 @@ MIGRATIONS: dict[int, dict] = {
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_dr_query ON discovery_runs(product_query)",
+        ],
+    },
+    12: {
+        "description": (
+            "Sourcing Agent: chat-driven spec-aware sourcing loop -- additive "
+            "sourcing_* columns on suppliers (the detailed procurement-checklist "
+            "dossier, deliberately separate from ai_summary/ai_confidence_score -- "
+            "see sourcing/dossier_generator.py), sourcing_runs (one row per chat "
+            "brief, scoping results + CSV download to that request), and "
+            "pipeline_jobs.progress (live incremental status for a long-running "
+            "sourcing run, polled the same way every other job's stats already is)"
+        ),
+        "columns": [
+            ("suppliers", "sourcing_oem_odm_notes", "TEXT"),
+            ("suppliers", "sourcing_factory_notes", "TEXT"),
+            ("suppliers", "sourcing_engineering_notes", "TEXT"),
+            ("suppliers", "sourcing_export_notes", "TEXT"),
+            ("suppliers", "sourcing_volume_suitability", "TEXT"),
+            ("suppliers", "sourcing_payment_terms_notes", "TEXT"),
+            ("suppliers", "sourcing_verification_status", "TEXT"),
+            ("pipeline_jobs", "progress", "TEXT"),
+        ],
+        "statements": [
+            """
+            CREATE TABLE IF NOT EXISTS sourcing_runs (
+                id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+                brief_text                  TEXT NOT NULL,
+                structured_brief_json       TEXT,
+                target_count                INTEGER NOT NULL,
+                examined_count              INTEGER NOT NULL DEFAULT 0,
+                qualified_supplier_ids_json TEXT,
+                status                      TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'completed', 'failed')),
+                error_message               TEXT,
+                created_at                  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at                TIMESTAMP
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_sruns_status ON sourcing_runs(status)",
         ],
     },
 }

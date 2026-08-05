@@ -44,3 +44,31 @@ class TestBuildQueries:
         assert "manufacturer" in joined
         assert "supplier" in joined
         assert "factory" in joined
+
+
+class TestApplicationAndKeySpecifications:
+
+    def test_application_adds_one_extra_query(self):
+        queries = build_queries("winch", application="off-road trailer recovery")
+        assert len(queries) == 4
+        assert any("off-road trailer recovery" in q for q in queries)
+
+    def test_key_specifications_add_one_extra_query(self):
+        queries = build_queries("winch", key_specifications=["12V", "5000lb capacity"])
+        assert len(queries) == 4
+        assert any("12V" in q and "5000lb capacity" in q for q in queries)
+
+    def test_application_and_key_specifications_together_add_two_extra_queries(self):
+        queries = build_queries(
+            "winch", application="off-road trailer recovery", key_specifications=["12V"],
+        )
+        assert len(queries) == 5
+
+    def test_country_still_appended_to_the_new_variants(self):
+        queries = build_queries("winch", country="China", application="off-road trailer recovery")
+        for query in queries:
+            assert query.endswith("China")
+
+    def test_neither_given_matches_original_three_query_behaviour(self):
+        queries = build_queries("winch")
+        assert len(queries) == 3

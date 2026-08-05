@@ -44,6 +44,17 @@ class SupplierSearchResult(BaseModel):
     ai_risks: List[str] = Field(default_factory=list)
     ai_suitable_customer_types: List[str] = Field(default_factory=list)
     collection_status: Optional[str] = None
+    # Sourcing Agent procurement dossier (v12) -- see
+    # sourcing/dossier_generator.py. Empty/None for any supplier never
+    # processed by a sourcing run, same additive-and-absent-safe
+    # convention as the ai_* fields above.
+    sourcing_oem_odm_notes: Optional[str] = None
+    sourcing_factory_notes: Optional[str] = None
+    sourcing_engineering_notes: Optional[str] = None
+    sourcing_export_notes: Optional[str] = None
+    sourcing_volume_suitability: Optional[str] = None
+    sourcing_payment_terms_notes: Optional[str] = None
+    sourcing_verification_status: Optional[str] = None
 
 
 class PipelineJobRequest(BaseModel):
@@ -174,11 +185,56 @@ class DiscoveryJobRequest(BaseModel):
     )
 
 
+class SourcingRunRequest(BaseModel):
+    """Triggers sourcing.sourcing_agent.SourcingAgentService -- one
+    free-text procurement brief drives the entire discover -> collect
+    -> verify -> qualify loop (see sourcing/sourcing_agent.py's module
+    docstring). The HTTP equivalent of a chat message on the frontend's
+    Source tab."""
+
+    brief_text: str = Field(
+        description="Free-text sourcing brief, e.g. 'find 15 genuine winch manufacturers for "
+                     "off-road trailer recovery, ISO 9001, prioritise China then India, annual "
+                     "volume 5000pcs, 30 day payment terms'.",
+    )
+    max_multiplier: int = Field(
+        default=5,
+        description="Hard ceiling on candidates examined = target_count * max_multiplier, even if "
+                     "the target count isn't reached -- cost governance, not a soft target.",
+    )
+
+
+class SourcingRunResponse(BaseModel):
+    """GET /sourcing/runs/{id} -- the run itself plus its qualified
+    suppliers resolved in full (not just ids), so the frontend can
+    render results in one call. `qualified_suppliers` is empty while
+    status is still 'running'; poll GET /pipeline/jobs/{job_id}
+    (returned by POST /sourcing/runs) for live progress until then."""
+
+    id: int
+    brief_text: str
+    structured_brief: Optional[Dict[str, Any]] = None
+    target_count: int
+    examined_count: int
+    status: str
+    error_message: Optional[str] = None
+    created_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    qualified_suppliers: List[SupplierSearchResult] = Field(default_factory=list)
+
+
 class PipelineJobResponse(BaseModel):
     id: str
     status: str
     query: str
     stats: Optional[Dict[str, Any]] = None
+    progress: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Live incremental status for a long-running job (currently only written by "
+                     "sourcing.SourcingAgentService's per-candidate progress callback), e.g. "
+                     "{'examined': 7, 'qualified': 3, 'target': 10} -- polled the same way `stats` "
+                     "already is, just before the job actually completes.",
+    )
     error: Optional[str] = None
     created_at: Optional[str] = None
     started_at: Optional[str] = None

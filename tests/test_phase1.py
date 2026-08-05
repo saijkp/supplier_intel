@@ -79,7 +79,7 @@ class TestSchemaCreation:
         assert counts["shipment_records"] == 0
         assert counts["dedup_candidates"] == 0
         assert counts["search_log"] == 0
-        assert counts["schema_migrations"] == 11  # v1-v10 as noted previously + v11 AI discovery/collection/verification platform
+        assert counts["schema_migrations"] == 12  # v1-v10 as noted previously + v11 AI discovery/collection/verification platform + v12 Sourcing Agent
 
     def test_v11_columns_and_tables_exist_on_fresh_db(self, db_path):
         with connection_scope(db_path) as conn:

@@ -214,3 +214,113 @@ class TestDiscoveryRuns:
             candidates_found=12, candidates_validated=5, candidates_rejected=6, candidates_duplicate=1,
         )
         assert isinstance(run_id, int)
+
+
+class TestSourcingRuns:
+
+    def test_record_and_get_sourcing_run(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        run_id = repo.record_sourcing_run(
+            brief_text="find 10 winch manufacturers in China, ISO 9001",
+            target_count=10,
+            structured_brief={"product": "winch", "countries": ["China"], "target_count": 10},
+        )
+        run = repo.get_sourcing_run(run_id)
+        assert run["brief_text"] == "find 10 winch manufacturers in China, ISO 9001"
+        assert run["target_count"] == 10
+        assert run["status"] == "running"
+        assert run["structured_brief_json"] == {"product": "winch", "countries": ["China"], "target_count": 10}
+        assert run["qualified_supplier_ids_json"] is None
+
+    def test_get_sourcing_run_returns_none_for_unknown_id(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        assert repo.get_sourcing_run(999999) is None
+
+    def test_complete_sourcing_run_records_qualified_suppliers(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        id_a = repo.create_golden_record({"canonical_name": "Acme Winch Co"})
+        id_b = repo.create_golden_record({"canonical_name": "Best Winch Co"})
+        run_id = repo.record_sourcing_run(brief_text="find winches", target_count=2)
+
+        repo.complete_sourcing_run(run_id, qualified_supplier_ids=[id_a, id_b], examined_count=7)
+
+        run = repo.get_sourcing_run(run_id)
+        assert run["status"] == "completed"
+        assert run["examined_count"] == 7
+        assert run["qualified_supplier_ids_json"] == [id_a, id_b]
+        assert run["completed_at"] is not None
+
+    def test_complete_sourcing_run_can_record_failure(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        run_id = repo.record_sourcing_run(brief_text="find winches", target_count=2)
+
+        repo.complete_sourcing_run(
+            run_id, qualified_supplier_ids=[], examined_count=0,
+            status="failed", error_message="brief_parser could not extract a product",
+        )
+
+        run = repo.get_sourcing_run(run_id)
+        assert run["status"] == "failed"
+        assert run["error_message"] == "brief_parser could not extract a product"
+
+    def test_list_sourcing_runs_returns_newest_first(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        first_id = repo.record_sourcing_run(brief_text="first brief", target_count=1)
+        second_id = repo.record_sourcing_run(brief_text="second brief", target_count=1)
+
+        runs = repo.list_sourcing_runs()
+
+        assert [r["id"] for r in runs] == [second_id, first_id]
+
+
+class TestListSuppliersIdsFilter:
+
+    def test_scopes_to_exactly_the_given_ids(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        id_a = repo.create_golden_record({"canonical_name": "A Co"})
+        repo.create_golden_record({"canonical_name": "B Co"})
+        id_c = repo.create_golden_record({"canonical_name": "C Co"})
+
+        results = repo.list_suppliers(ids=[id_a, id_c], limit=100)
+
+        assert {s["id"] for s in results} == {id_a, id_c}
+
+    def test_empty_ids_list_returns_no_rows(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_golden_record({"canonical_name": "A Co"})
+
+        assert repo.list_suppliers(ids=[]) == []
+
+    def test_none_ids_does_not_filter(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_golden_record({"canonical_name": "A Co"})
+        repo.create_golden_record({"canonical_name": "B Co"})
+
+        assert len(repo.list_suppliers(ids=None)) == 2
+
+
+class TestPipelineJobProgress:
+
+    def test_update_and_read_back_progress(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_pipeline_job(job_id="job-1", query="[sourcing] winch", options={})
+
+        repo.update_pipeline_job_progress("job-1", {"examined": 3, "qualified": 1, "target": 10})
+
+        job = repo.get_pipeline_job("job-1")
+        assert job["progress"] == {"examined": 3, "qualified": 1, "target": 10}
+
+    def test_progress_is_none_until_set(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_pipeline_job(job_id="job-1", query="[sourcing] winch", options={})
+
+        job = repo.get_pipeline_job("job-1")
+        assert job["progress"] is None
+
+    def test_list_pipeline_jobs_also_parses_progress(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_pipeline_job(job_id="job-1", query="[sourcing] winch", options={})
+        repo.update_pipeline_job_progress("job-1", {"examined": 2})
+
+        jobs = repo.list_pipeline_jobs()
+        assert jobs[0]["progress"] == {"examined": 2}

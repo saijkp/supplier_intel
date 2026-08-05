@@ -85,10 +85,14 @@ class DiscoveryService:
 
     def discover(
         self, product: str, category: Optional[str] = None, country: Optional[str] = None,
-        max_candidates: int = 20,
+        max_candidates: int = 20, application: Optional[str] = None,
+        key_specifications: Optional[List[str]] = None,
     ) -> DiscoveryOutcome:
         outcome = DiscoveryOutcome()
-        queries = build_queries(product, category=category, country=country)
+        queries = build_queries(
+            product, category=category, country=country,
+            application=application, key_specifications=key_specifications,
+        )
 
         all_candidates = []
         seen_domains: set = set()

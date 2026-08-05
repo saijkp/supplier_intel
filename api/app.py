@@ -47,6 +47,7 @@ from api.jobs import (
     run_enrichment_job,
     run_pipeline_job,
     run_reverify_job,
+    run_sourcing_job,
     run_verification_job,
 )
 from api.models import (
@@ -60,6 +61,8 @@ from api.models import (
     PipelineJobResponse,
     ProcurementOutcomeRequest,
     ProcurementOutcomeResponse,
+    SourcingRunRequest,
+    SourcingRunResponse,
     SupplierSearchResult,
     VerificationJobRequest,
 )
@@ -130,6 +133,13 @@ def _to_search_result(row: Dict[str, Any]) -> SupplierSearchResult:
         ai_risks=row.get("ai_risks") or [],
         ai_suitable_customer_types=row.get("ai_suitable_customer_types") or [],
         collection_status=row.get("collection_status"),
+        sourcing_oem_odm_notes=row.get("sourcing_oem_odm_notes"),
+        sourcing_factory_notes=row.get("sourcing_factory_notes"),
+        sourcing_engineering_notes=row.get("sourcing_engineering_notes"),
+        sourcing_export_notes=row.get("sourcing_export_notes"),
+        sourcing_volume_suitability=row.get("sourcing_volume_suitability"),
+        sourcing_payment_terms_notes=row.get("sourcing_payment_terms_notes"),
+        sourcing_verification_status=row.get("sourcing_verification_status"),
     )
 
 
@@ -139,6 +149,7 @@ def _to_job_response(job: Dict[str, Any]) -> PipelineJobResponse:
         status=job["status"],
         query=job["query"],
         stats=job.get("stats"),
+        progress=job.get("progress"),
         error=job.get("error"),
         created_at=_stringify(job.get("created_at")),
         started_at=_stringify(job.get("started_at")),
@@ -354,6 +365,83 @@ def backfill_discovery_product_keywords(
         "already_had_keywords_count": len(result["already_had_keywords_supplier_ids"]),
         "missing_supplier_count": len(result["missing_supplier_ids"]),
     }
+
+
+@app.post(
+    "/sourcing/runs",
+    response_model=PipelineJobResponse,
+    status_code=202,
+    dependencies=[Depends(require_api_token)],
+)
+def create_sourcing_run(
+    request: SourcingRunRequest,
+    background_tasks: BackgroundTasks,
+    repo: SupplierRepository = Depends(get_repo),
+) -> PipelineJobResponse:
+    """One free-text sourcing brief drives the entire discover -> collect
+    -> verify -> qualify loop (see sourcing/sourcing_agent.py). Same
+    async job/poll pattern as every other job endpoint -- a run can
+    easily take minutes. Poll GET /pipeline/jobs/{id} for live
+    incremental progress (examined/qualified/target, via `progress`),
+    then GET /sourcing/runs/{run_id} once `stats.run_id` appears in the
+    completed job to fetch the qualified suppliers in full."""
+    job_id = str(uuid.uuid4())
+    options = request.model_dump()
+    label = f"[sourcing] {request.brief_text[:60]}"
+    repo.create_pipeline_job(job_id=job_id, query=label, options=options)
+    background_tasks.add_task(run_sourcing_job, job_id, options)
+    job = repo.get_pipeline_job(job_id)
+    return _to_job_response(job)
+
+
+@app.get(
+    "/sourcing/runs/{run_id}",
+    response_model=SourcingRunResponse,
+    dependencies=[Depends(require_api_token)],
+)
+def get_sourcing_run(
+    run_id: int, repo: SupplierRepository = Depends(get_repo),
+) -> SourcingRunResponse:
+    run = repo.get_sourcing_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Sourcing run not found")
+    qualified_ids = run.get("qualified_supplier_ids_json") or []
+    qualified_suppliers = [_to_search_result(s) for s in repo.list_suppliers(ids=qualified_ids, limit=len(qualified_ids) or 1)]
+    return SourcingRunResponse(
+        id=run["id"],
+        brief_text=run["brief_text"],
+        structured_brief=run.get("structured_brief_json"),
+        target_count=run["target_count"],
+        examined_count=run["examined_count"],
+        status=run["status"],
+        error_message=run.get("error_message"),
+        created_at=_stringify(run.get("created_at")),
+        completed_at=_stringify(run.get("completed_at")),
+        qualified_suppliers=qualified_suppliers,
+    )
+
+
+@app.get("/sourcing/runs/{run_id}/export.csv", dependencies=[Depends(require_api_token)])
+def export_sourcing_run_csv(
+    run_id: int, repo: SupplierRepository = Depends(get_repo),
+) -> PlainTextResponse:
+    """Scoped to exactly the suppliers ONE sourcing run qualified, not
+    the whole database -- see storage.repository.SupplierRepository.
+    list_suppliers's `ids` filter and reports.generator.
+    suppliers_to_sourcing_csv_string's own column set (matching the
+    brief's requested output shape), both added specifically for this."""
+    from reports.generator import suppliers_to_sourcing_csv_string
+
+    run = repo.get_sourcing_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Sourcing run not found")
+    qualified_ids = run.get("qualified_supplier_ids_json") or []
+    suppliers = repo.list_suppliers(ids=qualified_ids, limit=len(qualified_ids) or 1)
+    csv_text = suppliers_to_sourcing_csv_string(suppliers)
+    return PlainTextResponse(
+        csv_text, media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=sourcing_run_{run_id}.csv"},
+    )
 
 
 @app.post(

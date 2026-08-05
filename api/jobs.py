@@ -177,3 +177,46 @@ def run_discovery_job(job_id: str, options: Dict[str, Any]) -> None:
     except Exception as e:
         logger.error("Discovery job %s failed: %s", job_id, e)
         repo.mark_pipeline_job_failed(job_id, error=str(e))
+
+
+def run_sourcing_job(job_id: str, options: Dict[str, Any]) -> None:
+    """The HTTP equivalent of one chat message on the frontend's Source
+    tab. A sourcing run can easily take minutes (many discover->collect
+    ->verify cycles per candidate), so unlike
+    /discovery/backfill-product-keywords this genuinely needs the async
+    job/poll pattern, not a synchronous response.
+
+    SourcingOutcome is a dataclass (like DiscoveryOutcome) -- converted
+    via dataclasses.asdict() the same way, EXCEPT its own `brief` field
+    is itself a StructuredBrief dataclass; asdict() already recurses
+    into nested dataclasses, so this is still the one conversion call
+    the every other job runner already uses, not a new pattern.
+
+    Progress: SourcingAgentService.run()'s on_progress callback writes
+    running counts onto this same job row via
+    repo.update_pipeline_job_progress -- GET /pipeline/jobs/{job_id}
+    (already polled every few seconds by the frontend) picks these up
+    for free via PipelineJobResponse.progress, no new polling mechanism.
+    """
+    from sourcing.schemas import SourcingProgress
+    from sourcing.sourcing_agent import SourcingAgentService
+
+    repo = SupplierRepository()
+    repo.mark_pipeline_job_running(job_id)
+    try:
+        service = SourcingAgentService(repo=repo)
+
+        def on_progress(progress: SourcingProgress) -> None:
+            repo.update_pipeline_job_progress(job_id, dataclasses.asdict(progress))
+
+        outcome = service.run(
+            options["brief_text"], max_multiplier=options.get("max_multiplier", 5),
+            on_progress=on_progress,
+        )
+        if outcome.status == "failed":
+            repo.mark_pipeline_job_failed(job_id, error=outcome.error or "sourcing run failed")
+        else:
+            repo.mark_pipeline_job_completed(job_id, stats=dataclasses.asdict(outcome))
+    except Exception as e:
+        logger.error("Sourcing job %s failed: %s", job_id, e)
+        repo.mark_pipeline_job_failed(job_id, error=str(e))

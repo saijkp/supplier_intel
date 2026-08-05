@@ -91,6 +91,12 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api.app, "run_discovery_job", fake_run_discovery_job)
 
+    def fake_run_sourcing_job(job_id, options):
+        test_repo.mark_pipeline_job_running(job_id)
+        test_repo.mark_pipeline_job_completed(job_id, stats={"run_id": 0, "qualified_supplier_ids": []})
+
+    monkeypatch.setattr(api.app, "run_sourcing_job", fake_run_sourcing_job)
+
     with TestClient(api.app.app) as test_client:
         test_client.repo = test_repo
         yield test_client
@@ -440,6 +446,117 @@ class TestReverifyEndpoint:
     def test_requires_auth(self, client):
         supplier_id = client.repo.create_golden_record({"canonical_name": "Acme"})
         response = client.post(f"/suppliers/{supplier_id}/reverify")
+        assert response.status_code == 401
+
+
+class TestCreateSourcingRunEndpoint:
+
+    def test_creates_a_job_with_the_sourcing_label(self, client):
+        response = client.post(
+            "/sourcing/runs", json={"brief_text": "find 10 winch manufacturers in China"},
+            headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        body = response.json()
+        assert body["status"] == "queued"
+        assert body["query"] == "[sourcing] find 10 winch manufacturers in China"
+        assert body["id"]
+
+    def test_long_brief_text_is_truncated_in_the_job_label(self, client):
+        long_brief = "find genuine manufacturers " + "for a very specific niche product " * 5
+        response = client.post("/sourcing/runs", json={"brief_text": long_brief}, headers=auth_headers())
+        query = response.json()["query"]
+        assert query.startswith("[sourcing] ")
+        assert len(query) <= len("[sourcing] ") + 60
+
+    def test_missing_brief_text_is_a_validation_error(self, client):
+        response = client.post("/sourcing/runs", json={}, headers=auth_headers())
+        assert response.status_code == 422
+
+    def test_default_max_multiplier_is_recorded_in_job_options(self, client):
+        response = client.post(
+            "/sourcing/runs", json={"brief_text": "find winch manufacturers"}, headers=auth_headers(),
+        )
+        job_id = response.json()["id"]
+        job = client.repo.get_pipeline_job(job_id)
+        assert job["options"]["max_multiplier"] == 5
+
+    def test_requires_auth(self, client):
+        response = client.post("/sourcing/runs", json={"brief_text": "find winch manufacturers"})
+        assert response.status_code == 401
+
+
+class TestGetSourcingRunEndpoint:
+
+    def test_returns_run_with_resolved_qualified_suppliers(self, client):
+        id_a = client.repo.create_golden_record({"canonical_name": "Acme Winch Co", "country": "China"})
+        id_b = client.repo.create_golden_record({"canonical_name": "Best Winch Co", "country": "India"})
+        run_id = client.repo.record_sourcing_run(brief_text="find winch manufacturers", target_count=2)
+        client.repo.complete_sourcing_run(run_id, qualified_supplier_ids=[id_a, id_b], examined_count=5)
+
+        response = client.get(f"/sourcing/runs/{run_id}", headers=auth_headers())
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "completed"
+        assert body["examined_count"] == 5
+        assert {s["id"] for s in body["qualified_suppliers"]} == {id_a, id_b}
+
+    def test_running_run_with_no_qualified_suppliers_yet_returns_empty_list(self, client):
+        run_id = client.repo.record_sourcing_run(brief_text="find winch manufacturers", target_count=5)
+
+        response = client.get(f"/sourcing/runs/{run_id}", headers=auth_headers())
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "running"
+        assert body["qualified_suppliers"] == []
+
+    def test_unknown_run_returns_404(self, client):
+        response = client.get("/sourcing/runs/999999", headers=auth_headers())
+        assert response.status_code == 404
+
+    def test_requires_auth(self, client):
+        run_id = client.repo.record_sourcing_run(brief_text="find winch manufacturers", target_count=5)
+        response = client.get(f"/sourcing/runs/{run_id}")
+        assert response.status_code == 401
+
+
+class TestSourcingRunCsvExportEndpoint:
+
+    def test_exports_only_the_qualified_suppliers(self, client):
+        id_a = client.repo.create_golden_record({
+            "canonical_name": "Acme Winch Co", "country": "China", "primary_email": "sales@acme.example.com",
+        })
+        client.repo.create_golden_record({"canonical_name": "Not Qualified Co"})
+        run_id = client.repo.record_sourcing_run(brief_text="find winch manufacturers", target_count=1)
+        client.repo.complete_sourcing_run(run_id, qualified_supplier_ids=[id_a], examined_count=3)
+
+        response = client.get(f"/sourcing/runs/{run_id}/export.csv", headers=auth_headers())
+
+        assert response.status_code == 200
+        assert "text/csv" in response.headers["content-type"]
+        assert "Acme Winch Co" in response.text
+        assert "sales@acme.example.com" in response.text
+        assert "Not Qualified Co" not in response.text
+
+    def test_unknown_run_returns_404(self, client):
+        response = client.get("/sourcing/runs/999999/export.csv", headers=auth_headers())
+        assert response.status_code == 404
+
+    def test_run_with_no_qualified_suppliers_exports_header_only(self, client):
+        run_id = client.repo.record_sourcing_run(brief_text="find winch manufacturers", target_count=5)
+        client.repo.complete_sourcing_run(run_id, qualified_supplier_ids=[], examined_count=5)
+
+        response = client.get(f"/sourcing/runs/{run_id}/export.csv", headers=auth_headers())
+
+        assert response.status_code == 200
+        lines = response.text.strip().splitlines()
+        assert len(lines) == 1  # header row only
+
+    def test_requires_auth(self, client):
+        run_id = client.repo.record_sourcing_run(brief_text="find winch manufacturers", target_count=5)
+        response = client.get(f"/sourcing/runs/{run_id}/export.csv")
         assert response.status_code == 401
 
 

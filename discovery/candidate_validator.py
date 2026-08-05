@@ -44,6 +44,41 @@ logger = logging.getLogger(__name__)
 # the same company" question.
 _NAME_MATCH_THRESHOLD = 55.0
 
+# Mechanical, country-agnostic trader exclusion -- the codebase's only
+# other trader signal (verification.manufacturer_verifier, via Qichacha
+# business-scope data) only exists for China-registered companies, so a
+# global "exclude traders/distributors/resellers" filter (sourcing.
+# SourcingAgentService's own brief explicitly asks for this) needs a
+# second signal that works for any country. Deliberately specific
+# self-declarations, not the bare word "trading" -- a genuine
+# manufacturer's page can easily mention "trading partners" or similar
+# without being a trading company itself, so precision matters more
+# than recall here: a false negative just means Qichacha/ManufacturerVerifier
+# gets the final say later, a false positive silently drops a real
+# manufacturer.
+_TRADER_SELF_DECLARATION_PHRASES: tuple = (
+    "we are a trading company",
+    "we are a professional trading company",
+    "we are a distributor",
+    "we are a reseller",
+    "we are an import and export company",
+    "we are a sourcing agent",
+    "we are a buying agent",
+    "trading company specializing in",
+    "we do not manufacture",
+    "we don't manufacture",
+)
+
+
+def _find_trader_self_declaration(page_text: str) -> str | None:
+    """The first matched phrase from _TRADER_SELF_DECLARATION_PHRASES
+    found (case-insensitively) in `page_text`, or None."""
+    haystack = page_text.lower()
+    for phrase in _TRADER_SELF_DECLARATION_PHRASES:
+        if phrase in haystack:
+            return phrase
+    return None
+
 SYSTEM_PROMPT = """You are reading the text of a company website. Extract ONLY what is explicitly stated in the text below -- never guess, infer, or fill in based on typical industry patterns or the domain name.
 
 Rules, strictly enforced:
@@ -122,6 +157,14 @@ class CandidateValidator:
             return ValidationResult(
                 candidate, False, extracted_name, extracted_country, score,
                 f"fetched page text does not mention the searched term '{product_term}'",
+            )
+
+        self_declared_trader = _find_trader_self_declaration(page_text)
+        if self_declared_trader:
+            return ValidationResult(
+                candidate, False, extracted_name, extracted_country, score,
+                f"page self-identifies as a trading company/distributor (matched phrase: "
+                f"'{self_declared_trader}') -- excluded, not a manufacturer",
             )
 
         return ValidationResult(

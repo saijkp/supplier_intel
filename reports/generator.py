@@ -138,6 +138,39 @@ def _prepare_supplier_for_export(supplier: Dict[str, Any]) -> Dict[str, Any]:
     return row
 
 
+# Columns for GET /sourcing/runs/{id}/export.csv -- a deliberately
+# different, purpose-built column set from CSV_COLUMNS/EXCEL_COLUMNS
+# above (which are a general-purpose curated subset for the whole
+# database). This one exists to match a sourcing brief's own requested
+# output shape (company name, country, city, website, export market,
+# address, contact details, payment terms, verification status) plus
+# the sourcing_* procurement-dossier fields sourcing/dossier_generator.py
+# writes -- fields that are empty/irrelevant for the ~1,400 suppliers
+# never processed by a sourcing run, so they don't belong in the
+# general export.
+SOURCING_CSV_COLUMNS: List[str] = [
+    "id", "canonical_name", "country", "city", "domain",
+    "active_export_countries", "address",
+    "primary_email", "primary_phone", "whatsapp", "contact_form_url",
+    "payment_terms_offered", "incoterms_supported",
+    "sourcing_oem_odm_notes", "sourcing_factory_notes",
+    "sourcing_engineering_notes", "sourcing_export_notes",
+    "sourcing_volume_suitability", "sourcing_payment_terms_notes",
+    "sourcing_verification_status",
+    "is_manufacturer", "composite_score", "ai_confidence_score",
+]
+
+
+def suppliers_to_sourcing_csv_string(suppliers: List[Dict[str, Any]]) -> str:
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=SOURCING_CSV_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    for supplier in suppliers:
+        row = _prepare_supplier_for_export(supplier)
+        writer.writerow({col: row.get(col, "") for col in SOURCING_CSV_COLUMNS})
+    return buffer.getvalue()
+
+
 def suppliers_to_csv_string(suppliers: List[Dict[str, Any]]) -> str:
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=CSV_COLUMNS, extrasaction="ignore")

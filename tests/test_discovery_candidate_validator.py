@@ -148,3 +148,73 @@ class TestCandidateValidator:
         validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
         result = validator.validate(_candidate(), "trailer axle")
         assert result.validated is False
+
+
+class TestSelfDeclaredTraderExclusion:
+    """The global, country-agnostic trader signal sourcing.
+    SourcingAgentService needs -- the codebase's only other trader
+    signal (ManufacturerVerifier via Qichacha) only has data for
+    China-registered companies. This one is mechanical (a fixed phrase
+    list), not another LLM call, checked only after every other gate
+    already passed."""
+
+    def test_self_declared_trading_company_is_rejected(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Welcome to Acme Trailer Co. We are a trading company specializing in trailer axle parts.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is False
+        assert "trading company" in result.reason
+
+    def test_self_declared_distributor_is_rejected(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co -- we are a distributor of trailer axle products across Europe.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is False
+        assert "excluded, not a manufacturer" in result.reason
+
+    def test_check_is_case_insensitive(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="ACME TRAILER CO -- WE ARE A TRADING COMPANY dealing in trailer axle parts.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is False
+
+    def test_ordinary_mention_of_trading_does_not_trip_the_filter(self):
+        """Precision matters more than recall here -- a genuine
+        manufacturer's page mentioning "trading partners" in passing
+        must not be excluded just for containing the word "trading"."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co manufactures trailer axle assemblies in-house. "
+                 "We value our long-standing trading partners across the supply chain.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is True
+
+    def test_genuine_manufacturer_page_is_still_validated(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co is a manufacturer of trailer axle assemblies, operating our own factory since 1998.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is True

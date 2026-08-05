@@ -20,9 +20,15 @@ _QUERY_TEMPLATES: tuple = (
 )
 
 
-def build_queries(product: str, category: Optional[str] = None, country: Optional[str] = None) -> List[str]:
+def build_queries(
+    product: str, category: Optional[str] = None, country: Optional[str] = None,
+    application: Optional[str] = None, key_specifications: Optional[List[str]] = None,
+) -> List[str]:
     """One query variant per template, each optionally qualified by
-    country. `category` is accepted but not yet folded into the query
+    country, PLUS one additional variant each for `application` and
+    `key_specifications` when given (sourcing.SourcingAgentService's
+    own richer briefs) -- still purely mechanical string building, no
+    LLM call. `category` is accepted but not yet folded into the query
     text beyond `product` -- kept on the signature for the CLI/API
     surface (`main.py discover --category ...`) and for
     discovery_runs.category, which records it regardless of whether the
@@ -33,4 +39,17 @@ def build_queries(product: str, category: Optional[str] = None, country: Optiona
         if country:
             query = f"{query} {country}"
         queries.append(query)
+
+    if application:
+        query = f'"{product}" manufacturer {application}'
+        if country:
+            query = f"{query} {country}"
+        queries.append(query)
+
+    if key_specifications:
+        query = f'"{product}" manufacturer {" ".join(key_specifications)}'
+        if country:
+            query = f"{query} {country}"
+        queries.append(query)
+
     return queries
