@@ -78,6 +78,17 @@ _NON_COMPANY_DOMAINS = {
     "europages.com", "tradeindia.com", "yelp.com", "crunchbase.com",
     "bloomberg.com", "glassdoor.com", "indeed.com", "yahoo.com",
     "bing.com", "google.com",
+    # Industry news/data portals and B2B directories -- a real
+    # candidate for a supplier's own site otherwise: they rank highly
+    # for exactly the "<product> manufacturer/supplier" queries this
+    # codebase's own search discipline generates, and a directory/
+    # profile page fetched from one of these is never the company's own
+    # site. Confirmed live: marklines.com and gasgoo.com both surfaced
+    # as "candidates" for a real "wheel bearing units China" Sourcing
+    # Agent brief and burned the entire discovery pass on dead fetches
+    # (DNS failure, expired/self-signed cert) before this fix.
+    "marklines.com", "gasgoo.com", "thomasnet.com", "globalspec.com",
+    "kompass.com", "panjiva.com", "importgenius.com", "just-auto.com",
 }
 
 _DEFAULT_MIN_NAME_SIMILARITY = 55.0  # rapidfuzz partial_ratio is 0-100, not 0-1

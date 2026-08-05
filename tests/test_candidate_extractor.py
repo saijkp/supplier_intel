@@ -66,6 +66,19 @@ class TestExtractCandidates:
         results = [SimpleNamespace(success=True, raw_data={"title": "No link here"})]
         assert extract_candidates(results) == []
 
+    def test_filters_out_industry_portal_domains(self):
+        """Real production bug: marklines.com and gasgoo.com (automotive
+        industry data/news portals) surfaced as Discovery Service
+        candidates for a real "wheel bearing units China" brief and
+        burned the entire discovery pass on dead fetches, since neither
+        is an individual manufacturer's own site."""
+        results = [
+            _result("https://www.marklines.com/en/some-report", title="MarkLines report"),
+            _result("https://en.gasgoo.com/some-article", title="Gasgoo news"),
+        ]
+        candidates = extract_candidates(results)
+        assert candidates == []
+
     def test_multiple_distinct_real_companies_all_extracted(self):
         results = [
             _result("https://acmetrailer.com/", title="Acme Trailer Co"),

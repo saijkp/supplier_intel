@@ -127,6 +127,19 @@ class TestExcludesNonCompanyDomains:
             result = finder.find_website("Acme Trailer Parts")
             assert result.domain is None, f"{domain} should have been excluded"
 
+    def test_industry_portal_domains_are_skipped(self):
+        """Real bug this guards against: marklines.com and gasgoo.com
+        (automotive industry data/news portals, not individual
+        manufacturer sites) surfaced as Discovery Service "candidates"
+        for a real "wheel bearing units China" brief and burned the
+        whole search on dead fetches, since neither is a company's own
+        website."""
+        for domain in ("marklines.com", "gasgoo.com", "thomasnet.com", "globalspec.com",
+                        "kompass.com", "panjiva.com", "importgenius.com", "just-auto.com"):
+            finder = _finder([FakeSearchResult(f"https://{domain}/acme-trailer")])
+            result = finder.find_website("Acme Trailer Parts")
+            assert result.domain is None, f"{domain} should have been excluded"
+
     def test_all_results_excluded_reports_no_candidate_found(self):
         finder = _finder([
             FakeSearchResult("https://facebook.com/acme"),
