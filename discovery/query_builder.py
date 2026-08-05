@@ -17,6 +17,16 @@ _QUERY_TEMPLATES: tuple = (
     '"{product}" manufacturer',
     '"{product}" supplier',
     '"{product}" factory',
+    # Unquoted fallback -- real bug found live: an exact-phrase search
+    # for a less common product phrasing (e.g. "wheel bearing units")
+    # can return almost nothing, since most real listings use slightly
+    # different wording ("wheel bearing", "wheel hub bearing unit",
+    # etc.) that never matches a literal quoted phrase. Placed last so
+    # discover()'s own early-stop-once-max_candidates loop only reaches
+    # it when the three precise, quoted variants above didn't already
+    # find enough -- no extra SerpAPI cost on a query that was already
+    # well served.
+    "{product} manufacturer",
 )
 
 
