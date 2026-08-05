@@ -130,7 +130,25 @@ class GooglePlacesAddressVerifier:
         except Exception as e:
             logger.error("Google Places lookup failed for %r: %s", address, e)
             return AddressVerificationResult(
-                verified=False, source="google_places", formatted_address=None, reason=f"request failed: {e}",
+                verified=False, source="unavailable", formatted_address=None, reason=f"request failed: {e}",
+            )
+
+        # Google's Find Place endpoint returns HTTP 200 even for an
+        # invalid/unauthorised key or a quota error -- the failure only
+        # shows up in this `status` field, with `candidates` left empty
+        # exactly as it would be for a genuine zero-result search. Not
+        # checking this meant an API error (e.g. REQUEST_DENIED because
+        # the key isn't authorised for this API -- a real, previously
+        # silent production issue) was indistinguishable from "we
+        # checked and this address doesn't exist" -- source="unavailable"
+        # here (not "google_places") is what lets cross_checker.py treat
+        # this as no signal rather than a false negative.
+        status = data.get("status")
+        if status not in ("OK", "ZERO_RESULTS"):
+            logger.error("Google Places API error for %r: status=%s", address, status)
+            return AddressVerificationResult(
+                verified=False, source="unavailable", formatted_address=None,
+                reason=f"Google Places API error: {status} -- {data.get('error_message', 'no details given')}",
             )
 
         candidates = data.get("candidates") or []
@@ -183,17 +201,20 @@ class AmapAddressVerifier:
         except Exception as e:
             logger.error("Amap geocode lookup failed for %r: %s", address, e)
             return AddressVerificationResult(
-                verified=False, source="amap", formatted_address=None, reason=f"request failed: {e}",
+                verified=False, source="unavailable", formatted_address=None, reason=f"request failed: {e}",
             )
 
         # Amap returns status="1" (a string, not a bool) for a
         # successful call, with geocodes=[] as a normal "no match" --
         # not itself an error, mirrored from the same distinction every
         # other module in this codebase draws between failure and a
-        # genuinely empty result.
+        # genuinely empty result. source="unavailable" (not "amap") for
+        # a real API error is what lets cross_checker.py treat this as
+        # no signal rather than a false negative -- same fix applied to
+        # GooglePlacesAddressVerifier above, for the same reason.
         if data.get("status") != "1":
             return AddressVerificationResult(
-                verified=False, source="amap", formatted_address=None,
+                verified=False, source="unavailable", formatted_address=None,
                 reason=f"Amap API error: {data.get('info', 'unknown error')}",
             )
 

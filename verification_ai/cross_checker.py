@@ -122,6 +122,17 @@ class CrossChecker:
                 supplier.get("country"), self.google_places_verifier, self.amap_verifier,
             )
             addr_result = verifier.verify(address, company_name=supplier.get("canonical_name") or "")
+            if addr_result.source == "unavailable":
+                # The check itself couldn't run -- no API key configured,
+                # a network failure, or (a real production issue this
+                # exact case caught) the provider rejecting the request
+                # itself (e.g. Google's REQUEST_DENIED when a key isn't
+                # authorised for this API). None of that is evidence the
+                # address is fake, so it must never look like a
+                # contradicted signal: no sub-check, no inconsistency --
+                # same "silence isn't itself a red flag" discipline every
+                # other check in this module already follows.
+                return
             result.sub_checks.append(SubCheckResult(
                 name="facility_address", verdict=addr_result.verified,
                 detail=addr_result.reason or (addr_result.formatted_address or ""),

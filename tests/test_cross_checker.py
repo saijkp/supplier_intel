@@ -105,6 +105,26 @@ class TestFacilityAddressSubCheck:
         result = checker.run_checks({"canonical_name": "Acme", "address": "123 Real St"})  # must not raise
         assert not any(c.name == "facility_address" for c in result.sub_checks)
 
+    def test_unavailable_source_is_no_signal_never_a_false_negative(self):
+        """Real production bug this guards against: a configured but
+        broken check (API key not authorised for the API, a request
+        timeout, etc. -- anything AddressVerifier.verify() reports as
+        source="unavailable") is NOT evidence the address is fake. Before
+        this fix, ANY verified=False result -- including "the check
+        itself couldn't run" -- was recorded as a contradicted signal
+        and an inconsistency, exactly what happened in production when
+        GOOGLE_PLACES_API_KEY was present but not authorised for the
+        Places API."""
+        google = FakeAddressVerifier(AddressVerificationResult(
+            verified=False, source="unavailable", formatted_address=None,
+            reason="Google Places API error: REQUEST_DENIED -- key not authorised",
+        ))
+        checker = CrossChecker(google_places_verifier=google, amap_verifier=FakeAddressVerifier())
+        result = checker.run_checks({"canonical_name": "Acme", "address": "123 Real St", "country": "United Kingdom"})
+
+        assert not any(c.name == "facility_address" for c in result.sub_checks)
+        assert result.inconsistencies == []
+
 
 class TestLinkedInSubCheck:
 

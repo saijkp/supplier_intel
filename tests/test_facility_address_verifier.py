@@ -47,6 +47,7 @@ class TestGooglePlacesAddressVerifier:
 
     def test_matching_candidate_is_verified(self):
         client = FakeHttpClient({
+            "status": "OK",
             "candidates": [{"formatted_address": "123 Factory Rd, Shenzhen, China", "name": "Acme Co"}],
         })
         verifier = GooglePlacesAddressVerifier(api_key="test-key", http_client=client)
@@ -56,16 +57,45 @@ class TestGooglePlacesAddressVerifier:
         assert result.formatted_address == "123 Factory Rd, Shenzhen, China"
 
     def test_no_candidates_is_not_verified_not_an_error(self):
-        client = FakeHttpClient({"candidates": []})
+        client = FakeHttpClient({"status": "ZERO_RESULTS", "candidates": []})
         verifier = GooglePlacesAddressVerifier(api_key="test-key", http_client=client)
         result = verifier.verify("some fabricated address")
         assert result.verified is False
+        assert result.source == "google_places"
         assert result.reason == "no matching place found"
 
     def test_missing_api_key_reports_unavailable_not_a_crash(self):
         verifier = GooglePlacesAddressVerifier(api_key=None, http_client=FakeHttpClient({}))
         result = verifier.verify("123 Factory Rd")
         assert result.verified is False
+        assert result.source == "unavailable"
+
+    def test_error_status_is_reported_as_unavailable_not_a_false_negative(self):
+        """Real production bug this guards against: Google's Find Place
+        endpoint returns HTTP 200 even for a key that isn't authorised
+        for this API (REQUEST_DENIED), with candidates left empty --
+        indistinguishable from a genuine zero-result search unless
+        `status` is actually checked. Before this fix, an unauthorised/
+        misconfigured key silently looked identical to "this address
+        doesn't exist" (source="google_places"), rather than "the check
+        itself couldn't run" (source="unavailable") -- the distinction
+        verification_ai/cross_checker.py relies on to avoid treating a
+        broken API call as a contradicted signal."""
+        client = FakeHttpClient({
+            "status": "REQUEST_DENIED", "candidates": [],
+            "error_message": "This API key is not authorized to use this service or API.",
+        })
+        verifier = GooglePlacesAddressVerifier(api_key="unauthorised-key", http_client=client)
+        result = verifier.verify("123 Factory Rd")
+        assert result.verified is False
+        assert result.source == "unavailable"
+        assert "REQUEST_DENIED" in result.reason
+        assert "not authorized" in result.reason
+
+    def test_over_query_limit_status_is_also_reported_as_unavailable(self):
+        client = FakeHttpClient({"status": "OVER_QUERY_LIMIT", "candidates": []})
+        verifier = GooglePlacesAddressVerifier(api_key="test-key", http_client=client)
+        result = verifier.verify("123 Factory Rd")
         assert result.source == "unavailable"
 
     def test_empty_address_short_circuits(self):
@@ -78,10 +108,11 @@ class TestGooglePlacesAddressVerifier:
         verifier = GooglePlacesAddressVerifier(api_key="test-key", http_client=client)
         result = verifier.verify("123 Factory Rd")
         assert result.verified is False
+        assert result.source == "unavailable"
         assert "request failed" in result.reason
 
     def test_company_name_and_address_are_both_sent_in_the_query(self):
-        client = FakeHttpClient({"candidates": []})
+        client = FakeHttpClient({"status": "ZERO_RESULTS", "candidates": []})
         verifier = GooglePlacesAddressVerifier(api_key="test-key", http_client=client)
         verifier.verify("123 Factory Rd", company_name="Acme Co")
         assert "Acme Co" in client.last_params["input"]
@@ -109,12 +140,15 @@ class TestAmapAddressVerifier:
 
     def test_amap_error_status_is_reported_distinctly(self):
         """Amap signals failure via status='0' (a string), not an HTTP
-        error code -- must not be misread as a successful empty
-        result."""
+        error code -- must not be misread as a successful empty result.
+        source="unavailable" (not "amap") is what lets cross_checker.py
+        treat this as no signal rather than a false negative -- same
+        fix as GooglePlacesAddressVerifier's REQUEST_DENIED case."""
         client = FakeHttpClient({"status": "0", "info": "INVALID_USER_KEY"})
         verifier = AmapAddressVerifier(api_key="bad-key", http_client=client)
         result = verifier.verify("宁波市工业路123号")
         assert result.verified is False
+        assert result.source == "unavailable"
         assert "INVALID_USER_KEY" in result.reason
 
     def test_missing_api_key_mentions_registration_friction(self):
@@ -129,6 +163,7 @@ class TestAmapAddressVerifier:
         verifier = AmapAddressVerifier(api_key="test-key", http_client=client)
         result = verifier.verify("宁波市工业路123号")
         assert result.verified is False
+        assert result.source == "unavailable"
 
 
 class TestCountryRouting:
