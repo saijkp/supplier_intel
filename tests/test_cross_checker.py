@@ -214,3 +214,39 @@ class TestCertificationConsistencySubCheck:
             capability_findings=[{"canonical_term": "iso 9001", "category": "standard"}],
         )
         assert not any(c.name == "certification_consistency" for c in result.sub_checks)
+
+
+class TestExportShipmentEvidenceSubCheck:
+
+    def test_confirmed_uk_shipments_produce_a_true_verdict(self):
+        checker = CrossChecker()
+        result = checker.run_checks({"canonical_name": "Acme", "confirmed_shipments_uk": 3})
+        check = next(c for c in result.sub_checks if c.name == "export_shipment_evidence")
+        assert check.verdict is True
+        assert "3" in check.detail
+
+    def test_shipments_across_multiple_regions_are_summed(self):
+        checker = CrossChecker()
+        result = checker.run_checks({
+            "canonical_name": "Acme",
+            "confirmed_shipments_uk": 1, "confirmed_shipments_eu": 2, "confirmed_shipments_us": 4,
+        })
+        check = next(c for c in result.sub_checks if c.name == "export_shipment_evidence")
+        assert "7" in check.detail
+
+    def test_no_shipment_data_produces_no_signal_never_a_false_verdict(self):
+        """Absence of UK/EU/US customs data is not evidence a company
+        doesn't manufacture -- must never contribute a False verdict or
+        an inconsistency, only silence."""
+        checker = CrossChecker()
+        result = checker.run_checks({"canonical_name": "Acme"})
+        assert not any(c.name == "export_shipment_evidence" for c in result.sub_checks)
+        assert result.inconsistencies == []
+
+    def test_zero_shipment_counts_produce_no_signal(self):
+        checker = CrossChecker()
+        result = checker.run_checks({
+            "canonical_name": "Acme",
+            "confirmed_shipments_uk": 0, "confirmed_shipments_eu": 0, "confirmed_shipments_us": 0,
+        })
+        assert not any(c.name == "export_shipment_evidence" for c in result.sub_checks)

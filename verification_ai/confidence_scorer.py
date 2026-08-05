@@ -25,6 +25,16 @@ from verification_ai.cross_checker import CrossCheckResult
 # ManufacturerVerifier's own scoring (where it IS the whole score) since
 # it's one signal among several independent corroborations here, not the
 # entire question being asked.
+#
+# cross_checker.py's "export_shipment_evidence" sub-check (added
+# alongside the Sourcing Agent's trade-data cross-check) is DELIBERATELY
+# NOT weighted here -- same precedent verification/capability_extractor.py's
+# own docstring already sets for a new signal: rebalancing these weights
+# would change ai_confidence_score for every supplier already scored
+# under the current weights, and that's a decision worth making on
+# purpose, not as a side effect of adding one more signal. It's still
+# visible in cross-check evidence and the sourcing dossier narrative,
+# just not moving this number yet.
 CHECK_WEIGHTS: Tuple[Tuple[str, int], ...] = (
     ("manufacturer_assessment", 25),
     ("facility_address", 25),

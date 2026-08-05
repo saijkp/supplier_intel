@@ -75,3 +75,18 @@ class TestConfidenceScorer:
         scorer = ConfidenceScorer()
         result = _result(SubCheckResult(name="facility_address", verdict=True, detail="x"))
         assert isinstance(scorer.score(result), int)
+
+    def test_export_shipment_evidence_is_deliberately_unweighted(self):
+        """Regression guard: cross_checker.py's export_shipment_evidence
+        sub-check (Sourcing Agent's trade-data cross-check) is
+        deliberately absent from CHECK_WEIGHTS -- see CHECK_WEIGHTS's
+        own comment for why. A future accidental addition would
+        silently start moving every already-scored supplier's
+        ai_confidence_score; this catches that."""
+        from verification_ai.confidence_scorer import CHECK_WEIGHTS
+
+        assert "export_shipment_evidence" not in dict(CHECK_WEIGHTS)
+
+        scorer = ConfidenceScorer()
+        result = _result(SubCheckResult(name="export_shipment_evidence", verdict=True, detail="x"))
+        assert scorer.score(result) == 50

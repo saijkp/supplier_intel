@@ -97,6 +97,7 @@ class CrossChecker:
         self._check_phone_consistency(supplier, result)
         self._check_own_site_name_match(supplier, collected_pages, result)
         self._check_certification_consistency(supplier, capability_findings, result)
+        self._check_export_shipment_evidence(supplier, result)
 
         return result
 
@@ -231,3 +232,31 @@ class CrossChecker:
                 ))
         except Exception as e:
             logger.warning("cross_checker: certification consistency check failed: %s", e)
+
+    def _check_export_shipment_evidence(self, supplier: Dict[str, Any], result: CrossCheckResult) -> None:
+        """NEW cross-reference check -- does this supplier have real
+        UK/US/EU customs shipment records on file (confirmed_shipments_uk/
+        eu/us, populated by normalizers/trade_normalizer.py from
+        ImportYeti/Volza, previously never read by verification at all)?
+        Positive-only signal, deliberately: zero shipment records is NOT
+        evidence a company doesn't manufacture -- most manufacturers
+        simply won't appear in these specific customs lanes, and
+        scrapers/global_trade_scraper.py's own docstring discloses its
+        Volza selectors were never verified against a live site, so
+        "found nothing" here is exactly as likely to mean "the scraper
+        found nothing" as "there was nothing to find." Never contributes
+        an inconsistency or a False verdict for that reason."""
+        try:
+            confirmed = (
+                (supplier.get("confirmed_shipments_uk") or 0)
+                + (supplier.get("confirmed_shipments_eu") or 0)
+                + (supplier.get("confirmed_shipments_us") or 0)
+            )
+            if confirmed <= 0:
+                return
+            result.sub_checks.append(SubCheckResult(
+                name="export_shipment_evidence", verdict=True,
+                detail=f"{confirmed} confirmed shipment record(s) on file (UK/EU/US customs data)",
+            ))
+        except Exception as e:
+            logger.warning("cross_checker: export shipment evidence check failed: %s", e)
