@@ -63,7 +63,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from collection.proxy_provider import ProxyProvider, select_proxy_provider
 from collection.site_collector import SiteCollector
@@ -150,9 +150,14 @@ class CollectionService:
         if result.success and result.pages:
             contact_stats = self._extract_and_save_contact_details(supplier_id, supplier.get("country"), result.pages)
 
+        certificates_saved = 0
+        if result.success and result.certificate_documents:
+            certificates_saved = self._save_certificate_documents(supplier_id, result.certificate_documents)
+
         return {
             "supplier_id": supplier_id, "status": status,
             "pages_visited": len(result.pages), "error": result.error,
+            "certificates_saved": certificates_saved,
             **contact_stats,
         }
 
@@ -194,6 +199,28 @@ class CollectionService:
         except Exception as e:
             logger.error("collection: contact extraction failed for supplier #%s: %s", supplier_id, e)
         return stats
+
+    def _save_certificate_documents(self, supplier_id: int, certificate_documents: List[Any]) -> int:
+        """Writes certificate_document_urls (Procurement Decision
+        Engine Phase 3) -- SiteCollector already downloaded and saved
+        the files during collect(); this just records what was found.
+        Own try/except so a write failure never fails an otherwise-
+        successful collection run, same discipline as
+        _extract_and_save_contact_details above."""
+        try:
+            payload = [
+                {"url": doc.url, "matched_keyword": doc.matched_keyword,
+                 "filename": doc.filename, "artifact_path": doc.artifact_path}
+                for doc in certificate_documents
+            ]
+            self.repo.update_supplier_fields_with_history(
+                supplier_id, {"certificate_document_urls": payload},
+                changed_by="collection_service", change_reason="certificate documents found during collection",
+            )
+            return len(payload)
+        except Exception as e:
+            logger.error("collection: saving certificate documents failed for supplier #%s: %s", supplier_id, e)
+            return 0
 
     def collect_pending(self, limit: int = 20, force: bool = False) -> Dict[str, Any]:
         """Standalone batch pass across every supplier needing

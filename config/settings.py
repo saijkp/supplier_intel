@@ -98,6 +98,12 @@ WEBSHARE_PROXY_ENDPOINT: str = os.getenv("WEBSHARE_PROXY_ENDPOINT") or "p.websha
 COLLECTION_PROXY_PROVIDER: str = os.getenv("COLLECTION_PROXY_PROVIDER") or "none"  # 'webshare' | 'none'
 
 COLLECTION_PAGE_TIMEOUT_MS: int = int(os.getenv("COLLECTION_PAGE_TIMEOUT_MS") or 25_000)
+# Certificate PDF/doc detection + download during collection (Procurement
+# Decision Engine Phase 3) -- "free" evidence off an already-open browser
+# session (a few extra context.request.get() calls, no new paid API), so
+# this rides along inside collect()/collect_pending() rather than needing
+# its own opt-in flag. Capped to bound cost/storage per supplier.
+MAX_CERTIFICATE_DOWNLOADS: int = int(os.getenv("MAX_CERTIFICATE_DOWNLOADS") or 5)
 # Wall-clock budget per collect_pending() batch call -- BackgroundTasks
 # has no built-in timeout (unlike a real task queue), so this is
 # self-enforced: a batch that runs past budget stops early and marks
@@ -118,6 +124,14 @@ COLLECTION_PARALLEL_WORKERS: int = int(os.getenv("COLLECTION_PARALLEL_WORKERS") 
 # same reasoning/default as COLLECTION_PARALLEL_WORKERS above, since
 # each candidate's processing includes a real Collection Service call.
 SOURCING_PARALLEL_WORKERS: int = int(os.getenv("SOURCING_PARALLEL_WORKERS") or 3)
+
+# --- Factory Facts Service (verification/factory_facts_service.py) ------
+# Same wall-clock-budget / process-wide-semaphore safeguards as
+# Contact Finder Service, applied to factory-facts extraction batches
+# (a separate, opt-in, per-supplier OpenAI call -- see
+# verification/factory_facts_extractor.py).
+FACTORY_FACTS_JOB_MAX_SECONDS: int = int(os.getenv("FACTORY_FACTS_JOB_MAX_SECONDS") or 600)
+FACTORY_FACTS_MAX_CONCURRENT_JOBS: int = int(os.getenv("FACTORY_FACTS_MAX_CONCURRENT_JOBS") or 1)
 
 # --- FastAPI layer (api/app.py) -----------------------------------------
 # A single shared-secret token, not per-user auth -- see api/auth.py's

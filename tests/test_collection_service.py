@@ -18,7 +18,7 @@ import time
 import pytest
 
 from collection.collection_service import CollectionService, _BATCH_SEMAPHORE
-from collection.schemas import CollectedPage, CollectionResult
+from collection.schemas import CertificateDocument, CollectedPage, CollectionResult
 from storage.database import initialise_schema
 from storage.repository import SupplierRepository
 
@@ -47,15 +47,28 @@ class FakeSiteCollector:
         self._delay_seconds = delay_seconds
         self._lock = threading.Lock()
         self.calls = []
+        # How many collect() calls are simultaneously in flight -- used to
+        # directly prove real concurrency (max_concurrent >= 2) instead of
+        # a wall-clock ratio, which proved flaky under real SQLite write
+        # overhead from multiple threads (see
+        # test_parallel_workers_process_concurrently's own comment).
+        self.active = 0
+        self.max_concurrent = 0
 
     def collect(self, supplier_id, domain):
         with self._lock:
             self.calls.append((supplier_id, domain))
-        if self._delay_seconds:
-            time.sleep(self._delay_seconds)
-        if self._raise_error:
-            raise self._raise_error
-        return self._results_by_domain.get(domain, self._default_result)
+            self.active += 1
+            self.max_concurrent = max(self.max_concurrent, self.active)
+        try:
+            if self._delay_seconds:
+                time.sleep(self._delay_seconds)
+            if self._raise_error:
+                raise self._raise_error
+            return self._results_by_domain.get(domain, self._default_result)
+        finally:
+            with self._lock:
+                self.active -= 1
 
 
 @pytest.fixture()
@@ -225,6 +238,58 @@ class TestContactExtraction:
         assert outcome["contact_phones_added"] == 0
 
 
+class TestCertificateDocuments:
+    """SiteCollector already downloaded/saved certificate files during
+    collect() -- CollectionService's job here is just to record what
+    was found onto the supplier row (see collection_service.py's
+    _save_certificate_documents, sibling to _extract_and_save_contact_details)."""
+
+    def test_successful_collection_records_certificate_documents(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(
+                domain="acme.example.com", success=True, artifacts_dir="1/run1",
+                pages=[CollectedPage(url="https://acme.example.com", text="hi")],
+                certificate_documents=[
+                    CertificateDocument(
+                        url="https://acme.example.com/iso-9001.pdf", matched_keyword="iso",
+                        filename="iso-9001.pdf", artifact_path="downloads/iso-9001.pdf",
+                    ),
+                ],
+            ),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        outcome = service.collect(supplier_id)
+
+        assert outcome["certificates_saved"] == 1
+        supplier = repo.get_supplier(supplier_id)
+        assert len(supplier["certificate_document_urls"]) == 1
+        assert supplier["certificate_document_urls"][0]["matched_keyword"] == "iso"
+
+    def test_no_certificate_documents_found_records_nothing(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector()  # default result has no certificate_documents
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        outcome = service.collect(supplier_id)
+
+        assert outcome["certificates_saved"] == 0
+        supplier = repo.get_supplier(supplier_id)
+        assert supplier["certificate_document_urls"] is None
+
+    def test_failed_collection_does_not_attempt_to_save_certificates(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=False, error="timeout"),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        outcome = service.collect(supplier_id)
+
+        assert outcome["certificates_saved"] == 0
+
+
 class TestCollectPending:
 
     def test_processes_every_eligible_supplier(self, repo):
@@ -305,24 +370,27 @@ class TestCollectPending:
 
     def test_parallel_workers_process_concurrently(self, repo):
         """The real point of Phase 0: waves of parallel_workers suppliers
-        run CONCURRENTLY, not one at a time. 6 suppliers at 0.2s each
-        sequentially would take ~1.2s; at parallel_workers=3 (2 waves)
-        it should take closer to ~0.4s. Generous 3x tolerance to avoid
-        flaky CI on a loaded machine."""
+        run CONCURRENTLY, not one at a time. Asserted directly via
+        max_concurrent (how many collect() calls were simultaneously in
+        flight) rather than a wall-clock ratio -- _collect_one makes
+        several real SQLite writes per supplier, and WAL's
+        single-writer semantics add real, environment-dependent
+        serialization overhead on top of the artificial sleep, which
+        made a wall-clock-ratio assertion flaky (see
+        tests/test_sourcing_agent.py's own identical fix for the same
+        reason)."""
         ids = [
             repo.create_golden_record({"canonical_name": f"Co {i}", "domain": f"co{i}.example.com"})
             for i in range(6)
         ]
-        fake = FakeSiteCollector(delay_seconds=0.2)
+        fake = FakeSiteCollector(delay_seconds=0.15)
         service = CollectionService(repo=repo, site_collector=fake, parallel_workers=3)
 
-        start = time.monotonic()
         stats = service.collect_pending(limit=10)
-        elapsed = time.monotonic() - start
 
         assert stats["attempted"] == 6
         assert len(ids) == 6
-        assert elapsed < 0.2 * 6 * 0.6  # well under sequential time (1.2s), generous tolerance
+        assert fake.max_concurrent >= 2  # real overlap, not one-at-a-time
 
     def test_concurrent_batch_is_skipped_not_queued(self, repo):
         """A second collect_pending() call while one is already running

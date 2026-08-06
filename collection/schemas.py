@@ -33,6 +33,19 @@ class CollectedPage:
 
 
 @dataclass
+class CertificateDocument:
+    """A downloaded certificate/quality-standard document (PDF/doc)
+    found among a page's download_links -- see site_collector.py's
+    certificate-keyword matching. `artifact_path` is relative to
+    CollectionResult.artifacts_dir, same convention as
+    CollectedPage.screenshot_path/html_path."""
+    url: str
+    matched_keyword: str
+    filename: str
+    artifact_path: str
+
+
+@dataclass
 class CollectionResult:
     domain: str
     pages: List[CollectedPage] = field(default_factory=list)
@@ -40,3 +53,4 @@ class CollectionResult:
     error: Optional[str] = None
     artifacts_dir: Optional[str] = None  # path relative to config.settings.COLLECTION_ARTIFACTS_DIR
     proxy_provider: Optional[str] = None
+    certificate_documents: List[CertificateDocument] = field(default_factory=list)

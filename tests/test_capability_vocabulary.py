@@ -12,6 +12,7 @@ import pytest
 from verification.capability_vocabulary import (
     CATEGORY_LOGISTICS,
     CATEGORY_MARKET_PRESENCE,
+    CATEGORY_ENGINEERING,
     CATEGORY_OEM_READINESS,
     CATEGORY_PROCESS,
     CATEGORY_STANDARD,
@@ -147,5 +148,35 @@ class TestCommercialIntelligenceExtension:
         """Re-running the alias-index build (import-time in the real
         module) would already raise on a collision -- this just
         re-asserts that guarantee explicitly for the new terms."""
+        index = build_alias_index()
+        assert len(index) >= len(VOCABULARY)
+
+
+class TestEngineeringExtension:
+    """Tests for the Procurement Decision Engine's engineering-evidence
+    additions: APQP/FMEA/IMDS/prototyping/testing-lab terms."""
+
+    @pytest.mark.parametrize(
+        "surface_form,expected_canonical",
+        [
+            ("APQP", "apqp process"),
+            ("advanced product quality planning", "apqp process"),
+            ("FMEA", "fmea process"),
+            ("failure mode and effects analysis", "fmea process"),
+            ("IMDS", "imds reporting"),
+            ("international material data system", "imds reporting"),
+            ("rapid prototyping", "prototype capability"),
+            ("prototype development", "prototype capability"),
+            ("test laboratory", "in-house testing laboratory"),
+            ("in house lab", "in-house testing laboratory"),
+        ],
+    )
+    def test_engineering_terms_map_correctly(self, surface_form, expected_canonical):
+        result = map_to_canonical(surface_form)
+        assert result is not None
+        assert result.canonical == expected_canonical
+        assert result.category == CATEGORY_ENGINEERING
+
+    def test_engineering_terms_do_not_collide_with_existing_vocabulary(self):
         index = build_alias_index()
         assert len(index) >= len(VOCABULARY)

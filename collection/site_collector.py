@@ -53,8 +53,8 @@ from bs4 import BeautifulSoup
 
 from collection.artifact_store import ArtifactStore
 from collection.proxy_provider import NoProxyProvider, ProxyProvider
-from collection.schemas import CollectedPage, CollectionResult
-from config.settings import COLLECTION_PAGE_TIMEOUT_MS
+from collection.schemas import CertificateDocument, CollectedPage, CollectionResult
+from config.settings import COLLECTION_PAGE_TIMEOUT_MS, MAX_CERTIFICATE_DOWNLOADS
 from scrapers.own_website_scraper import _html_to_text
 
 logger = logging.getLogger(__name__)
@@ -87,6 +87,31 @@ _SOCIAL_DOMAINS: Tuple[str, ...] = (
 _DOWNLOAD_EXTENSIONS: Tuple[str, ...] = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx")
 
 _MAX_PAGES_DEFAULT = 6
+
+# Certificate/quality-standard document detection (Procurement Decision
+# Engine Phase 3) -- matched against download_links' URL/filename text
+# alone, not page content (these are links to separate files, not pages
+# this collector fetches text for).
+_CERTIFICATE_KEYWORDS: Tuple[str, ...] = (
+    "iso", "iatf", "ts16949", "ce", "rohs", "reach", "ul", "e-mark", "emark", "ohsas", "certificate",
+)
+
+
+def _find_certificate_candidates(download_links: List[str]) -> List[Tuple[str, str]]:
+    """Returns (url, matched_keyword) pairs, first-match-wins per URL,
+    in encounter order, deduplicated."""
+    candidates: List[Tuple[str, str]] = []
+    seen: set = set()
+    for url in download_links:
+        if url in seen:
+            continue
+        haystack = url.lower()
+        for keyword in _CERTIFICATE_KEYWORDS:
+            if keyword in haystack:
+                seen.add(url)
+                candidates.append((url, keyword))
+                break
+    return candidates
 
 
 def _find_relevant_links(base_url: str, html: str) -> List[str]:
@@ -261,12 +286,43 @@ class SiteCollector:
                 if visited is not None:
                     pages.append(visited[0])
 
+            certificate_documents = self._download_certificates(context, run_dir, pages)
+
             return CollectionResult(
                 domain=domain, pages=pages, success=True,
                 artifacts_dir=relative_dir, proxy_provider=provider_name,
+                certificate_documents=certificate_documents,
             )
         finally:
             browser.close()
+
+    def _download_certificates(
+        self, context: Any, run_dir: Path, pages: List[CollectedPage],
+    ) -> List[CertificateDocument]:
+        """Downloads up to MAX_CERTIFICATE_DOWNLOADS certificate-looking
+        files found across all collected pages' download_links, via a
+        raw HTTP GET on the already-open browser context
+        (context.request) -- no extra page navigation needed. One
+        file failing (bad URL, timeout, non-2xx) is caught and skipped,
+        never aborts collection -- same per-item fault isolation as
+        every other step in this codebase."""
+        all_download_links = [link for page in pages for link in page.download_links]
+        candidates = _find_certificate_candidates(all_download_links)[:MAX_CERTIFICATE_DOWNLOADS]
+        documents: List[CertificateDocument] = []
+        for url, keyword in candidates:
+            try:
+                response = context.request.get(url)
+                if not response.ok:
+                    continue
+                filename = url.split("?")[0].rstrip("/").split("/")[-1] or "certificate"
+                saved_path = self.artifact_store.save_download(run_dir, filename, response.body())
+                documents.append(CertificateDocument(
+                    url=url, matched_keyword=keyword, filename=filename,
+                    artifact_path=str(saved_path.relative_to(run_dir)),
+                ))
+            except Exception as e:
+                logger.warning("collection: certificate download failed for %s: %s", url, e)
+        return documents
 
     def _visit_and_collect(
         self, page: Any, url: str, index: int, run_dir: Path,

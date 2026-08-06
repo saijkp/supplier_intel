@@ -46,6 +46,7 @@ from api.jobs import (
     run_contacts_job,
     run_discovery_job,
     run_enrichment_job,
+    run_factory_facts_job,
     run_pipeline_job,
     run_reverify_job,
     run_sourcing_job,
@@ -59,6 +60,7 @@ from api.models import (
     ContactsJobRequest,
     DiscoveryJobRequest,
     EnrichmentJobRequest,
+    FactoryFactsJobRequest,
     PipelineJobRequest,
     PipelineJobResponse,
     ProcurementOutcomeRequest,
@@ -146,6 +148,10 @@ def _to_search_result(row: Dict[str, Any]) -> SupplierSearchResult:
         ai_confidence_breakdown=row.get("ai_confidence_breakdown") or [],
         procurement_recommendation=row.get("procurement_recommendation"),
         procurement_recommendation_reason=row.get("procurement_recommendation_reason"),
+        certificate_document_urls=row.get("certificate_document_urls") or [],
+        production_lines_notes=row.get("production_lines_notes"),
+        machinery_notes=row.get("machinery_notes"),
+        factory_ownership=row.get("factory_ownership"),
     )
 
 
@@ -319,6 +325,36 @@ def create_contacts_job(
     label = f"[contacts] supplier #{request.supplier_id}" if request.supplier_id else "[contacts] pending batch"
     repo.create_pipeline_job(job_id=job_id, query=label, options=options)
     background_tasks.add_task(run_contacts_job, job_id, options)
+    job = repo.get_pipeline_job(job_id)
+    return _to_job_response(job)
+
+
+@app.post(
+    "/factory-facts/jobs",
+    response_model=PipelineJobResponse,
+    status_code=202,
+    dependencies=[Depends(require_api_token)],
+)
+def create_factory_facts_job(
+    request: FactoryFactsJobRequest,
+    background_tasks: BackgroundTasks,
+    repo: SupplierRepository = Depends(get_repo),
+) -> PipelineJobResponse:
+    """Same async job/poll pattern as POST /contacts/jobs, but for
+    verification.factory_facts_service.FactoryFactsService (production
+    lines/machinery/factory-ownership facts extracted from the
+    supplier's own website). A separate, opt-in enrichment stage --
+    never triggered automatically inside a Sourcing Agent run."""
+    if not request.supplier_id and not request.pending:
+        raise HTTPException(status_code=422, detail="Specify either supplier_id or pending.")
+    job_id = str(uuid.uuid4())
+    options = request.model_dump()
+    label = (
+        f"[factory-facts] supplier #{request.supplier_id}"
+        if request.supplier_id else "[factory-facts] pending batch"
+    )
+    repo.create_pipeline_job(job_id=job_id, query=label, options=options)
+    background_tasks.add_task(run_factory_facts_job, job_id, options)
     job = repo.get_pipeline_job(job_id)
     return _to_job_response(job)
 

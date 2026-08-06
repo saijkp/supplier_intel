@@ -118,6 +118,45 @@ class TestGetSuppliersNeedingContacts:
         assert old_id != new_id
 
 
+class TestGetSuppliersNeedingFactoryFacts:
+
+    def test_domain_less_supplier_is_excluded(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_golden_record({"canonical_name": "No Domain Co"})
+        assert repo.get_suppliers_needing_factory_facts() == []
+
+    def test_domain_supplier_never_attempted_is_included(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        results = repo.get_suppliers_needing_factory_facts()
+        assert [s["id"] for s in results] == [supplier_id]
+
+    def test_already_attempted_supplier_is_excluded_without_force(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        repo.update_supplier_fields_with_history(
+            supplier_id, {"factory_facts_extracted_at": "2026-01-01T00:00:00"}, changed_by="factory_facts_service",
+        )
+        assert repo.get_suppliers_needing_factory_facts() == []
+
+    def test_force_includes_already_attempted_suppliers(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        repo.update_supplier_fields_with_history(
+            supplier_id, {"factory_facts_extracted_at": "2026-01-01T00:00:00"}, changed_by="factory_facts_service",
+        )
+        results = repo.get_suppliers_needing_factory_facts(force=True)
+        assert [s["id"] for s in results] == [supplier_id]
+
+    def test_newest_supplier_returned_first(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        old_id = repo.create_golden_record({"canonical_name": "Old Co", "domain": "old.example.com"})
+        new_id = repo.create_golden_record({"canonical_name": "New Co", "domain": "new.example.com"})
+        results = repo.get_suppliers_needing_factory_facts(limit=1)
+        assert [s["id"] for s in results] == [new_id]
+        assert old_id != new_id
+
+
 class TestGetSuppliersNeedingAiVerification:
 
     def test_never_assessed_supplier_is_included(self, tmp_path):

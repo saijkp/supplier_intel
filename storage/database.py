@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 
 # ═══════════════════════════════════════════════════════════
@@ -222,7 +222,17 @@ CREATE TABLE IF NOT EXISTS suppliers (
     -- verification_ai/procurement_recommendation.py.
     ai_confidence_breakdown        TEXT,         -- JSON array of {name, weight, verdict, contribution}
     procurement_recommendation     TEXT,         -- no DB CHECK -- see MIGRATIONS[14]'s own comment for why (same reason as ai_confidence_score)
-    procurement_recommendation_reason TEXT
+    procurement_recommendation_reason TEXT,
+
+    -- Procurement Decision Engine Phase 3 (v15) -- see
+    -- collection/site_collector.py (certificate detection+download) and
+    -- verification/factory_facts_extractor.py /
+    -- verification/factory_facts_service.py.
+    certificate_document_urls      TEXT,         -- JSON array of {url, matched_keyword, filename, artifact_path}
+    production_lines_notes         TEXT,
+    machinery_notes                TEXT,
+    factory_ownership               TEXT,        -- no DB CHECK -- see MIGRATIONS[15]'s own comment for why
+    factory_facts_extracted_at     TIMESTAMP     -- set on every attempt, matched or not -- same discipline as capability_extracted_at/contacts_found_at
 );
 
 CREATE INDEX IF NOT EXISTS idx_sup_domain ON suppliers(domain);
@@ -942,6 +952,29 @@ MIGRATIONS: dict[int, dict] = {
             ("suppliers", "ai_confidence_breakdown", "TEXT"),
             ("suppliers", "procurement_recommendation", "TEXT"),
             ("suppliers", "procurement_recommendation_reason", "TEXT"),
+        ],
+    },
+    15: {
+        "description": (
+            "Procurement Decision Engine Phase 3: certificate_document_urls "
+            "(JSON array of {url, matched_keyword, filename, artifact_path} -- "
+            "see collection/site_collector.py's certificate detection+download, "
+            "written by collection/collection_service.py alongside a normal "
+            "collect() run, no separate opt-in stage) and production_lines_notes/"
+            "machinery_notes/factory_ownership/factory_facts_extracted_at (a "
+            "separate, opt-in LLM extraction stage -- see "
+            "verification/factory_facts_extractor.py and "
+            "verification/factory_facts_service.py). factory_ownership has no "
+            "DB CHECK constraint (same reason as procurement_recommendation in "
+            "v14) -- validated by the extractor's own soft-correction to "
+            "'unclear' instead."
+        ),
+        "columns": [
+            ("suppliers", "certificate_document_urls", "TEXT"),
+            ("suppliers", "production_lines_notes", "TEXT"),
+            ("suppliers", "machinery_notes", "TEXT"),
+            ("suppliers", "factory_ownership", "TEXT"),
+            ("suppliers", "factory_facts_extracted_at", "TIMESTAMP"),
         ],
     },
 }

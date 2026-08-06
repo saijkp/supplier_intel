@@ -60,6 +60,7 @@ SUPPLIER_JSON_FIELDS: Sequence[str] = (
     "ai_suitable_customer_types",
     "key_contacts",
     "ai_confidence_breakdown",
+    "certificate_document_urls",
 )
 
 # All columns on `suppliers` that may be set directly via
@@ -97,6 +98,8 @@ SUPPLIER_WRITABLE_FIELDS: Sequence[str] = (
     "sourcing_export_notes", "sourcing_volume_suitability", "sourcing_payment_terms_notes",
     "sourcing_verification_status", "key_contacts", "contacts_found_at",
     "ai_confidence_breakdown", "procurement_recommendation", "procurement_recommendation_reason",
+    "certificate_document_urls", "production_lines_notes", "machinery_notes",
+    "factory_ownership", "factory_facts_extracted_at",
 )
 
 SCORE_FIELDS: Sequence[str] = (
@@ -1668,6 +1671,32 @@ class SupplierRepository:
                     SELECT * FROM suppliers
                     WHERE domain IS NOT NULL AND domain != ''
                     AND contacts_found_at IS NULL
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            return _rows_to_dicts(rows, SUPPLIER_JSON_FIELDS)
+
+    def get_suppliers_needing_factory_facts(
+        self, limit: int = 1000, force: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Suppliers with a known domain that FactoryFactsService
+        hasn't run against yet -- same never-attempted-vs-attempted
+        `factory_facts_extracted_at IS NULL` pattern and newest-first
+        ordering as get_suppliers_needing_contacts."""
+        with connection_scope(self.db_path) as conn:
+            if force:
+                rows = conn.execute(
+                    "SELECT * FROM suppliers WHERE domain IS NOT NULL AND domain != '' ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM suppliers
+                    WHERE domain IS NOT NULL AND domain != ''
+                    AND factory_facts_extracted_at IS NULL
                     ORDER BY id DESC
                     LIMIT ?
                     """,

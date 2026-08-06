@@ -69,6 +69,16 @@ class SupplierSearchResult(BaseModel):
     ai_confidence_breakdown: List[Dict[str, Any]] = Field(default_factory=list)
     procurement_recommendation: Optional[str] = None
     procurement_recommendation_reason: Optional[str] = None
+    # Procurement Decision Engine Phase 3 (v15) -- see
+    # collection/site_collector.py (certificate detection+download) and
+    # verification/factory_facts_extractor.py /
+    # verification/factory_facts_service.py. Empty/None for any
+    # supplier never processed by either stage, same
+    # additive-and-absent-safe convention as every field above.
+    certificate_document_urls: List[Dict[str, Any]] = Field(default_factory=list)
+    production_lines_notes: Optional[str] = None
+    machinery_notes: Optional[str] = None
+    factory_ownership: Optional[str] = None
 
 
 class PipelineJobRequest(BaseModel):
@@ -203,6 +213,36 @@ class ContactsJobRequest(BaseModel):
         default=20,
         description="Stop after this many suppliers in pending mode. Each one costs up to 3 "
                      "Apollo credits -- start small on a first run.",
+    )
+    force: bool = Field(
+        default=False,
+        description="In pending mode, re-attempt every supplier with a domain, not just ones "
+                     "never looked up.",
+    )
+
+
+class FactoryFactsJobRequest(BaseModel):
+    """Triggers verification.factory_facts_service.FactoryFactsService
+    against either one named supplier or a batch of every supplier
+    needing it -- production lines/machinery/factory-ownership facts
+    extracted from the supplier's own website. A separate, opt-in
+    enrichment stage (like Collect/Verify/Find contacts), never run
+    automatically inside a Sourcing Agent run. Same job/poll pattern as
+    ContactsJobRequest."""
+
+    supplier_id: Optional[int] = Field(
+        default=None,
+        description="Extract factory facts for one specific supplier. Ignores pending/limit/force.",
+    )
+    pending: bool = Field(
+        default=False,
+        description="Batch mode: extract factory facts for every supplier needing it. Exactly one "
+                     "of supplier_id or pending must be set.",
+    )
+    limit: int = Field(
+        default=20,
+        description="Stop after this many suppliers in pending mode. Each one costs a real "
+                     "OpenAI call -- start small on a first run.",
     )
     force: bool = Field(
         default=False,

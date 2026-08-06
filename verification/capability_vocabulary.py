@@ -49,6 +49,14 @@ CATEGORY_STANDARD = "standard"
 CATEGORY_LOGISTICS = "logistics"
 CATEGORY_MARKET_PRESENCE = "market_presence"
 CATEGORY_OEM_READINESS = "oem_readiness"
+# Added for the Procurement Decision Engine's engineering-evidence
+# extension (Phase 3) -- APQP/FMEA/IMDS/prototyping/testing-lab claims
+# are a materially different question from CATEGORY_OEM_READINESS's
+# PPAP/CAD/traceability terms (process-quality methodology and
+# in-house test capability, not paperwork/design-support readiness),
+# same "keep it fine-grained so a buyer can filter by category"
+# reasoning the module docstring already establishes.
+CATEGORY_ENGINEERING = "engineering"
 
 
 class CapabilityTerm(NamedTuple):
@@ -197,6 +205,23 @@ VOCABULARY: Tuple[CapabilityTerm, ...] = (
     )),
     CapabilityTerm("traceability system", CATEGORY_OEM_READINESS, (
         "full traceability", "batch traceability", "lot traceability", "material traceability",
+    )),
+
+    # --- Engineering (Procurement Decision Engine extension) ---------------
+    CapabilityTerm("apqp process", CATEGORY_ENGINEERING, (
+        "apqp", "advanced product quality planning",
+    )),
+    CapabilityTerm("fmea process", CATEGORY_ENGINEERING, (
+        "fmea", "failure mode and effects analysis", "failure mode effects analysis",
+    )),
+    CapabilityTerm("imds reporting", CATEGORY_ENGINEERING, (
+        "imds", "international material data system", "material data system",
+    )),
+    CapabilityTerm("prototype capability", CATEGORY_ENGINEERING, (
+        "rapid prototyping", "prototype development", "prototyping service", "prototype manufacturing",
+    )),
+    CapabilityTerm("in-house testing laboratory", CATEGORY_ENGINEERING, (
+        "test laboratory", "testing laboratory", "quality lab", "in house lab", "in-house lab",
     )),
 )
 

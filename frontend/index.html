@@ -419,7 +419,8 @@ dialog::backdrop{background:rgba(15,27,45,.5)}
             <button class="btn btn-ghost btn-block" id="btnBulkCollect">Collect all pending</button>
             <button class="btn btn-ghost btn-block" id="btnBulkVerify" style="margin-top:8px">Verify all pending (AI)</button>
             <button class="btn btn-ghost btn-block" id="btnBulkContacts" style="margin-top:8px">Find contacts (Apollo)</button>
-            <p class="hint" style="margin-top:10px">Each supplier costs a real headless-browser visit (collect), a real OpenAI call (verify), or up to 3 Apollo credits (contacts) — start small.</p>
+            <button class="btn btn-ghost btn-block" id="btnBulkFactoryFacts" style="margin-top:8px">Extract factory facts</button>
+            <p class="hint" style="margin-top:10px">Each supplier costs a real headless-browser visit (collect), a real OpenAI call (verify, factory facts), or up to 3 Apollo credits (contacts) — start small.</p>
           </div>
         </div>
       </aside>
@@ -723,6 +724,31 @@ function contactsBlock(s) {
     </div>`;
 }
 
+/* verification/factory_facts_extractor.py's production lines/machinery/
+   factory-ownership extraction, plus collection/site_collector.py's
+   certificate document downloads -- only present for suppliers a
+   "Extract factory facts" job (or, for certificates, a Collect job)
+   has processed. */
+function factoryFactsBlock(s) {
+  const rows = [
+    ["Production lines", s.production_lines_notes],
+    ["Machinery", s.machinery_notes],
+    ["Factory ownership", s.factory_ownership],
+  ].filter(([, v]) => v);
+  const certificates = s.certificate_document_urls || [];
+  if (!rows.length && !certificates.length) return "";
+  return `
+    <div class="ai-block" style="border-color:var(--steel-500);background:var(--paper)">
+      <div class="section-rule" style="margin-top:0">Factory facts</div>
+      ${rows.map(([label, val]) => `<p class="ai-summary" style="margin-top:6px"><strong>${esc(label)}:</strong> ${esc(val)}</p>`).join("")}
+      ${certificates.length ? `
+        <span class="ai-sublabel">Certificate documents</span>
+        <ul class="ai-list">${certificates.map(doc => `
+          <li><a href="${esc(doc.url)}" target="_blank" rel="noopener">${esc(doc.filename || doc.url)}</a> <span class="badge neutral">${esc(doc.matched_keyword || "")}</span></li>`).join("")}</ul>
+      ` : ""}
+    </div>`;
+}
+
 function scoreBlock(label, value, cls) {
   const na = value === null || value === undefined;
   return `
@@ -780,11 +806,13 @@ function supplierCard(s, i) {
         ${aiBlock(s)}
         ${sourcingDossierBlock(s)}
         ${contactsBlock(s)}
+        ${factoryFactsBlock(s)}
         <div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn btn-ghost btn-sm" data-collect-id="${s.id}">Collect site</button>
           <button class="btn btn-ghost btn-sm" data-verify-id="${s.id}">Verify (AI)</button>
           <button class="btn btn-ghost btn-sm" data-reverify-id="${s.id}">Reverify</button>
           <button class="btn btn-ghost btn-sm" data-contacts-id="${s.id}">Find contacts (Apollo)</button>
+          <button class="btn btn-ghost btn-sm" data-factory-facts-id="${s.id}">Extract factory facts</button>
         </div>
       </div>
     </article>`;
@@ -849,6 +877,7 @@ document.addEventListener("click", (e) => {
   const verifyBtn = e.target.closest("[data-verify-id]");
   const reverifyBtn = e.target.closest("[data-reverify-id]");
   const contactsBtn = e.target.closest("[data-contacts-id]");
+  const factoryFactsBtn = e.target.closest("[data-factory-facts-id]");
   if (collectBtn) {
     triggerSupplierJob(collectBtn, "/collection/jobs", { supplier_id: Number(collectBtn.dataset.collectId) });
   } else if (verifyBtn) {
@@ -857,6 +886,8 @@ document.addEventListener("click", (e) => {
     triggerSupplierJob(reverifyBtn, `/suppliers/${reverifyBtn.dataset.reverifyId}/reverify`, undefined);
   } else if (contactsBtn) {
     triggerSupplierJob(contactsBtn, "/contacts/jobs", { supplier_id: Number(contactsBtn.dataset.contactsId) });
+  } else if (factoryFactsBtn) {
+    triggerSupplierJob(factoryFactsBtn, "/factory-facts/jobs", { supplier_id: Number(factoryFactsBtn.dataset.factoryFactsId) });
   }
 });
 
@@ -914,6 +945,7 @@ async function triggerBulkJob(btn, path) {
 $("btnBulkCollect").addEventListener("click", () => triggerBulkJob($("btnBulkCollect"), "/collection/jobs"));
 $("btnBulkVerify").addEventListener("click", () => triggerBulkJob($("btnBulkVerify"), "/verification/jobs"));
 $("btnBulkContacts").addEventListener("click", () => triggerBulkJob($("btnBulkContacts"), "/contacts/jobs"));
+$("btnBulkFactoryFacts").addEventListener("click", () => triggerBulkJob($("btnBulkFactoryFacts"), "/factory-facts/jobs"));
 
 /* ═══ Jobs list ═════════════════════════════════════════════ */
 function summarizeJobStats(j) {
@@ -940,6 +972,11 @@ function summarizeJobStats(j) {
   if (q.startsWith("[contacts]")) {
     return "contacts_found" in st
       ? `${st.status ?? "?"} · ${st.contacts_found ?? 0} contact(s)`
+      : `${st.succeeded ?? 0}/${st.attempted ?? 0} succeeded`;
+  }
+  if (q.startsWith("[factory-facts]")) {
+    return "factory_ownership" in st
+      ? `${st.status ?? "?"}${st.factory_ownership ? " · " + st.factory_ownership : ""}`
       : `${st.succeeded ?? 0}/${st.attempted ?? 0} succeeded`;
   }
   return Object.entries(st).slice(0, 2).map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(", ");

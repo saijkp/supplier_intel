@@ -21,6 +21,7 @@ import pytest
 from collection.artifact_store import ArtifactStore
 from collection.site_collector import (
     SiteCollector,
+    _find_certificate_candidates,
     _find_download_links,
     _find_relevant_links,
     _find_social_links,
@@ -38,6 +39,8 @@ _SITE_FILES = {
                 <a href="/contact.html">Contact</a>
                 <a href="/products.html">Our Products</a>
                 <a href="/catalogue.pdf">Download Catalogue (PDF)</a>
+                <a href="/iso-9001-certificate.pdf">ISO 9001 Certificate</a>
+                <a href="/rohs-certificate-missing.pdf">RoHS Certificate (broken link)</a>
                 <a href="https://linkedin.com/company/acme-trailer">LinkedIn</a>
                 <a href="https://facebook.com/acmetrailer">Facebook</a>
             </nav>
@@ -69,6 +72,7 @@ _SITE_FILES = {
         </body></html>
     """,
     "catalogue.pdf": "%PDF-1.4 fake pdf content for testing",
+    "iso-9001-certificate.pdf": "%PDF-1.4 fake ISO 9001 certificate content for testing",
 }
 
 
@@ -191,6 +195,54 @@ class TestSiteCollectorRealBrowser:
         assert result.proxy_provider == "NoProxyProvider"
 
 
+class TestCertificateDownload:
+    """Real Playwright APIRequestContext against the same local HTTP
+    server -- certificate-keyword-matching download_links actually get
+    fetched and saved, not just linked."""
+
+    def test_certificate_like_pdf_is_downloaded_and_saved(self, local_site, artifact_store):
+        collector = SiteCollector(artifact_store=artifact_store)
+        result = collector.collect(supplier_id=1, domain=local_site)
+
+        assert len(result.certificate_documents) == 1
+        doc = result.certificate_documents[0]
+        assert "iso-9001-certificate.pdf" in doc.url
+        assert doc.matched_keyword == "iso"
+
+        run_dir = artifact_store.base_dir / "1" / Path(result.artifacts_dir).name
+        saved_path = run_dir / doc.artifact_path
+        assert saved_path.exists()
+        assert b"fake ISO 9001 certificate content" in saved_path.read_bytes()
+
+    def test_non_certificate_pdf_is_not_downloaded_as_a_certificate(self, local_site, artifact_store):
+        collector = SiteCollector(artifact_store=artifact_store)
+        result = collector.collect(supplier_id=1, domain=local_site)
+
+        assert not any("catalogue.pdf" in doc.url for doc in result.certificate_documents)
+
+    def test_max_certificate_downloads_caps_the_count(self, local_site, artifact_store, monkeypatch):
+        import collection.site_collector as site_collector_module
+
+        monkeypatch.setattr(site_collector_module, "MAX_CERTIFICATE_DOWNLOADS", 0)
+        collector = SiteCollector(artifact_store=artifact_store)
+        result = collector.collect(supplier_id=1, domain=local_site)
+
+        assert result.success is True  # collection itself is unaffected
+        assert result.certificate_documents == []
+
+    def test_broken_certificate_link_is_skipped_not_fatal(self, local_site, artifact_store):
+        """rohs-certificate-missing.pdf is linked from index.html but not
+        a real file (404) -- must be silently skipped, and must not
+        stop the real iso-9001-certificate.pdf from being downloaded,
+        and must not fail the collection run as a whole."""
+        collector = SiteCollector(artifact_store=artifact_store)
+        result = collector.collect(supplier_id=1, domain=local_site)
+
+        assert result.success is True
+        assert not any("rohs-certificate-missing" in doc.url for doc in result.certificate_documents)
+        assert any("iso-9001-certificate.pdf" in doc.url for doc in result.certificate_documents)
+
+
 class TestExtractionHelpers:
     """Pure-function tests, no browser/server needed."""
 
@@ -221,3 +273,16 @@ class TestExtractionHelpers:
     def test_has_contact_form_false_for_search_box(self):
         html = '<form><input type="text" name="q" placeholder="Search..."></form>'
         assert _has_contact_form(html) is False
+
+    def test_find_certificate_candidates_matches_keyword(self):
+        candidates = _find_certificate_candidates(["https://acme.example.com/iso-9001-cert.pdf"])
+        assert candidates == [("https://acme.example.com/iso-9001-cert.pdf", "iso")]
+
+    def test_find_certificate_candidates_ignores_non_matching_links(self):
+        candidates = _find_certificate_candidates(["https://acme.example.com/catalogue.pdf"])
+        assert candidates == []
+
+    def test_find_certificate_candidates_deduplicates(self):
+        url = "https://acme.example.com/iso-9001-cert.pdf"
+        candidates = _find_certificate_candidates([url, url])
+        assert len(candidates) == 1
