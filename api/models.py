@@ -79,6 +79,20 @@ class SupplierSearchResult(BaseModel):
     production_lines_notes: Optional[str] = None
     machinery_notes: Optional[str] = None
     factory_ownership: Optional[str] = None
+    # Export/capacity evidence -- already-computed DB columns that were
+    # never wired into the API response until the Compare/rank UI
+    # needed them (see storage/database.py's TRADE INTELLIGENCE and
+    # PRODUCT INTELLIGENCE column groups). Same additive-and-absent-safe
+    # convention as every field above.
+    confirmed_shipments_uk: int = 0
+    confirmed_shipments_eu: int = 0
+    confirmed_shipments_us: int = 0
+    exports_to_uk: bool = False
+    exports_to_eu: bool = False
+    exports_to_us: bool = False
+    active_export_countries: List[str] = Field(default_factory=list)
+    employee_count: Optional[str] = None
+    factory_size_sqm: Optional[int] = None
 
 
 class PipelineJobRequest(BaseModel):

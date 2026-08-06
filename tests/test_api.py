@@ -163,6 +163,55 @@ class TestSearchEndpoint:
         assert response.status_code == 200
         assert response.json() == []
 
+    def test_export_and_capacity_fields_pass_through(self, client):
+        """Compare/rank UI feed -- these DB columns existed long before
+        this field set was wired into SupplierSearchResult; regression
+        guard against them silently dropping out of the response
+        again."""
+        client.repo.create_golden_record({
+            "canonical_name": "Acme Trailer Parts", "domain": "acme.example.com",
+            "confirmed_shipments_uk": 3, "confirmed_shipments_eu": 1,
+            "exports_to_uk": True, "active_export_countries": ["United Kingdom", "France"],
+            "employee_count": "50-100", "factory_size_sqm": 5000,
+        })
+        response = client.get("/suppliers/search", headers=auth_headers())
+        assert response.status_code == 200
+        result = response.json()[0]
+        assert result["confirmed_shipments_uk"] == 3
+        assert result["confirmed_shipments_eu"] == 1
+        assert result["exports_to_uk"] is True
+        assert result["active_export_countries"] == ["United Kingdom", "France"]
+        assert result["employee_count"] == "50-100"
+        assert result["factory_size_sqm"] == 5000
+
+    def test_include_capabilities_false_by_default_leaves_matched_capabilities_empty(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        client.repo.add_capability_finding(supplier_id, {
+            "reported_term": "PPAP", "canonical_term": "ppap capability", "category": "oem_readiness",
+            "relationship": "asserted", "confidence": 0.9, "evidence": "We support PPAP.", "source_url": "https://acme.example.com",
+        })
+        response = client.get("/suppliers/search", headers=auth_headers())
+        assert response.status_code == 200
+        assert response.json()[0]["matched_capabilities"] == []
+
+    def test_include_capabilities_true_populates_matched_capabilities(self, client):
+        """The Compare/rank UI's whole reason for existing -- OEM/
+        engineering/certification evidence must be readable from a
+        plain browse query, not only when filtering by `require`."""
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        client.repo.add_capability_finding(supplier_id, {
+            "reported_term": "PPAP", "canonical_term": "ppap capability", "category": "oem_readiness",
+            "relationship": "asserted", "confidence": 0.9, "evidence": "We support PPAP.", "source_url": "https://acme.example.com",
+        })
+        response = client.get(
+            "/suppliers/search", params={"include_capabilities": "true"}, headers=auth_headers(),
+        )
+        assert response.status_code == 200
+        capabilities = response.json()[0]["matched_capabilities"]
+        assert len(capabilities) == 1
+        assert capabilities[0]["canonical_term"] == "ppap capability"
+        assert capabilities[0]["category"] == "oem_readiness"
+
     def test_country_filter_is_passed_through(self, client):
         client.repo.create_golden_record({
             "canonical_name": "UK Co", "country": "United Kingdom", "domain": "uk.example.com",

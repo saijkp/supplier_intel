@@ -325,6 +325,7 @@ dialog::backdrop{background:rgba(15,27,45,.5)}
       <button data-view="search" aria-current="page">Search</button>
       <button data-view="discover">Discover &amp; enrich</button>
       <button data-view="source">Source</button>
+      <button data-view="compare">Compare</button>
     </nav>
     <div class="conn">
       <span class="dot" id="connDot"></span>
@@ -447,6 +448,49 @@ dialog::backdrop{background:rgba(15,27,45,.5)}
         <textarea class="input" id="sourceBriefInput" rows="2"
           placeholder="e.g. find 15 genuine winch manufacturers for off-road trailer recovery, ISO 9001, prioritise China then India, annual volume 5000pcs, 30 day payment terms"></textarea>
         <button class="btn btn-primary" id="btnSourceSend">Send</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ COMPARE & RANK ════════════════════════════════════ -->
+  <section id="view-compare" class="hidden">
+    <div class="split">
+      <aside class="panel rail">
+        <div class="panel-head"><h2 class="panel-title">Filters</h2></div>
+        <div class="panel-body">
+          <div class="field">
+            <label class="label" for="cmpProduct">Product</label>
+            <input class="input" id="cmpProduct" placeholder="wheel bearings" autocomplete="off">
+          </div>
+          <div class="field">
+            <label class="label" for="cmpCountry">Country</label>
+            <input class="input" id="cmpCountry" placeholder="United Kingdom" autocomplete="off">
+          </div>
+          <div class="field">
+            <label class="label" for="cmpLimit">Suppliers to compare</label>
+            <input class="input" id="cmpLimit" type="number" min="2" max="100" value="30">
+          </div>
+          <button class="btn btn-primary btn-block" id="btnCompare">Load suppliers</button>
+          <p class="hint" style="margin-top:10px">Ranks whatever's loaded — evidence for every dimension comes straight off each supplier's own record, nothing new is computed server-side.</p>
+        </div>
+      </aside>
+
+      <div>
+        <div id="compareAlert"></div>
+        <div class="panel-head panel" style="margin-bottom:12px">
+          <h2 class="panel-title">Rank by</h2>
+          <span class="count" id="compareCount"></span>
+        </div>
+        <div class="panel-body" style="display:flex;gap:6px;flex-wrap:wrap;padding:0 0 14px 0" id="rankByGroup">
+          <button class="btn btn-primary btn-sm" data-rank="overall">Best overall score</button>
+          <button class="btn btn-ghost btn-sm" data-rank="oem">Best OEM capability</button>
+          <button class="btn btn-ghost btn-sm" data-rank="engineering">Best engineering</button>
+          <button class="btn btn-ghost btn-sm" data-rank="export">Best export experience</button>
+          <button class="btn btn-ghost btn-sm" data-rank="capacity">Highest capacity</button>
+          <button class="btn btn-ghost btn-sm" data-rank="certification">Best certification coverage</button>
+          <button class="btn btn-ghost btn-sm" data-rank="risk">Lowest risk</button>
+        </div>
+        <div id="compareTable"></div>
       </div>
     </div>
   </section>
@@ -608,10 +652,11 @@ $("nav").addEventListener("click", (e) => {
   const view = btn.dataset.view;
   document.querySelectorAll("#nav button").forEach(b =>
     b.setAttribute("aria-current", b === btn ? "page" : "false"));
-  ["search","discover","source"].forEach(v =>
+  ["search","discover","source","compare"].forEach(v =>
     $("view-" + v).classList.toggle("hidden", v !== view));
   if (view === "discover") loadJobs();
   if (view === "source") initSourceView();
+  if (view === "compare") initCompareView();
 });
 
 /* ═══ Supplier cards ════════════════════════════════════════ */
@@ -1145,6 +1190,192 @@ document.addEventListener("click", async (e) => {
   } finally {
     btn.disabled = false; btn.textContent = original;
   }
+});
+
+/* ═══ Compare & rank ════════════════════════════════════════
+   Evidence-first by design: every ranking dimension below is a pure
+   function of fields the API already returns (matched_capabilities
+   only backfilled here via ?include_capabilities=true, see
+   api/app.py's search_suppliers) -- nothing is computed or scored
+   server-side for this view specifically. */
+let compareRows = [];
+let compareRankMode = "overall";
+
+const RECOMMENDATION_TIER = {
+  recommended_for_mass_production: 6, recommended_for_prototype: 5, recommended_for_rfq: 4,
+  requires_factory_audit: 3, needs_more_verification: 2, high_risk: 1, avoid: 0,
+};
+
+function parseLeadingNumber(text) {
+  if (!text) return null;
+  const match = String(text).match(/\d+/);
+  return match ? Number(match[0]) : null;
+}
+
+function capabilityTerms(s, category) {
+  return Array.from(new Set(
+    (s.matched_capabilities || [])
+      .filter(f => f.category === category)
+      .map(f => f.canonical_term || f.reported_term)
+      .filter(Boolean)
+  ));
+}
+const oemTerms = s => capabilityTerms(s, "oem_readiness");
+const engineeringTerms = s => capabilityTerms(s, "engineering");
+const certTerms = s => capabilityTerms(s, "standard");
+
+function noEvidence() { return `<span style="color:var(--steel-300)">No evidence found</span>`; }
+function termsOrNone(terms) { return terms.length ? esc(terms.join(", ")) : noEvidence(); }
+
+function exportShipmentCount(s) {
+  return (s.confirmed_shipments_uk || 0) + (s.confirmed_shipments_eu || 0) + (s.confirmed_shipments_us || 0);
+}
+function exportEvidence(s) {
+  const shipments = exportShipmentCount(s);
+  const countries = s.active_export_countries || [];
+  if (!shipments && !countries.length) return noEvidence();
+  const parts = [];
+  if (shipments) parts.push(`${shipments} confirmed shipment(s)`);
+  if (countries.length) parts.push(esc(countries.join(", ")));
+  return parts.join(" · ");
+}
+
+function capacityValue(s) {
+  const employees = parseLeadingNumber(s.employee_count);
+  const sqm = s.factory_size_sqm;
+  if (employees == null && sqm == null) return -1;
+  return Math.max(employees ?? -1, sqm ?? -1);
+}
+function capacityEvidence(s) {
+  const parts = [];
+  if (s.employee_count) parts.push(`${esc(s.employee_count)} employees`);
+  if (s.factory_size_sqm) parts.push(`${s.factory_size_sqm} sqm`);
+  return parts.length ? parts.join(" · ") : noEvidence();
+}
+
+function certificationCoverage(s) {
+  return certTerms(s).length + (s.certificate_document_urls || []).length;
+}
+function certificationEvidence(s) {
+  const terms = certTerms(s);
+  const docs = (s.certificate_document_urls || []).length;
+  const parts = [];
+  if (terms.length) parts.push(esc(terms.join(", ")));
+  if (docs) parts.push(`${docs} document(s) downloaded`);
+  return parts.length ? parts.join(" · ") : noEvidence();
+}
+
+function riskValue(s) { return 100 - (s.ai_confidence_score ?? 0); }
+
+function recommendationBadge(s) {
+  if (!s.procurement_recommendation) return `<span class="badge neutral">Not yet assessed</span>`;
+  const meta = PROCUREMENT_RECOMMENDATION_META[s.procurement_recommendation]
+    || { label: s.procurement_recommendation.replace(/_/g, " "), cls: "neutral" };
+  return `<span class="badge ${meta.cls}">${esc(meta.label)}</span>`;
+}
+
+const RANK_DIMENSIONS = {
+  overall: {
+    label: "Overall score", direction: "desc",
+    value: s => (s.ai_confidence_score ?? -1) * 10 + (RECOMMENDATION_TIER[s.procurement_recommendation] ?? 0),
+    evidence: recommendationBadge,
+  },
+  oem: {
+    label: "OEM capability", direction: "desc",
+    value: s => oemTerms(s).length, evidence: s => termsOrNone(oemTerms(s)),
+  },
+  engineering: {
+    label: "Engineering", direction: "desc",
+    value: s => engineeringTerms(s).length, evidence: s => termsOrNone(engineeringTerms(s)),
+  },
+  export: {
+    label: "Export experience", direction: "desc",
+    value: exportShipmentCount, evidence: exportEvidence,
+  },
+  capacity: {
+    label: "Capacity", direction: "desc",
+    value: capacityValue, evidence: capacityEvidence,
+  },
+  certification: {
+    label: "Certification coverage", direction: "desc",
+    value: certificationCoverage, evidence: certificationEvidence,
+  },
+  risk: {
+    label: "Risk (lower is better)", direction: "asc",
+    value: riskValue, evidence: recommendationBadge,
+  },
+};
+
+function renderCompareTable() {
+  const dim = RANK_DIMENSIONS[compareRankMode];
+  if (!compareRows.length) {
+    $("compareTable").innerHTML = `<div class="empty">
+      <div class="empty-title">No suppliers loaded</div>
+      <p class="empty-text">Set filters (optional) and click "Load suppliers" to compare.</p>
+    </div>`;
+    return;
+  }
+  const sorted = compareRows.slice().sort((a, b) => {
+    const diff = dim.value(a) - dim.value(b);
+    return dim.direction === "asc" ? diff : -diff;
+  });
+  $("compareTable").innerHTML = `<table class="tbl">
+    <thead><tr><th>#</th><th>Company</th><th>Country</th><th>Overall score</th><th>Recommendation</th><th>${esc(dim.label)}</th></tr></thead>
+    <tbody>${sorted.map((s, i) => `
+      <tr>
+        <td class="mono">${i + 1}</td>
+        <td><strong>${esc(s.canonical_name)}</strong></td>
+        <td>${esc(s.country || "")}</td>
+        <td class="mono">${s.ai_confidence_score ?? "—"}</td>
+        <td>${recommendationBadge(s)}</td>
+        <td>${dim.evidence(s)}</td>
+      </tr>`).join("")}</tbody>
+  </table>`;
+}
+
+function initCompareView() {
+  if (compareRows.length) { renderCompareTable(); return; }
+  $("compareTable").innerHTML = `<div class="empty">
+    <div class="empty-title">Load suppliers to compare</div>
+    <p class="empty-text">Optionally filter by product/country, then click "Load suppliers."</p>
+  </div>`;
+}
+
+$("btnCompare").addEventListener("click", async () => {
+  const btn = $("btnCompare");
+  const p = new URLSearchParams();
+  const product = $("cmpProduct").value.trim();
+  const country = $("cmpCountry").value.trim();
+  if (product) p.set("product", product);
+  if (country) p.set("country", country);
+  p.set("limit", $("cmpLimit").value || "30");
+  p.set("include_capabilities", "true");
+
+  const original = btn.textContent;
+  btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Loading`;
+  $("compareCount").textContent = "loading…";
+  try {
+    compareRows = await api("/suppliers/search?" + p.toString());
+    $("compareCount").textContent = compareRows.length + (compareRows.length === 1 ? " supplier" : " suppliers");
+    alertBox($("compareAlert"), 0);
+    renderCompareTable();
+  } catch (err) {
+    $("compareCount").textContent = "";
+    explain(err, $("compareAlert"));
+  } finally {
+    btn.disabled = false; btn.textContent = original;
+  }
+});
+
+$("rankByGroup").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-rank]");
+  if (!btn) return;
+  compareRankMode = btn.dataset.rank;
+  document.querySelectorAll("#rankByGroup [data-rank]").forEach(b => {
+    b.classList.toggle("btn-primary", b === btn);
+    b.classList.toggle("btn-ghost", b !== btn);
+  });
+  renderCompareTable();
 });
 
 /* ═══ Boot ══════════════════════════════════════════════════ */

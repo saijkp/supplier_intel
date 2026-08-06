@@ -152,6 +152,15 @@ def _to_search_result(row: Dict[str, Any]) -> SupplierSearchResult:
         production_lines_notes=row.get("production_lines_notes"),
         machinery_notes=row.get("machinery_notes"),
         factory_ownership=row.get("factory_ownership"),
+        confirmed_shipments_uk=row.get("confirmed_shipments_uk") or 0,
+        confirmed_shipments_eu=row.get("confirmed_shipments_eu") or 0,
+        confirmed_shipments_us=row.get("confirmed_shipments_us") or 0,
+        exports_to_uk=bool(row.get("exports_to_uk")),
+        exports_to_eu=bool(row.get("exports_to_eu")),
+        exports_to_us=bool(row.get("exports_to_us")),
+        active_export_countries=row.get("active_export_countries") or [],
+        employee_count=row.get("employee_count"),
+        factory_size_sqm=row.get("factory_size_sqm"),
     )
 
 
@@ -193,11 +202,23 @@ def search_suppliers(
     country: Optional[str] = None,
     min_score: Optional[int] = None,
     limit: int = 25,
+    include_capabilities: bool = False,
     repo: SupplierRepository = Depends(get_repo),
 ) -> List[SupplierSearchResult]:
     """Thin HTTP wrapper over `search_suppliers_full` -- see that
     method's own docstring for the actual matching semantics
     (`require` is AND, not OR; `country` is exact match, not fuzzy).
+
+    `search_suppliers_full` only populates `matched_capabilities` when
+    `require` is set (it's a byproduct of the capability-filter join,
+    not a general-purpose enrichment) -- a plain browse query gets
+    `matched_capabilities: []` for every result otherwise. Passing
+    `include_capabilities=true` backfills it per result (same
+    `repo.get_capabilities(id)` call `GET /suppliers/{id}` already
+    makes), for callers that need OEM/engineering/certification
+    evidence without narrowing results to a specific required term --
+    the Compare/rank UI's reason for existing. Defaults to False so
+    the default Search behaviour/cost profile is unchanged.
     """
     try:
         results = repo.search_suppliers_full(
@@ -210,6 +231,9 @@ def search_suppliers(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    if include_capabilities and not require:
+        for row in results:
+            row["matched_capabilities"] = repo.get_capabilities(row["id"])
     return [_to_search_result(r) for r in results]
 
 
