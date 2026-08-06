@@ -47,15 +47,23 @@ candidate came from:
 A qualifying supplier gets a SourcingDossier written onto its
 sourcing_* fields via update_supplier_fields_with_history (audited,
 diffed -- same discipline as every other write in verification_ai/).
+
+Candidates within a phase are processed in concurrent waves of
+SOURCING_PARALLEL_WORKERS (see _process_batch's own docstring for why
+this is safe with no locking) -- each candidate's processing is
+otherwise a real browser visit plus several external API/LLM calls in
+strict sequence, so this is where most of a run's wall-clock time goes.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from config.settings import SOURCING_PARALLEL_WORKERS
 from sourcing.brief_parser import BriefParser, BriefParsingError
 from sourcing.dossier_generator import SourcingDossierGenerator
 from sourcing.schemas import SourcingOutcome, SourcingProgress, StructuredBrief
@@ -114,8 +122,10 @@ class SourcingAgentService:
         capability_extractor: Optional[Any] = None,
         own_website_scraper: Optional[Any] = None,
         trade_pipeline: Optional[Any] = None,
+        parallel_workers: int = SOURCING_PARALLEL_WORKERS,
     ):
         self.repo = repo or SupplierRepository()
+        self.parallel_workers = parallel_workers
 
         if discovery_service is not None:
             self.discovery_service = discovery_service
@@ -273,30 +283,62 @@ class SourcingAgentService:
         either way, differing only in where candidate_ids came from and
         whether already-fresh suppliers can skip re-collection.
         `qualified` is mutated in place (a list); `examined` is
-        returned since it's a plain int."""
-        for supplier_id in candidate_ids:
-            if supplier_id in seen_supplier_ids:
-                continue
-            seen_supplier_ids.add(supplier_id)
-            if len(qualified) >= brief.target_count or examined >= ceiling:
-                break
+        returned since it's a plain int.
 
-            examined += 1
-            try:
-                if self._process_candidate(
-                    supplier_id, brief, skip_collection_if_fresh=skip_collection_if_fresh,
-                ) is not None:
-                    qualified.append(supplier_id)
-            except Exception as e:  # noqa: BLE001 -- defence in depth; every sub-call is already fault-isolated
-                logger.error("sourcing_agent: processing supplier #%s failed: %s", supplier_id, e)
+        Processes candidates in waves of self.parallel_workers using a
+        ThreadPoolExecutor -- each candidate's processing (collect +
+        capability extraction + verify) is otherwise fully sequential
+        and slow (a real browser visit plus several external API/LLM
+        calls), so running several concurrently is where the real
+        wall-clock win is. Correctness rests on ONE rule: every mutation
+        of seen_supplier_ids/qualified/examined happens ONLY in this
+        (main) thread -- during wave-building, before any submit(), and
+        again after a future's result() comes back. Worker threads only
+        ever run the independent _process_candidate() call and never
+        touch this method's shared bookkeeping, so no lock is needed
+        anywhere here."""
+        index = 0
+        with ThreadPoolExecutor(max_workers=max(1, self.parallel_workers)) as executor:
+            while index < len(candidate_ids):
+                if len(qualified) >= brief.target_count or examined >= ceiling:
+                    break
 
-            if on_progress:
-                try:
-                    on_progress(SourcingProgress(
-                        examined=examined, qualified=len(qualified), target=brief.target_count,
-                    ))
-                except Exception as e:  # noqa: BLE001 -- a progress-reporting bug must never kill the run
-                    logger.error("sourcing_agent: on_progress callback failed: %s", e)
+                wave: List[int] = []
+                while index < len(candidate_ids) and len(wave) < self.parallel_workers:
+                    supplier_id = candidate_ids[index]
+                    index += 1
+                    if supplier_id in seen_supplier_ids:
+                        continue
+                    seen_supplier_ids.add(supplier_id)
+                    wave.append(supplier_id)
+                    if examined + len(wave) >= ceiling:
+                        break
+                if not wave:
+                    continue
+
+                futures = {
+                    executor.submit(
+                        self._process_candidate, supplier_id, brief,
+                        skip_collection_if_fresh=skip_collection_if_fresh,
+                    ): supplier_id
+                    for supplier_id in wave
+                }
+                for future in as_completed(futures):
+                    supplier_id = futures[future]
+                    examined += 1
+                    try:
+                        if future.result() is not None:
+                            qualified.append(supplier_id)
+                    except Exception as e:  # noqa: BLE001 -- defence in depth; every sub-call is already fault-isolated
+                        logger.error("sourcing_agent: processing supplier #%s failed: %s", supplier_id, e)
+
+                    if on_progress:
+                        try:
+                            on_progress(SourcingProgress(
+                                examined=examined, qualified=len(qualified), target=brief.target_count,
+                            ))
+                        except Exception as e:  # noqa: BLE001 -- a progress-reporting bug must never kill the run
+                            logger.error("sourcing_agent: on_progress callback failed: %s", e)
 
         return examined
 

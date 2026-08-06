@@ -60,8 +60,8 @@ class TestConfidenceScorer:
 
     def test_one_contradicted_signal_moves_score_down_by_its_weight(self):
         scorer = ConfidenceScorer()
-        result = _result(SubCheckResult(name="phone_format", verdict=False, detail="x"))
-        assert scorer.score(result) == 50 - 10  # phone_format weight
+        result = _result(SubCheckResult(name="linkedin_presence", verdict=False, detail="x"))
+        assert scorer.score(result) == 50 - 5  # linkedin_presence weight
 
     def test_unknown_sub_check_names_are_ignored(self):
         """A sub-check name that isn't in CHECK_WEIGHTS (e.g. a future
@@ -76,17 +76,73 @@ class TestConfidenceScorer:
         result = _result(SubCheckResult(name="facility_address", verdict=True, detail="x"))
         assert isinstance(scorer.score(result), int)
 
-    def test_export_shipment_evidence_is_deliberately_unweighted(self):
-        """Regression guard: cross_checker.py's export_shipment_evidence
-        sub-check (Sourcing Agent's trade-data cross-check) is
-        deliberately absent from CHECK_WEIGHTS -- see CHECK_WEIGHTS's
-        own comment for why. A future accidental addition would
-        silently start moving every already-scored supplier's
-        ai_confidence_score; this catches that."""
+    def test_export_shipment_evidence_is_now_weighted(self):
+        """Procurement Decision Engine foundation (Phase 1): real
+        UK/EU/US customs evidence is real procurement-relevant
+        evidence, previously computed but deliberately left unweighted
+        -- now weighted on purpose. Regression guard against silently
+        reverting."""
         from verification_ai.confidence_scorer import CHECK_WEIGHTS
 
-        assert "export_shipment_evidence" not in dict(CHECK_WEIGHTS)
+        assert dict(CHECK_WEIGHTS)["export_shipment_evidence"] == 10
 
         scorer = ConfidenceScorer()
         result = _result(SubCheckResult(name="export_shipment_evidence", verdict=True, detail="x"))
+        assert scorer.score(result) == 60
+
+    def test_phone_format_is_deliberately_unweighted(self):
+        """Regression guard for the other half of the same rebalance:
+        phone-number format plausibility is weak, generic evidence --
+        deliberately removed from CHECK_WEIGHTS (still computed by
+        cross_checker.py and still shown in the AI narrative's evidence
+        text, just no longer moving this number). A future accidental
+        re-addition would silently start moving every already-scored
+        supplier's ai_confidence_score; this catches that."""
+        from verification_ai.confidence_scorer import CHECK_WEIGHTS
+
+        assert "phone_format" not in dict(CHECK_WEIGHTS)
+
+        scorer = ConfidenceScorer()
+        result = _result(SubCheckResult(name="phone_format", verdict=True, detail="x"))
         assert scorer.score(result) == 50
+
+
+class TestConfidenceScoreBreakdown:
+
+    def test_breakdown_includes_every_weighted_check(self):
+        from verification_ai.confidence_scorer import CHECK_WEIGHTS
+
+        scorer = ConfidenceScorer()
+        result = scorer.score_with_breakdown(_result())
+        assert {entry.name for entry in result.breakdown} == {name for name, _ in CHECK_WEIGHTS}
+
+    def test_breakdown_score_matches_bare_score(self):
+        scorer = ConfidenceScorer()
+        cross_result = _result(SubCheckResult(name="facility_address", verdict=True, detail="x"))
+        assert scorer.score_with_breakdown(cross_result).score == scorer.score(cross_result)
+
+    def test_breakdown_entry_shows_contribution_for_a_confirmed_check(self):
+        scorer = ConfidenceScorer()
+        result = scorer.score_with_breakdown(
+            _result(SubCheckResult(name="oem_readiness_evidence", verdict=True, detail="x")),
+        )
+        entry = next(e for e in result.breakdown if e.name == "oem_readiness_evidence")
+        assert entry.verdict is True
+        assert entry.weight == 15
+        assert entry.contribution == 15
+
+    def test_breakdown_entry_shows_contribution_for_a_contradicted_check(self):
+        scorer = ConfidenceScorer()
+        result = scorer.score_with_breakdown(
+            _result(SubCheckResult(name="facility_address", verdict=False, detail="x")),
+        )
+        entry = next(e for e in result.breakdown if e.name == "facility_address")
+        assert entry.verdict is False
+        assert entry.contribution == -25
+
+    def test_breakdown_entry_shows_zero_contribution_for_no_signal(self):
+        scorer = ConfidenceScorer()
+        result = scorer.score_with_breakdown(_result())
+        entry = next(e for e in result.breakdown if e.name == "manufacturer_assessment")
+        assert entry.verdict is None
+        assert entry.contribution == 0

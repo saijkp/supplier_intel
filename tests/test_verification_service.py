@@ -36,11 +36,19 @@ class FakeCrossChecker:
 
 
 class FakeConfidenceScorer:
-    def __init__(self, score=75):
+    def __init__(self, score=75, breakdown=None):
         self._score = score
+        self._breakdown = breakdown if breakdown is not None else [
+            {"name": "facility_address", "weight": 25, "verdict": True, "contribution": 25},
+        ]
 
     def score(self, cross_check_result):
         return self._score
+
+    def score_with_breakdown(self, cross_check_result):
+        return SimpleNamespace(score=self._score, breakdown=[
+            SimpleNamespace(**entry) for entry in self._breakdown
+        ])
 
 
 class FakeNarrativeGenerator:
@@ -105,6 +113,36 @@ class TestVerifySingleSupplier:
         assert supplier["ai_confidence_score"] == 82
         assert supplier["ai_confidence_assessed_at"] is not None
         assert supplier["last_verified"] is not None
+
+    def test_writes_confidence_breakdown(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme"})
+        service = _service(repo, confidence_scorer=FakeConfidenceScorer(
+            score=82, breakdown=[
+                {"name": "facility_address", "weight": 25, "verdict": True, "contribution": 25},
+                {"name": "linkedin_presence", "weight": 5, "verdict": None, "contribution": 0},
+            ],
+        ))
+
+        service.verify(supplier_id)
+
+        supplier = repo.get_supplier(supplier_id)
+        breakdown = supplier["ai_confidence_breakdown"]
+        assert len(breakdown) == 2
+        assert breakdown[0] == {"name": "facility_address", "weight": 25, "verdict": True, "contribution": 25}
+        assert breakdown[1] == {"name": "linkedin_presence", "weight": 5, "verdict": None, "contribution": 0}
+
+    def test_writes_procurement_recommendation(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "is_manufacturer": True})
+        service = _service(repo, confidence_scorer=FakeConfidenceScorer(score=85, breakdown=[
+            {"name": "facility_address", "weight": 25, "verdict": True, "contribution": 25},
+        ]))
+
+        outcome = service.verify(supplier_id)
+
+        assert outcome["procurement_recommendation"]
+        supplier = repo.get_supplier(supplier_id)
+        assert supplier["procurement_recommendation"]
+        assert supplier["procurement_recommendation_reason"]
 
     def test_writes_narrative_fields_when_generated(self, repo):
         supplier_id = repo.create_golden_record({"canonical_name": "Acme"})

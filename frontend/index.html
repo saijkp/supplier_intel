@@ -614,17 +614,68 @@ $("nav").addEventListener("click", (e) => {
 });
 
 /* ═══ Supplier cards ════════════════════════════════════════ */
+/* verification_ai/procurement_recommendation.py's deterministic
+   7-category RFQ-readiness recommendation -- the primary headline of a
+   supplier's AI verification, replacing the generic ai_summary in that
+   role (ai_summary/strengths/risks still render below, in aiBlock(),
+   as secondary supporting detail). */
+const PROCUREMENT_RECOMMENDATION_META = {
+  recommended_for_mass_production: { label: "Recommended: mass production", cls: "mfr" },
+  recommended_for_prototype: { label: "Recommended: prototype", cls: "mfr" },
+  recommended_for_rfq: { label: "Recommended for RFQ", cls: "mfr" },
+  requires_factory_audit: { label: "Requires factory audit", cls: "warn" },
+  needs_more_verification: { label: "Needs more verification", cls: "warn" },
+  high_risk: { label: "High risk", cls: "trader" },
+  avoid: { label: "Avoid", cls: "trader" },
+};
+
+function procurementRecommendationBlock(s) {
+  if (!s.procurement_recommendation) return "";
+  const meta = PROCUREMENT_RECOMMENDATION_META[s.procurement_recommendation]
+    || { label: s.procurement_recommendation.replace(/_/g, " "), cls: "neutral" };
+  return `
+    <div class="ai-block" style="border-color:var(--steel-500)">
+      <span class="badge ${meta.cls}" style="font-size:13px;padding:4px 10px">${esc(meta.label)}</span>
+      ${s.procurement_recommendation_reason ? `<p class="ai-summary" style="margin-top:8px">${esc(s.procurement_recommendation_reason)}</p>` : ""}
+    </div>`;
+}
+
 function aiBlock(s) {
   const strengths = s.ai_strengths || [];
   const risks = s.ai_risks || [];
-  if (!s.ai_summary && !strengths.length && !risks.length) return "";
+  const breakdown = s.ai_confidence_breakdown || [];
+  if (!s.ai_summary && !strengths.length && !risks.length && !breakdown.length) return "";
   return `
     <div class="ai-block">
-      <div class="section-rule">AI assessment</div>
+      <div class="section-rule">AI notes</div>
       ${s.ai_summary ? `<p class="ai-summary">${esc(s.ai_summary)}</p>` : ""}
       ${strengths.length ? `<span class="ai-sublabel">Strengths</span><ul class="ai-list strengths">${strengths.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
       ${risks.length ? `<span class="ai-sublabel">Risks</span><ul class="ai-list risks">${risks.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+      ${confidenceBreakdownTable(breakdown)}
     </div>`;
+}
+
+/* verification_ai/confidence_scorer.py's ConfidenceScoreResult.breakdown
+   -- exactly which sub-checks moved the ai_confidence_score number and
+   by how much, so the score is auditable rather than a black box. A
+   verdict of null means "no signal" (that check never ran or found
+   nothing either way), shown as a neutral row with zero contribution. */
+function confidenceBreakdownTable(breakdown) {
+  if (!breakdown.length) return "";
+  const verdictLabel = v => v === true ? "Confirmed" : v === false ? "Contradicted" : "No signal";
+  const verdictClass = v => v === true ? "mfr" : v === false ? "trader" : "neutral";
+  return `
+    <span class="ai-sublabel">Score breakdown</span>
+    <table class="tbl" style="margin-top:4px">
+      <thead><tr><th>Check</th><th>Verdict</th><th>Weight</th><th>Contribution</th></tr></thead>
+      <tbody>${breakdown.map(e => `
+        <tr>
+          <td>${esc(e.name.replace(/_/g, " "))}</td>
+          <td><span class="badge ${verdictClass(e.verdict)}">${verdictLabel(e.verdict)}</span></td>
+          <td class="mono">${e.weight}</td>
+          <td class="mono">${e.contribution > 0 ? "+" : ""}${e.contribution}</td>
+        </tr>`).join("")}</tbody>
+    </table>`;
 }
 
 /* sourcing.dossier_generator's procurement checklist assessment --
@@ -725,6 +776,7 @@ function supplierCard(s, i) {
       </div>
       ${badges(s)}
       <div class="card-body">
+        ${procurementRecommendationBlock(s)}
         ${aiBlock(s)}
         ${sourcingDossierBlock(s)}
         ${contactsBlock(s)}

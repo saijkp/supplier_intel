@@ -12,6 +12,8 @@ just asserted by inspection.
 
 from __future__ import annotations
 
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -162,7 +164,10 @@ def _brief(**overrides):
 
 def _service(repo, *, suppliers_by_country=None, is_manufacturer_by_id=None,
              brief=None, dossier_response="default", capability_findings=None,
-             raise_verify_for_id=None, trade_pipeline=None):
+             raise_verify_for_id=None, trade_pipeline=None, parallel_workers=None):
+    kwargs = {}
+    if parallel_workers is not None:
+        kwargs["parallel_workers"] = parallel_workers
     return SourcingAgentService(
         repo=repo,
         discovery_service=FakeDiscoveryService(repo, suppliers_by_country=suppliers_by_country),
@@ -175,6 +180,7 @@ def _service(repo, *, suppliers_by_country=None, is_manufacturer_by_id=None,
         capability_extractor=FakeCapabilityExtractor(findings=capability_findings),
         own_website_scraper=FakeOwnWebsiteScraper(),
         trade_pipeline=trade_pipeline or FakeTradePipeline(),
+        **kwargs,
     )
 
 
@@ -238,15 +244,42 @@ class _FixedIdDiscoveryService:
 class TestTargetCountAndCeiling:
 
     def test_stops_examining_once_target_count_reached(self, repo):
+        """parallel_workers=1 here specifically to test the exact
+        stop-at-target boundary -- with real concurrency (parallel_workers
+        > 1), a whole wave is examined before the target-reached check
+        runs again, so it can overshoot by up to parallel_workers
+        candidates; see test_wave_can_overshoot_target_under_concurrency
+        below for that documented, intentional trade-off."""
         service = _service(
             repo, brief=_brief(target_count=1),
             suppliers_by_country={None: ["Co A", "Co B", "Co C"]},
+            parallel_workers=1,
         )
 
         outcome = service.run("find 1 winch manufacturer")
 
         assert outcome.examined_count == 1
         assert len(outcome.qualified_supplier_ids) == 1
+
+    def test_wave_can_overshoot_target_under_concurrency(self, repo):
+        """Documents the intentional Phase 0 trade-off: with
+        parallel_workers=3, a whole wave of up to 3 candidates is
+        submitted and examined before the target-reached check runs
+        again -- so a target of 1 can still examine all 3 candidates in
+        a single wave, rather than stopping at exactly 1. This is the
+        cost of running candidates concurrently instead of one at a
+        time; all 3 still qualify here (all manufacturers), so the
+        supplier list itself isn't wrong -- just the examined count."""
+        service = _service(
+            repo, brief=_brief(target_count=1),
+            suppliers_by_country={None: ["Co A", "Co B", "Co C"]},
+            parallel_workers=3,
+        )
+
+        outcome = service.run("find 1 winch manufacturer")
+
+        assert outcome.examined_count == 3
+        assert len(outcome.qualified_supplier_ids) == 3
 
     def test_ceiling_stops_examination_even_if_target_not_reached(self, repo):
         """target_count=2, max_multiplier=2 -> ceiling=4. None of the 5
@@ -282,6 +315,73 @@ class TestTargetCountAndCeiling:
 
         assert outcome.examined_count == 4
         assert outcome.qualified_supplier_ids == []
+
+
+class TestConcurrency:
+
+    def test_candidates_within_a_wave_process_concurrently(self, repo):
+        """The real point of Phase 0: candidates within one wave run
+        CONCURRENTLY, not one at a time. Asserted directly by tracking
+        how many verify() calls are simultaneously in flight, rather
+        than an aggregate wall-clock ratio -- _process_candidate makes
+        several real SQLite writes per candidate (collect, capability
+        extraction, verify, dossier), and WAL's single-writer semantics
+        add real, environment-dependent serialization overhead on top
+        of the artificial sleep, which made a wall-clock-ratio
+        assertion flaky. Directly observing overlapping in-flight calls
+        is robust to that noise."""
+
+        class SlowVerificationService(FakeVerificationService):
+            def __init__(self, repo):
+                super().__init__(repo)
+                self.active = 0
+                self.max_concurrent = 0
+                self._lock = threading.Lock()
+
+            def verify(self, supplier_id):
+                with self._lock:
+                    self.active += 1
+                    self.max_concurrent = max(self.max_concurrent, self.active)
+                try:
+                    time.sleep(0.15)
+                    return super().verify(supplier_id)
+                finally:
+                    with self._lock:
+                        self.active -= 1
+
+        slow_verification = SlowVerificationService(repo)
+        service = _service(
+            repo, brief=_brief(target_count=999),
+            suppliers_by_country={None: [f"Co {i}" for i in range(6)]},
+            parallel_workers=3,
+        )
+        service.verification_service = slow_verification
+
+        outcome = service.run("find winch manufacturers")
+
+        assert outcome.examined_count == 6
+        assert slow_verification.max_concurrent >= 2  # real overlap, not one-at-a-time
+
+    def test_examined_and_qualified_counts_are_exact_under_concurrency(self, repo):
+        """Race-condition regression guard: with a larger candidate list
+        and real concurrency, examined must equal exactly the number of
+        candidates processed (no double-count, no skip), and qualified
+        must equal exactly how many actually qualified -- both
+        bookkeeping values are mutated only in the main thread (see
+        _process_batch's own docstring), so this must be exact every
+        time, not just "close."""
+        names = [f"Co {i}" for i in range(12)]
+        service = _service(
+            repo, brief=_brief(target_count=999),
+            suppliers_by_country={None: names},
+            parallel_workers=4,
+        )
+
+        outcome = service.run("find winch manufacturers")
+
+        assert outcome.examined_count == 12
+        assert len(outcome.qualified_supplier_ids) == 12
+        assert len(set(outcome.qualified_supplier_ids)) == 12  # no duplicates
 
 
 class TestCountryPriority:

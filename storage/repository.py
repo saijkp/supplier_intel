@@ -59,6 +59,7 @@ SUPPLIER_JSON_FIELDS: Sequence[str] = (
     "ai_risks",
     "ai_suitable_customer_types",
     "key_contacts",
+    "ai_confidence_breakdown",
 )
 
 # All columns on `suppliers` that may be set directly via
@@ -95,6 +96,7 @@ SUPPLIER_WRITABLE_FIELDS: Sequence[str] = (
     "sourcing_oem_odm_notes", "sourcing_factory_notes", "sourcing_engineering_notes",
     "sourcing_export_notes", "sourcing_volume_suitability", "sourcing_payment_terms_notes",
     "sourcing_verification_status", "key_contacts", "contacts_found_at",
+    "ai_confidence_breakdown", "procurement_recommendation", "procurement_recommendation_reason",
 )
 
 SCORE_FIELDS: Sequence[str] = (

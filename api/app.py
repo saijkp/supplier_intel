@@ -143,6 +143,9 @@ def _to_search_result(row: Dict[str, Any]) -> SupplierSearchResult:
         sourcing_payment_terms_notes=row.get("sourcing_payment_terms_notes"),
         sourcing_verification_status=row.get("sourcing_verification_status"),
         key_contacts=row.get("key_contacts") or [],
+        ai_confidence_breakdown=row.get("ai_confidence_breakdown") or [],
+        procurement_recommendation=row.get("procurement_recommendation"),
+        procurement_recommendation_reason=row.get("procurement_recommendation_reason"),
     )
 
 

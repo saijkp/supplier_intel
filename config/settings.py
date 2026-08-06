@@ -104,6 +104,20 @@ COLLECTION_PAGE_TIMEOUT_MS: int = int(os.getenv("COLLECTION_PAGE_TIMEOUT_MS") or
 # itself partial, safely resumable on the next call.
 COLLECTION_JOB_MAX_SECONDS: int = int(os.getenv("COLLECTION_JOB_MAX_SECONDS") or 1200)
 COLLECTION_MAX_CONCURRENT_JOBS: int = int(os.getenv("COLLECTION_MAX_CONCURRENT_JOBS") or 1)
+# Suppliers collected concurrently WITHIN one collect_pending() batch call
+# (distinct from COLLECTION_MAX_CONCURRENT_JOBS above, which caps
+# concurrent BATCH calls, not per-item parallelism). Each unit of work
+# launches its own headless Chromium process -- kept small and
+# conservative by default given the real memory pressure this creates
+# on a modest Railway plan; see collection/collection_service.py's
+# module docstring for the full reasoning.
+COLLECTION_PARALLEL_WORKERS: int = int(os.getenv("COLLECTION_PARALLEL_WORKERS") or 3)
+
+# --- Sourcing Agent (sourcing/sourcing_agent.py) -------------------------
+# Candidates processed concurrently within one _process_batch() wave --
+# same reasoning/default as COLLECTION_PARALLEL_WORKERS above, since
+# each candidate's processing includes a real Collection Service call.
+SOURCING_PARALLEL_WORKERS: int = int(os.getenv("SOURCING_PARALLEL_WORKERS") or 3)
 
 # --- FastAPI layer (api/app.py) -----------------------------------------
 # A single shared-secret token, not per-user auth -- see api/auth.py's

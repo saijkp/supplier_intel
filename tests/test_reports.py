@@ -182,10 +182,13 @@ class TestCSVExport:
 
     def test_csv_columns_are_a_curated_subset(self):
         # Sanity check that this stays a deliberately curated list, not
-        # every column in the suppliers table.
+        # every column in the suppliers table. Threshold bumped from 30
+        # to 35 when ai_confidence_score/procurement_recommendation
+        # were added (Procurement Decision Engine foundation) --
+        # legitimate growth, not scope creep back toward "every column."
         assert "canonical_name" in CSV_COLUMNS
         assert "id" in CSV_COLUMNS
-        assert len(CSV_COLUMNS) < 30
+        assert len(CSV_COLUMNS) < 35
 
     def test_manufacturer_signals_flattened_to_readable_string(self, tmp_path):
         repo = _make_repo(tmp_path)

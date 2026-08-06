@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 # ═══════════════════════════════════════════════════════════
@@ -215,7 +215,14 @@ CREATE TABLE IF NOT EXISTS suppliers (
     -- enrichment stage (like Collect/Verify), never run automatically
     -- during a Sourcing Agent run.
     key_contacts                   TEXT,         -- JSON array of {name, title, email, phone, linkedin_url, role_category}
-    contacts_found_at              TIMESTAMP     -- set on every attempt, matched or not -- same never-attempted-vs-attempted-and-found-nothing discipline as capability_extracted_at
+    contacts_found_at              TIMESTAMP,    -- set on every attempt, matched or not -- same never-attempted-vs-attempted-and-found-nothing discipline as capability_extracted_at
+
+    -- Procurement Decision Engine foundation (v14) -- see
+    -- verification_ai/confidence_scorer.py (ConfidenceScoreResult) and
+    -- verification_ai/procurement_recommendation.py.
+    ai_confidence_breakdown        TEXT,         -- JSON array of {name, weight, verdict, contribution}
+    procurement_recommendation     TEXT,         -- no DB CHECK -- see MIGRATIONS[14]'s own comment for why (same reason as ai_confidence_score)
+    procurement_recommendation_reason TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sup_domain ON suppliers(domain);
@@ -913,6 +920,28 @@ MIGRATIONS: dict[int, dict] = {
         "columns": [
             ("suppliers", "key_contacts", "TEXT"),
             ("suppliers", "contacts_found_at", "TIMESTAMP"),
+        ],
+    },
+    14: {
+        "description": (
+            "Procurement Decision Engine foundation: ai_confidence_breakdown "
+            "(JSON array of {name, weight, verdict, contribution} -- see "
+            "verification_ai/confidence_scorer.py's ConfidenceScoreResult) "
+            "and procurement_recommendation/procurement_recommendation_reason "
+            "(a deterministic 7-category RFQ-readiness recommendation -- see "
+            "verification_ai/procurement_recommendation.py). "
+            "procurement_recommendation deliberately has no DB CHECK "
+            "constraint restricting it to its 7 valid values -- same reason "
+            "ai_confidence_score has none (see its own SCHEMA_SQL comment): "
+            "ALTER TABLE ADD COLUMN can't add one consistently with a "
+            "fresh-DB CREATE TABLE, so this is validated by construction "
+            "(only verification_ai/procurement_recommendation.py's fixed "
+            "categoriser ever writes it) rather than at the DB layer."
+        ),
+        "columns": [
+            ("suppliers", "ai_confidence_breakdown", "TEXT"),
+            ("suppliers", "procurement_recommendation", "TEXT"),
+            ("suppliers", "procurement_recommendation_reason", "TEXT"),
         ],
     },
 }

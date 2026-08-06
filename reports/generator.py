@@ -109,6 +109,7 @@ CSV_COLUMNS: List[str] = [
     "alibaba_url", "indiamart_url", "hktdc_url",
     "composite_score", "recommendation", "source_count",
     "manufacturer_signals",
+    "ai_confidence_score", "procurement_recommendation",
 ]
 
 # Excel export is the fuller sibling of CSV_COLUMNS — same curated base
@@ -122,7 +123,7 @@ CSV_COLUMNS: List[str] = [
 EXCEL_COLUMNS: List[str] = CSV_COLUMNS + [
     "secondary_emails", "contact_form_url",
     "facility_address_verified", "facility_address_verification_source",
-    "linkedin_url",
+    "linkedin_url", "procurement_recommendation_reason",
 ]
 
 
@@ -158,6 +159,7 @@ SOURCING_CSV_COLUMNS: List[str] = [
     "sourcing_volume_suitability", "sourcing_payment_terms_notes",
     "sourcing_verification_status",
     "is_manufacturer", "composite_score", "ai_confidence_score",
+    "procurement_recommendation", "procurement_recommendation_reason",
     "procurement_manager", "sales_manager", "ceo",
 ]
 

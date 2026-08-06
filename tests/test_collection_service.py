@@ -12,6 +12,9 @@ uses a real Playwright browser).
 
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 
 from collection.collection_service import CollectionService, _BATCH_SEMAPHORE
@@ -21,26 +24,38 @@ from storage.repository import SupplierRepository
 
 
 class FakeSiteCollector:
-    """Returns a fixed CollectionResult (or raises) regardless of
-    input, in call order if multiple are queued -- mirrors
-    tests/test_pipeline.py's FakeScraper convention."""
+    """Returns a CollectionResult (or raises) keyed by domain -- a
+    dict lookup rather than a positional queue, so which fake result
+    comes back never depends on call order. This matters now that
+    CollectionService.collect_pending() processes suppliers in
+    concurrent waves: a positional `.pop(0)` queue would race across
+    threads and silently pair the wrong result with the wrong
+    supplier. `self.calls` is a plain list -- CPython's GIL makes
+    `list.append` itself atomic, so concurrent appends are safe, but
+    the resulting ORDER is not guaranteed; tests that care about call
+    order construct CollectionService with parallel_workers=1.
+    """
 
-    def __init__(self, results=None, raise_error=None):
-        self._results = list(results) if results is not None else [
-            CollectionResult(domain="acme.example.com", pages=[
+    def __init__(self, results_by_domain=None, default_result=None, raise_error=None, delay_seconds=0.0):
+        self._results_by_domain = dict(results_by_domain) if results_by_domain else {}
+        self._default_result = default_result or CollectionResult(
+            domain="acme.example.com", pages=[
                 CollectedPage(url="https://acme.example.com", text="hi", has_contact_form=False),
-            ], success=True, artifacts_dir="1/run1", proxy_provider="NoProxyProvider"),
-        ]
+            ], success=True, artifacts_dir="1/run1", proxy_provider="NoProxyProvider",
+        )
         self._raise_error = raise_error
+        self._delay_seconds = delay_seconds
+        self._lock = threading.Lock()
         self.calls = []
 
     def collect(self, supplier_id, domain):
-        self.calls.append((supplier_id, domain))
+        with self._lock:
+            self.calls.append((supplier_id, domain))
+        if self._delay_seconds:
+            time.sleep(self._delay_seconds)
         if self._raise_error:
             raise self._raise_error
-        if len(self._results) == 1:
-            return self._results[0]
-        return self._results.pop(0)
+        return self._results_by_domain.get(domain, self._default_result)
 
 
 @pytest.fixture()
@@ -97,9 +112,9 @@ class TestCollectSingleSupplier:
 
     def test_failed_collection_is_recorded_but_does_not_raise(self, repo):
         supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
-        fake = FakeSiteCollector(results=[
-            CollectionResult(domain="acme.example.com", success=False, error="could not load homepage"),
-        ])
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=False, error="could not load homepage"),
+        })
         service = CollectionService(repo=repo, site_collector=fake)
 
         outcome = service.collect(supplier_id)  # must not raise
@@ -133,15 +148,15 @@ class TestContactExtraction:
 
     def test_successful_collection_populates_email_and_phone(self, repo):
         supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
-        fake = FakeSiteCollector(results=[
-            CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
                 CollectedPage(
                     url="https://acme.example.com/contact",
                     text="Contact us: sales@acme.example.com or call +86 138 0000 0000.",
                     has_contact_form=False,
                 ),
             ]),
-        ])
+        })
         service = CollectionService(repo=repo, site_collector=fake)
 
         outcome = service.collect(supplier_id)
@@ -155,11 +170,11 @@ class TestContactExtraction:
 
     def test_page_with_no_extractable_contact_details_adds_nothing(self, repo):
         supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
-        fake = FakeSiteCollector(results=[
-            CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
                 CollectedPage(url="https://acme.example.com", text="Welcome to Acme.", has_contact_form=False),
             ]),
-        ])
+        })
         service = CollectionService(repo=repo, site_collector=fake)
 
         outcome = service.collect(supplier_id)
@@ -180,15 +195,15 @@ class TestContactExtraction:
             "canonical_name": "Acme", "domain": "acme.example.com",
             "primary_email": "listing@acme-alibaba.example.com",
         })
-        fake = FakeSiteCollector(results=[
-            CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
                 CollectedPage(
                     url="https://acme.example.com/contact",
                     text="Email us at othersales@acme.example.com",
                     has_contact_form=False,
                 ),
             ]),
-        ])
+        })
         service = CollectionService(repo=repo, site_collector=fake)
 
         service.collect(supplier_id)
@@ -198,9 +213,9 @@ class TestContactExtraction:
 
     def test_failed_collection_does_not_attempt_contact_extraction(self, repo):
         supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
-        fake = FakeSiteCollector(results=[
-            CollectionResult(domain="acme.example.com", success=False, error="timeout"),
-        ])
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=False, error="timeout"),
+        })
         service = CollectionService(repo=repo, site_collector=fake)
 
         outcome = service.collect(supplier_id)
@@ -215,10 +230,10 @@ class TestCollectPending:
     def test_processes_every_eligible_supplier(self, repo):
         id_a = repo.create_golden_record({"canonical_name": "A Co", "domain": "a.example.com"})
         id_b = repo.create_golden_record({"canonical_name": "B Co", "domain": "b.example.com"})
-        fake = FakeSiteCollector(results=[
-            CollectionResult(domain="a.example.com", success=True, pages=[CollectedPage(url="https://a.example.com", text="a")]),
-            CollectionResult(domain="b.example.com", success=True, pages=[CollectedPage(url="https://b.example.com", text="b")]),
-        ])
+        fake = FakeSiteCollector(results_by_domain={
+            "a.example.com": CollectionResult(domain="a.example.com", success=True, pages=[CollectedPage(url="https://a.example.com", text="a")]),
+            "b.example.com": CollectionResult(domain="b.example.com", success=True, pages=[CollectedPage(url="https://b.example.com", text="b")]),
+        })
         service = CollectionService(repo=repo, site_collector=fake)
 
         stats = service.collect_pending(limit=10)
@@ -262,10 +277,10 @@ class TestCollectPending:
     def test_partial_failure_does_not_abort_the_batch(self, repo):
         id_a = repo.create_golden_record({"canonical_name": "A Co", "domain": "a.example.com"})
         id_b = repo.create_golden_record({"canonical_name": "B Co", "domain": "b.example.com"})
-        fake = FakeSiteCollector(results=[
-            CollectionResult(domain="a.example.com", success=False, error="timeout"),
-            CollectionResult(domain="b.example.com", success=True, pages=[CollectedPage(url="https://b.example.com", text="b")]),
-        ])
+        fake = FakeSiteCollector(results_by_domain={
+            "a.example.com": CollectionResult(domain="a.example.com", success=False, error="timeout"),
+            "b.example.com": CollectionResult(domain="b.example.com", success=True, pages=[CollectedPage(url="https://b.example.com", text="b")]),
+        })
         service = CollectionService(repo=repo, site_collector=fake)
 
         stats = service.collect_pending(limit=10)
@@ -277,16 +292,37 @@ class TestCollectPending:
     def test_wall_clock_budget_stops_the_batch_early(self, repo):
         for i in range(3):
             repo.create_golden_record({"canonical_name": f"Co {i}", "domain": f"co{i}.example.com"})
-        fake = FakeSiteCollector(results=[
-            CollectionResult(domain=f"co{i}.example.com", success=True, pages=[CollectedPage(url="u", text="t")])
+        fake = FakeSiteCollector(results_by_domain={
+            f"co{i}.example.com": CollectionResult(domain=f"co{i}.example.com", success=True, pages=[CollectedPage(url="u", text="t")])
             for i in range(3)
-        ])
+        })
         service = CollectionService(repo=repo, site_collector=fake, job_max_seconds=-1)  # already "over budget"
 
         stats = service.collect_pending(limit=10)
 
         assert stats["attempted"] == 0  # budget check happens before the first supplier
         assert stats["status"] == "partial"
+
+    def test_parallel_workers_process_concurrently(self, repo):
+        """The real point of Phase 0: waves of parallel_workers suppliers
+        run CONCURRENTLY, not one at a time. 6 suppliers at 0.2s each
+        sequentially would take ~1.2s; at parallel_workers=3 (2 waves)
+        it should take closer to ~0.4s. Generous 3x tolerance to avoid
+        flaky CI on a loaded machine."""
+        ids = [
+            repo.create_golden_record({"canonical_name": f"Co {i}", "domain": f"co{i}.example.com"})
+            for i in range(6)
+        ]
+        fake = FakeSiteCollector(delay_seconds=0.2)
+        service = CollectionService(repo=repo, site_collector=fake, parallel_workers=3)
+
+        start = time.monotonic()
+        stats = service.collect_pending(limit=10)
+        elapsed = time.monotonic() - start
+
+        assert stats["attempted"] == 6
+        assert len(ids) == 6
+        assert elapsed < 0.2 * 6 * 0.6  # well under sequential time (1.2s), generous tolerance
 
     def test_concurrent_batch_is_skipped_not_queued(self, repo):
         """A second collect_pending() call while one is already running

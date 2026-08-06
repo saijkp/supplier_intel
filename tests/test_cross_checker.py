@@ -285,3 +285,93 @@ class TestExportShipmentEvidenceSubCheck:
             "confirmed_shipments_uk": 0, "confirmed_shipments_eu": 0, "confirmed_shipments_us": 0,
         })
         assert not any(c.name == "export_shipment_evidence" for c in result.sub_checks)
+
+
+class TestOemReadinessEvidenceSubCheck:
+
+    def test_ppap_capability_found_on_own_site_produces_true_verdict(self):
+        checker = CrossChecker()
+        result = checker.run_checks(
+            {"canonical_name": "Acme"},
+            capability_findings=[{"canonical_term": "ppap capability", "category": "oem_readiness"}],
+        )
+        check = next(c for c in result.sub_checks if c.name == "oem_readiness_evidence")
+        assert check.verdict is True
+        assert "ppap capability" in check.detail
+        assert result.inconsistencies == []
+
+    def test_multiple_oem_readiness_terms_all_listed(self):
+        checker = CrossChecker()
+        result = checker.run_checks(
+            {"canonical_name": "Acme"},
+            capability_findings=[
+                {"canonical_term": "ppap capability", "category": "oem_readiness"},
+                {"canonical_term": "cad engineering support", "category": "oem_readiness"},
+            ],
+        )
+        check = next(c for c in result.sub_checks if c.name == "oem_readiness_evidence")
+        assert "ppap capability" in check.detail
+        assert "cad engineering support" in check.detail
+
+    def test_no_oem_readiness_findings_produces_no_signal_never_a_false_verdict(self):
+        """Absence of PPAP/CAD/traceability evidence is not itself
+        evidence the supplier lacks OEM readiness -- most sites simply
+        never discuss it. Must never contribute a False verdict or an
+        inconsistency, only silence."""
+        checker = CrossChecker()
+        result = checker.run_checks(
+            {"canonical_name": "Acme"},
+            capability_findings=[{"canonical_term": "rotomoulding", "category": "process"}],
+        )
+        assert not any(c.name == "oem_readiness_evidence" for c in result.sub_checks)
+        assert result.inconsistencies == []
+
+    def test_no_capability_findings_at_all_skips_the_check(self):
+        checker = CrossChecker()
+        result = checker.run_checks({"canonical_name": "Acme"})
+        assert not any(c.name == "oem_readiness_evidence" for c in result.sub_checks)
+
+
+class TestContactVerificationSubCheck:
+
+    def test_named_contact_with_email_produces_true_verdict(self):
+        checker = CrossChecker()
+        result = checker.run_checks({
+            "canonical_name": "Acme",
+            "key_contacts": [
+                {"name": "Jane Doe", "title": "Procurement Manager", "email": "jane@acme.com",
+                 "phone": None, "linkedin_url": None, "role_category": "procurement"},
+            ],
+        })
+        check = next(c for c in result.sub_checks if c.name == "contact_verification")
+        assert check.verdict is True
+        assert "Jane Doe" in check.detail
+        assert result.inconsistencies == []
+
+    def test_contact_without_email_produces_no_signal(self):
+        """A contact found but with no email revealed (e.g. Apollo
+        enrichment failed) isn't a verified way to reach anyone --
+        must not count as evidence."""
+        checker = CrossChecker()
+        result = checker.run_checks({
+            "canonical_name": "Acme",
+            "key_contacts": [
+                {"name": "Jane Doe", "title": "Procurement Manager", "email": None,
+                 "phone": None, "linkedin_url": None, "role_category": "procurement"},
+            ],
+        })
+        assert not any(c.name == "contact_verification" for c in result.sub_checks)
+
+    def test_empty_key_contacts_produces_no_signal_never_a_false_verdict(self):
+        """Apollo lookup may simply not have run yet for this supplier
+        -- that absence is not evidence against trustworthiness, only
+        silence."""
+        checker = CrossChecker()
+        result = checker.run_checks({"canonical_name": "Acme", "key_contacts": []})
+        assert not any(c.name == "contact_verification" for c in result.sub_checks)
+        assert result.inconsistencies == []
+
+    def test_missing_key_contacts_field_skips_the_check(self):
+        checker = CrossChecker()
+        result = checker.run_checks({"canonical_name": "Acme"})
+        assert not any(c.name == "contact_verification" for c in result.sub_checks)

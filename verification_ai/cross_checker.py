@@ -98,6 +98,8 @@ class CrossChecker:
         self._check_own_site_name_match(supplier, collected_pages, result)
         self._check_certification_consistency(supplier, capability_findings, result)
         self._check_export_shipment_evidence(supplier, result)
+        self._check_oem_readiness_evidence(capability_findings, result)
+        self._check_contact_verification(supplier, result)
 
         return result
 
@@ -277,3 +279,62 @@ class CrossChecker:
             ))
         except Exception as e:
             logger.warning("cross_checker: export shipment evidence check failed: %s", e)
+
+    def _check_oem_readiness_evidence(
+        self, capability_findings: List[Dict[str, Any]], result: CrossCheckResult,
+    ) -> None:
+        """NEW cross-reference check (Procurement Decision Engine
+        foundation) -- does CapabilityExtractor's evidence from the
+        supplier's own site include anything in the "oem_readiness"
+        vocabulary category (PPAP capability, CAD engineering support,
+        traceability system -- see capability_vocabulary.py)? Real,
+        procurement-relevant evidence a buyer actually cares about, not
+        a generic signal. Positive-only, same discipline as
+        _check_export_shipment_evidence: most sites simply never
+        discuss PPAP/traceability at all, so absence is not itself
+        evidence the supplier lacks this capability -- never
+        contributes an inconsistency or a False verdict."""
+        if not capability_findings:
+            return
+        try:
+            oem_terms = sorted({
+                f.get("canonical_term") for f in capability_findings
+                if f.get("category") == "oem_readiness" and f.get("canonical_term")
+            })
+            if not oem_terms:
+                return
+            result.sub_checks.append(SubCheckResult(
+                name="oem_readiness_evidence", verdict=True,
+                detail=f"OEM-readiness evidence found on own site: {', '.join(oem_terms)}",
+            ))
+        except Exception as e:
+            logger.warning("cross_checker: OEM readiness evidence check failed: %s", e)
+
+    def _check_contact_verification(self, supplier: Dict[str, Any], result: CrossCheckResult) -> None:
+        """NEW cross-reference check (Procurement Decision Engine
+        foundation) -- does this supplier have at least one NAMED
+        contact with a real email on file (verification.
+        apollo_contact_finder.py, key_contacts)? A verified named
+        contact (Export Manager, Procurement, CEO...) to actually send
+        an RFQ to is real procurement-relevant evidence, unlike a
+        generic info@ address. Positive-only, same discipline as the
+        other NEW checks above: Apollo lookup is a separate, opt-in
+        stage that may simply not have run yet for this supplier --
+        that absence is not evidence against trustworthiness, never
+        contributes an inconsistency or a False verdict."""
+        key_contacts = supplier.get("key_contacts")
+        if not key_contacts:
+            return
+        try:
+            named_contacts_with_email = [
+                c for c in key_contacts if isinstance(c, dict) and c.get("name") and c.get("email")
+            ]
+            if not named_contacts_with_email:
+                return
+            names = ", ".join(c["name"] for c in named_contacts_with_email)
+            result.sub_checks.append(SubCheckResult(
+                name="contact_verification", verdict=True,
+                detail=f"Verified named contact(s) with email on file: {names}",
+            ))
+        except Exception as e:
+            logger.warning("cross_checker: contact verification check failed: %s", e)

@@ -12,18 +12,34 @@ implementation, construction never requires credentials).
 Concurrency/safety guards for the current single-instance Railway
 deployment (no real task queue, see the redesign plan's "Collection
 Service safeguards" section):
-- Sequential processing only in collect_pending() -- no concurrent
-  Playwright contexts in v1 (thread-safety risk, real memory pressure
-  on a modest plan from multiple headless Chromium instances).
+- Bounded parallelism WITHIN one collect_pending() batch call:
+  suppliers are processed in waves of COLLECTION_PARALLEL_WORKERS
+  (default 3) using a ThreadPoolExecutor, not one at a time. This is
+  safe because each unit of work is fully self-contained: SiteCollector
+  .collect() launches its own fresh Playwright instance/browser per
+  call (see site_collector.py) with no shared mutable state, and
+  SupplierRepository opens a fresh SQLite connection per method call
+  (see storage/database.py's connection_scope, WAL mode) rather than
+  holding one open on self -- so concurrent _collect_one() calls from
+  different threads never share a connection or a browser. The worker
+  count stays small and configurable specifically because each one
+  spins up a real headless Chromium process -- real memory pressure on
+  a modest plan, the reason this was sequential-only in v1. All batch
+  bookkeeping (attempted/succeeded/failed counters) is mutated ONLY in
+  the main thread as each wave's futures resolve -- worker threads only
+  ever run the independent _collect_one() call -- so no lock is needed
+  anywhere in collect_pending() itself.
 - A process-wide semaphore caps concurrent collect_pending() BATCH
   calls to COLLECTION_MAX_CONCURRENT_JOBS (default 1) -- so firing two
   HTTP requests at once doesn't launch two simultaneous batches on this
-  instance.
+  instance. Distinct from COLLECTION_PARALLEL_WORKERS above: this gates
+  batch CALLS, not per-item parallelism within one call.
 - A wall-clock budget (COLLECTION_JOB_MAX_SECONDS) since
   BackgroundTasks has no built-in timeout unlike a real task queue -- a
-  batch that runs past budget stops early, reports itself "partial",
-  and is safely resumable on the next call (already-collected suppliers
-  have collection_status set, so they're skipped next time unless
+  batch that runs past budget stops early (checked before each wave is
+  submitted, not per-item), reports itself "partial", and is safely
+  resumable on the next call (already-collected suppliers have
+  collection_status set, so they're skipped next time unless
   force=True).
 
 Contact extraction: a successful collection also runs
@@ -45,12 +61,17 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from collection.proxy_provider import ProxyProvider, select_proxy_provider
 from collection.site_collector import SiteCollector
-from config.settings import COLLECTION_JOB_MAX_SECONDS, COLLECTION_MAX_CONCURRENT_JOBS
+from config.settings import (
+    COLLECTION_JOB_MAX_SECONDS,
+    COLLECTION_MAX_CONCURRENT_JOBS,
+    COLLECTION_PARALLEL_WORKERS,
+)
 from storage.repository import SupplierRepository
 from verification.website_contact_extractor import (
     best_contact_method,
@@ -74,11 +95,13 @@ class CollectionService:
         site_collector: Optional[SiteCollector] = None,
         proxy_provider: Optional[ProxyProvider] = None,
         job_max_seconds: int = COLLECTION_JOB_MAX_SECONDS,
+        parallel_workers: int = COLLECTION_PARALLEL_WORKERS,
     ):
         self.repo = repo or SupplierRepository()
         self.proxy_provider = proxy_provider or select_proxy_provider()
         self.site_collector = site_collector or SiteCollector(proxy_provider=self.proxy_provider)
         self.job_max_seconds = job_max_seconds
+        self.parallel_workers = parallel_workers
 
     def collect(self, supplier_id: int) -> Dict[str, Any]:
         """Collect against one supplier by id -- always runs, not
@@ -178,6 +201,14 @@ class CollectionService:
         run_capability_extraction_only/run_facility_verification_only
         standalone-pass pattern. See module docstring for the
         concurrency/timeout safeguards this applies.
+
+        Processes suppliers in waves of self.parallel_workers using a
+        ThreadPoolExecutor, not one at a time -- see module docstring
+        for why this is safe. The wall-clock budget is checked before
+        each wave is submitted (same "checked before starting a new
+        unit of work" semantics as the old per-supplier loop, just at
+        wave granularity) -- a budget of 0/negative therefore still
+        stops before wave 1 with attempted=0, unchanged behaviour.
         """
         acquired = _BATCH_SEMAPHORE.acquire(blocking=False)
         if not acquired:
@@ -194,17 +225,23 @@ class CollectionService:
             succeeded = 0
             failed = 0
             stopped_early = False
+            index = 0
 
-            for supplier in suppliers:
-                if time.monotonic() - start_time > self.job_max_seconds:
-                    stopped_early = True
-                    break
-                outcome = self._collect_one(supplier)
-                attempted += 1
-                if outcome["status"] == "success":
-                    succeeded += 1
-                else:
-                    failed += 1
+            with ThreadPoolExecutor(max_workers=max(1, self.parallel_workers)) as executor:
+                while index < len(suppliers):
+                    if time.monotonic() - start_time > self.job_max_seconds:
+                        stopped_early = True
+                        break
+                    wave = suppliers[index:index + self.parallel_workers]
+                    index += len(wave)
+                    futures = [executor.submit(self._collect_one, supplier) for supplier in wave]
+                    for future in as_completed(futures):
+                        outcome = future.result()
+                        attempted += 1
+                        if outcome["status"] == "success":
+                            succeeded += 1
+                        else:
+                            failed += 1
 
             return {
                 "attempted": attempted, "succeeded": succeeded, "failed": failed,

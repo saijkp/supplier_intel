@@ -61,6 +61,14 @@ class SupplierSearchResult(BaseModel):
     # never processed by a contacts job, same additive-and-absent-safe
     # convention as the ai_*/sourcing_* fields above.
     key_contacts: List[Dict[str, Any]] = Field(default_factory=list)
+    # Procurement Decision Engine foundation (v14) -- see
+    # verification_ai/confidence_scorer.py and
+    # verification_ai/procurement_recommendation.py. Empty/None for any
+    # supplier never (re)verified since this was added, same
+    # additive-and-absent-safe convention as every field above.
+    ai_confidence_breakdown: List[Dict[str, Any]] = Field(default_factory=list)
+    procurement_recommendation: Optional[str] = None
+    procurement_recommendation_reason: Optional[str] = None
 
 
 class PipelineJobRequest(BaseModel):

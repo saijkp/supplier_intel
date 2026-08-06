@@ -44,6 +44,7 @@ from verification.manufacturer_verifier import ManufacturerVerifier
 from verification_ai.confidence_scorer import ConfidenceScorer
 from verification_ai.cross_checker import CrossChecker
 from verification_ai.narrative_generator import NarrativeGenerator
+from verification_ai.procurement_recommendation import categorise as categorise_procurement_recommendation
 
 logger = logging.getLogger(__name__)
 
@@ -121,14 +122,24 @@ class VerificationService:
         cross_result = self.cross_checker.run_checks(
             supplier, collected_pages=collected_pages, capability_findings=capability_findings,
         )
-        confidence = self.confidence_scorer.score(cross_result)
+        score_result = self.confidence_scorer.score_with_breakdown(cross_result)
+        confidence = score_result.score
         narrative = self.narrative_generator.generate(supplier, cross_result, confidence)
+        recommendation = categorise_procurement_recommendation(
+            confidence, supplier.get("is_manufacturer"), cross_result,
+        )
 
         now = datetime.now(timezone.utc).isoformat()
         fields: Dict[str, Any] = {
             "ai_confidence_score": confidence,
             "ai_confidence_assessed_at": now,
             "last_verified": now,
+            "ai_confidence_breakdown": [
+                {"name": e.name, "weight": e.weight, "verdict": e.verdict, "contribution": e.contribution}
+                for e in score_result.breakdown
+            ],
+            "procurement_recommendation": recommendation.category,
+            "procurement_recommendation_reason": recommendation.reason,
         }
         if narrative is not None:
             fields["ai_summary"] = narrative.summary
@@ -163,6 +174,7 @@ class VerificationService:
             "verdict": _verdict_label(confidence),
             "inconsistencies": cross_result.inconsistencies,
             "narrative_generated": narrative is not None,
+            "procurement_recommendation": recommendation.category,
         }
 
     def verify_pending(self, limit: int = 20, force: bool = False) -> Dict[str, Any]:
