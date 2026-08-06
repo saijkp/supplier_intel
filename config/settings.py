@@ -72,6 +72,19 @@ GOOGLE_PLACES_API_KEY: str | None = os.getenv("GOOGLE_PLACES_API_KEY")
 # verification/facility_address_verifier.py's module docstring before
 # budgeting time for this one.
 AMAP_API_KEY: str | None = os.getenv("AMAP_API_KEY")
+# Apollo.io -- named Procurement/Sales/CEO contact discovery, see
+# verification/apollo_contact_finder.py's module docstring for the
+# search-is-free/enrichment-costs-credits split this key is used for.
+# Apollo's people-search endpoint documents itself as requiring a
+# "master" API key specifically -- confirm the configured key has that
+# permission level if search calls come back empty/rejected.
+APOLLO_API_KEY: str | None = os.getenv("APOLLO_API_KEY")
+
+# --- Contact Finder Service (verification/contact_finder_service.py) ----
+# Same wall-clock-budget / process-wide-semaphore safeguards as
+# Collection Service below, applied to Apollo contact lookup batches.
+CONTACTS_JOB_MAX_SECONDS: int = int(os.getenv("CONTACTS_JOB_MAX_SECONDS") or 600)
+CONTACTS_MAX_CONCURRENT_JOBS: int = int(os.getenv("CONTACTS_MAX_CONCURRENT_JOBS") or 1)
 
 # --- Collection Service (collection/) -- Playwright + rotating proxies ---
 # Webshare is the first (and, for now, only implemented) rotating-proxy

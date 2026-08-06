@@ -55,6 +55,12 @@ class SupplierSearchResult(BaseModel):
     sourcing_volume_suitability: Optional[str] = None
     sourcing_payment_terms_notes: Optional[str] = None
     sourcing_verification_status: Optional[str] = None
+    # Apollo named-contact discovery (v13) -- see
+    # verification/apollo_contact_finder.py and
+    # verification/contact_finder_service.py. Empty for any supplier
+    # never processed by a contacts job, same additive-and-absent-safe
+    # convention as the ai_*/sourcing_* fields above.
+    key_contacts: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class PipelineJobRequest(BaseModel):
@@ -165,6 +171,35 @@ class VerificationJobRequest(BaseModel):
     force: bool = Field(
         default=False,
         description="In pending mode, re-verify every supplier, not just ones never assessed.",
+    )
+
+
+class ContactsJobRequest(BaseModel):
+    """Triggers verification.contact_finder_service.ContactFinderService
+    against either one named supplier or a batch of every supplier
+    needing it -- named Procurement/Sales/CEO contacts via Apollo.io.
+    A separate, opt-in enrichment stage (like Collect/Verify), never
+    run automatically inside a Sourcing Agent run. Same job/poll
+    pattern as CollectionJobRequest."""
+
+    supplier_id: Optional[int] = Field(
+        default=None,
+        description="Find contacts for one specific supplier. Ignores pending/limit/force.",
+    )
+    pending: bool = Field(
+        default=False,
+        description="Batch mode: find contacts for every supplier needing it. Exactly one of "
+                     "supplier_id or pending must be set.",
+    )
+    limit: int = Field(
+        default=20,
+        description="Stop after this many suppliers in pending mode. Each one costs up to 3 "
+                     "Apollo credits -- start small on a first run.",
+    )
+    force: bool = Field(
+        default=False,
+        description="In pending mode, re-attempt every supplier with a domain, not just ones "
+                     "never looked up.",
     )
 
 

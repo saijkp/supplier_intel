@@ -22,6 +22,7 @@ from collection.collection_service import CollectionService
 from discovery.discovery_service import DiscoveryService
 from pipeline.orchestrator import SupplierIntelligencePipeline, build_limit_scraper_kwargs
 from storage.repository import SupplierRepository
+from verification.contact_finder_service import ContactFinderService
 from verification_ai.verification_service import VerificationService
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,27 @@ def run_verification_job(job_id: str, options: Dict[str, Any]) -> None:
         repo.mark_pipeline_job_completed(job_id, stats=stats)
     except Exception as e:
         logger.error("Verification job %s failed: %s", job_id, e)
+        repo.mark_pipeline_job_failed(job_id, error=str(e))
+
+
+def run_contacts_job(job_id: str, options: Dict[str, Any]) -> None:
+    """Runs verification.contact_finder_service.ContactFinderService --
+    either one named supplier or a batch of every supplier needing it.
+    Same pattern as run_collection_job."""
+    repo = SupplierRepository()
+    repo.mark_pipeline_job_running(job_id)
+    try:
+        service = ContactFinderService(repo=repo)
+        supplier_id = options.get("supplier_id")
+        if supplier_id:
+            stats = service.find_contacts(supplier_id)
+        else:
+            stats = service.find_contacts_pending(
+                limit=options.get("limit", 20), force=options.get("force", False),
+            )
+        repo.mark_pipeline_job_completed(job_id, stats=stats)
+    except Exception as e:
+        logger.error("Contacts job %s failed: %s", job_id, e)
         repo.mark_pipeline_job_failed(job_id, error=str(e))
 
 

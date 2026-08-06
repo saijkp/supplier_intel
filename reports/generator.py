@@ -158,7 +158,31 @@ SOURCING_CSV_COLUMNS: List[str] = [
     "sourcing_volume_suitability", "sourcing_payment_terms_notes",
     "sourcing_verification_status",
     "is_manufacturer", "composite_score", "ai_confidence_score",
+    "procurement_manager", "sales_manager", "ceo",
 ]
+
+
+def _sourcing_contact_columns(key_contacts: Optional[List[Dict[str, Any]]]) -> Dict[str, str]:
+    """Derives procurement_manager/sales_manager/ceo CSV columns from
+    key_contacts (Apollo, see verification/apollo_contact_finder.py) by
+    picking the first contact per role_category -- a small helper, not
+    a schema change, since which titles map to which role can be
+    refined later without a migration. A supplier with no matching role
+    leaves that column blank, never fabricated."""
+    by_role: Dict[str, str] = {}
+    for contact in key_contacts or []:
+        role = contact.get("role_category")
+        if role in ("procurement", "sales", "ceo") and role not in by_role:
+            name = contact.get("name") or ""
+            title = contact.get("title") or ""
+            email = contact.get("email") or ""
+            parts = [p for p in (name, f"({title})" if title else "", email) if p]
+            by_role[role] = " ".join(parts)
+    return {
+        "procurement_manager": by_role.get("procurement", ""),
+        "sales_manager": by_role.get("sales", ""),
+        "ceo": by_role.get("ceo", ""),
+    }
 
 
 def suppliers_to_sourcing_csv_string(suppliers: List[Dict[str, Any]]) -> str:
@@ -167,6 +191,7 @@ def suppliers_to_sourcing_csv_string(suppliers: List[Dict[str, Any]]) -> str:
     writer.writeheader()
     for supplier in suppliers:
         row = _prepare_supplier_for_export(supplier)
+        row.update(_sourcing_contact_columns(supplier.get("key_contacts")))
         writer.writerow({col: row.get(col, "") for col in SOURCING_CSV_COLUMNS})
     return buffer.getvalue()
 

@@ -12,12 +12,14 @@ import csv
 from reports.generator import (
     CSV_COLUMNS,
     EXCEL_COLUMNS,
+    SOURCING_CSV_COLUMNS,
     export_suppliers_csv,
     export_suppliers_excel,
     generate_markdown_report,
     save_markdown_report,
     suppliers_to_csv_string,
     suppliers_to_excel_bytes,
+    suppliers_to_sourcing_csv_string,
 )
 from storage.database import initialise_schema
 from storage.repository import SupplierRepository
@@ -206,6 +208,63 @@ class TestCSVExport:
         the fields buyers most need -- regression guard against
         losing it again."""
         assert "address" in CSV_COLUMNS
+
+
+class TestSourcingCSVExport:
+
+    def test_key_contacts_split_into_three_derived_columns(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_golden_record({
+            "canonical_name": "Foo Co", "domain": "foo.example.com",
+            "key_contacts": [
+                {"name": "Jane Doe", "title": "Procurement Manager", "email": "jane@foo.example.com",
+                 "phone": None, "linkedin_url": None, "role_category": "procurement"},
+                {"name": "John Smith", "title": "CEO", "email": "john@foo.example.com",
+                 "phone": None, "linkedin_url": None, "role_category": "ceo"},
+            ],
+        })
+        suppliers = repo.list_suppliers()
+
+        csv_text = suppliers_to_sourcing_csv_string(suppliers)
+        reader = csv.DictReader(csv_text.splitlines())
+        row = next(reader)
+
+        assert reader.fieldnames == SOURCING_CSV_COLUMNS
+        assert "Jane Doe" in row["procurement_manager"]
+        assert "jane@foo.example.com" in row["procurement_manager"]
+        assert "John Smith" in row["ceo"]
+        assert row["sales_manager"] == ""  # no matching role -- left blank, never fabricated
+
+    def test_supplier_with_no_contacts_leaves_columns_blank(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_golden_record({"canonical_name": "No Contacts Co"})
+        suppliers = repo.list_suppliers()
+
+        csv_text = suppliers_to_sourcing_csv_string(suppliers)
+        row = next(csv.DictReader(csv_text.splitlines()))
+
+        assert row["procurement_manager"] == ""
+        assert row["sales_manager"] == ""
+        assert row["ceo"] == ""
+
+    def test_only_first_contact_per_role_is_used(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_golden_record({
+            "canonical_name": "Foo Co",
+            "key_contacts": [
+                {"name": "First Buyer", "title": "Procurement Manager", "email": None,
+                 "phone": None, "linkedin_url": None, "role_category": "procurement"},
+                {"name": "Second Buyer", "title": "Purchasing Director", "email": None,
+                 "phone": None, "linkedin_url": None, "role_category": "procurement"},
+            ],
+        })
+        suppliers = repo.list_suppliers()
+
+        csv_text = suppliers_to_sourcing_csv_string(suppliers)
+        row = next(csv.DictReader(csv_text.splitlines()))
+
+        assert "First Buyer" in row["procurement_manager"]
+        assert "Second Buyer" not in row["procurement_manager"]
 
 
 class TestExcelExport:

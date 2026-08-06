@@ -418,7 +418,8 @@ dialog::backdrop{background:rgba(15,27,45,.5)}
             </div>
             <button class="btn btn-ghost btn-block" id="btnBulkCollect">Collect all pending</button>
             <button class="btn btn-ghost btn-block" id="btnBulkVerify" style="margin-top:8px">Verify all pending (AI)</button>
-            <p class="hint" style="margin-top:10px">Each supplier costs a real headless-browser visit (collect) or a real OpenAI call (verify) — start small.</p>
+            <button class="btn btn-ghost btn-block" id="btnBulkContacts" style="margin-top:8px">Find contacts (Apollo)</button>
+            <p class="hint" style="margin-top:10px">Each supplier costs a real headless-browser visit (collect), a real OpenAI call (verify), or up to 3 Apollo credits (contacts) — start small.</p>
           </div>
         </div>
       </aside>
@@ -650,6 +651,27 @@ function sourcingDossierBlock(s) {
     </div>`;
 }
 
+/* verification.apollo_contact_finder's named Procurement/Sales/CEO
+   contacts -- only present for suppliers a "Find contacts (Apollo)"
+   job has processed. Separate opt-in stage, same absent-safe pattern
+   as sourcingDossierBlock() above. */
+function contactsBlock(s) {
+  const contacts = s.key_contacts || [];
+  if (!contacts.length) return "";
+  const roleLabel = { procurement: "Procurement", sales: "Sales", ceo: "CEO", other: "Other" };
+  return `
+    <div class="ai-block" style="border-color:var(--steel-500);background:var(--paper)">
+      <div class="section-rule" style="margin-top:0">Contacts</div>
+      ${contacts.map(c => `
+        <p class="ai-summary" style="margin-top:6px">
+          <strong>${esc(roleLabel[c.role_category] || "Contact")}:</strong>
+          ${esc(c.name || "Unnamed")}${c.title ? ` — ${esc(c.title)}` : ""}
+          ${c.email ? ` · <a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ""}
+          ${c.linkedin_url ? ` · <a href="${esc(c.linkedin_url)}" target="_blank" rel="noopener">LinkedIn</a>` : ""}
+        </p>`).join("")}
+    </div>`;
+}
+
 function scoreBlock(label, value, cls) {
   const na = value === null || value === undefined;
   return `
@@ -705,10 +727,12 @@ function supplierCard(s, i) {
       <div class="card-body">
         ${aiBlock(s)}
         ${sourcingDossierBlock(s)}
+        ${contactsBlock(s)}
         <div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn btn-ghost btn-sm" data-collect-id="${s.id}">Collect site</button>
           <button class="btn btn-ghost btn-sm" data-verify-id="${s.id}">Verify (AI)</button>
           <button class="btn btn-ghost btn-sm" data-reverify-id="${s.id}">Reverify</button>
+          <button class="btn btn-ghost btn-sm" data-contacts-id="${s.id}">Find contacts (Apollo)</button>
         </div>
       </div>
     </article>`;
@@ -772,12 +796,15 @@ document.addEventListener("click", (e) => {
   const collectBtn = e.target.closest("[data-collect-id]");
   const verifyBtn = e.target.closest("[data-verify-id]");
   const reverifyBtn = e.target.closest("[data-reverify-id]");
+  const contactsBtn = e.target.closest("[data-contacts-id]");
   if (collectBtn) {
     triggerSupplierJob(collectBtn, "/collection/jobs", { supplier_id: Number(collectBtn.dataset.collectId) });
   } else if (verifyBtn) {
     triggerSupplierJob(verifyBtn, "/verification/jobs", { supplier_id: Number(verifyBtn.dataset.verifyId) });
   } else if (reverifyBtn) {
     triggerSupplierJob(reverifyBtn, `/suppliers/${reverifyBtn.dataset.reverifyId}/reverify`, undefined);
+  } else if (contactsBtn) {
+    triggerSupplierJob(contactsBtn, "/contacts/jobs", { supplier_id: Number(contactsBtn.dataset.contactsId) });
   }
 });
 
@@ -834,6 +861,7 @@ async function triggerBulkJob(btn, path) {
 
 $("btnBulkCollect").addEventListener("click", () => triggerBulkJob($("btnBulkCollect"), "/collection/jobs"));
 $("btnBulkVerify").addEventListener("click", () => triggerBulkJob($("btnBulkVerify"), "/verification/jobs"));
+$("btnBulkContacts").addEventListener("click", () => triggerBulkJob($("btnBulkContacts"), "/contacts/jobs"));
 
 /* ═══ Jobs list ═════════════════════════════════════════════ */
 function summarizeJobStats(j) {
@@ -856,6 +884,11 @@ function summarizeJobStats(j) {
   if (q.startsWith("[reverify]")) {
     const v = st.verification || {};
     return v.confidence_score != null ? `confidence ${v.confidence_score}` : "done";
+  }
+  if (q.startsWith("[contacts]")) {
+    return "contacts_found" in st
+      ? `${st.status ?? "?"} · ${st.contacts_found ?? 0} contact(s)`
+      : `${st.succeeded ?? 0}/${st.attempted ?? 0} succeeded`;
   }
   return Object.entries(st).slice(0, 2).map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(", ");
 }

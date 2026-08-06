@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 # ═══════════════════════════════════════════════════════════
@@ -207,7 +207,15 @@ CREATE TABLE IF NOT EXISTS suppliers (
     sourcing_export_notes          TEXT,
     sourcing_volume_suitability    TEXT,
     sourcing_payment_terms_notes   TEXT,
-    sourcing_verification_status   TEXT          -- 'verified' | 'partially verified' | 'unverified' -- no CHECK, same "avoid a fixed enum that breaks the moment a new value is needed" precedent as procurement_outcomes.outcome
+    sourcing_verification_status   TEXT,         -- 'verified' | 'partially verified' | 'unverified' -- no CHECK, same "avoid a fixed enum that breaks the moment a new value is needed" precedent as procurement_outcomes.outcome
+
+    -- Apollo named-contact discovery (v13) -- see
+    -- verification/apollo_contact_finder.py and
+    -- verification/contact_finder_service.py. A separate, opt-in
+    -- enrichment stage (like Collect/Verify), never run automatically
+    -- during a Sourcing Agent run.
+    key_contacts                   TEXT,         -- JSON array of {name, title, email, phone, linkedin_url, role_category}
+    contacts_found_at              TIMESTAMP     -- set on every attempt, matched or not -- same never-attempted-vs-attempted-and-found-nothing discipline as capability_extracted_at
 );
 
 CREATE INDEX IF NOT EXISTS idx_sup_domain ON suppliers(domain);
@@ -891,6 +899,20 @@ MIGRATIONS: dict[int, dict] = {
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_sruns_status ON sourcing_runs(status)",
+        ],
+    },
+    13: {
+        "description": (
+            "Apollo named-contact discovery: key_contacts (JSON array of "
+            "{name, title, email, phone, linkedin_url, role_category}) and "
+            "contacts_found_at on suppliers -- a separate, opt-in enrichment "
+            "stage (see verification/apollo_contact_finder.py and "
+            "verification/contact_finder_service.py), never run automatically "
+            "during a Sourcing Agent run"
+        ),
+        "columns": [
+            ("suppliers", "key_contacts", "TEXT"),
+            ("suppliers", "contacts_found_at", "TIMESTAMP"),
         ],
     },
 }

@@ -58,6 +58,7 @@ SUPPLIER_JSON_FIELDS: Sequence[str] = (
     "ai_strengths",
     "ai_risks",
     "ai_suitable_customer_types",
+    "key_contacts",
 )
 
 # All columns on `suppliers` that may be set directly via
@@ -93,7 +94,7 @@ SUPPLIER_WRITABLE_FIELDS: Sequence[str] = (
     "discovery_source", "collection_last_run_at", "collection_status", "last_verified",
     "sourcing_oem_odm_notes", "sourcing_factory_notes", "sourcing_engineering_notes",
     "sourcing_export_notes", "sourcing_volume_suitability", "sourcing_payment_terms_notes",
-    "sourcing_verification_status",
+    "sourcing_verification_status", "key_contacts", "contacts_found_at",
 )
 
 SCORE_FIELDS: Sequence[str] = (
@@ -1636,6 +1637,35 @@ class SupplierRepository:
                     SELECT * FROM suppliers
                     WHERE domain IS NOT NULL AND domain != ''
                     AND collection_status IS NULL
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            return _rows_to_dicts(rows, SUPPLIER_JSON_FIELDS)
+
+    def get_suppliers_needing_contacts(
+        self, limit: int = 1000, force: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Suppliers with a known domain that ContactFinderService
+        hasn't run against yet -- same never-attempted-vs-attempted
+        `contacts_found_at IS NULL` pattern as
+        get_suppliers_needing_collection, same newest-first ordering
+        for the same reason (a bulk "find contacts" run should reach
+        suppliers just discovered before the oldest rows in the
+        database)."""
+        with connection_scope(self.db_path) as conn:
+            if force:
+                rows = conn.execute(
+                    "SELECT * FROM suppliers WHERE domain IS NOT NULL AND domain != '' ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM suppliers
+                    WHERE domain IS NOT NULL AND domain != ''
+                    AND contacts_found_at IS NULL
                     ORDER BY id DESC
                     LIMIT ?
                     """,

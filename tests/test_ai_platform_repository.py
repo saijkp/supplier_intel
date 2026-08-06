@@ -75,6 +75,49 @@ class TestGetSuppliersNeedingCollection:
         assert old_id != new_id
 
 
+class TestGetSuppliersNeedingContacts:
+
+    def test_domain_less_supplier_is_excluded(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_golden_record({"canonical_name": "No Domain Co"})
+        assert repo.get_suppliers_needing_contacts() == []
+
+    def test_domain_supplier_never_attempted_is_included(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        results = repo.get_suppliers_needing_contacts()
+        assert [s["id"] for s in results] == [supplier_id]
+
+    def test_already_attempted_supplier_is_excluded_without_force(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        repo.update_supplier_fields_with_history(
+            supplier_id, {"contacts_found_at": "2026-01-01T00:00:00"}, changed_by="contact_finder_service",
+        )
+        assert repo.get_suppliers_needing_contacts() == []
+
+    def test_force_includes_already_attempted_suppliers(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        repo.update_supplier_fields_with_history(
+            supplier_id, {"contacts_found_at": "2026-01-01T00:00:00"}, changed_by="contact_finder_service",
+        )
+        results = repo.get_suppliers_needing_contacts(force=True)
+        assert [s["id"] for s in results] == [supplier_id]
+
+    def test_newest_supplier_returned_first(self, tmp_path):
+        """A bulk 'find contacts' run should reach a supplier just
+        discovered before it reaches the oldest row in the database --
+        same reasoning as get_suppliers_needing_collection's own
+        ordering test."""
+        repo = _make_repo(tmp_path)
+        old_id = repo.create_golden_record({"canonical_name": "Old Co", "domain": "old.example.com"})
+        new_id = repo.create_golden_record({"canonical_name": "New Co", "domain": "new.example.com"})
+        results = repo.get_suppliers_needing_contacts(limit=1)
+        assert [s["id"] for s in results] == [new_id]
+        assert old_id != new_id
+
+
 class TestGetSuppliersNeedingAiVerification:
 
     def test_never_assessed_supplier_is_included(self, tmp_path):

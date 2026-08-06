@@ -43,6 +43,7 @@ from fastapi.responses import PlainTextResponse, Response
 from api.auth import require_api_token
 from api.jobs import (
     run_collection_job,
+    run_contacts_job,
     run_discovery_job,
     run_enrichment_job,
     run_pipeline_job,
@@ -55,6 +56,7 @@ from api.models import (
     BuyerProfileResponse,
     CollectionJobRequest,
     CommercialSearchResult,
+    ContactsJobRequest,
     DiscoveryJobRequest,
     EnrichmentJobRequest,
     PipelineJobRequest,
@@ -140,6 +142,7 @@ def _to_search_result(row: Dict[str, Any]) -> SupplierSearchResult:
         sourcing_volume_suitability=row.get("sourcing_volume_suitability"),
         sourcing_payment_terms_notes=row.get("sourcing_payment_terms_notes"),
         sourcing_verification_status=row.get("sourcing_verification_status"),
+        key_contacts=row.get("key_contacts") or [],
     )
 
 
@@ -286,6 +289,33 @@ def create_collection_job(
     label = f"[collection] supplier #{request.supplier_id}" if request.supplier_id else "[collection] pending batch"
     repo.create_pipeline_job(job_id=job_id, query=label, options=options)
     background_tasks.add_task(run_collection_job, job_id, options)
+    job = repo.get_pipeline_job(job_id)
+    return _to_job_response(job)
+
+
+@app.post(
+    "/contacts/jobs",
+    response_model=PipelineJobResponse,
+    status_code=202,
+    dependencies=[Depends(require_api_token)],
+)
+def create_contacts_job(
+    request: ContactsJobRequest,
+    background_tasks: BackgroundTasks,
+    repo: SupplierRepository = Depends(get_repo),
+) -> PipelineJobResponse:
+    """Same async job/poll pattern as POST /collection/jobs, but for
+    verification.contact_finder_service.ContactFinderService (named
+    Procurement/Sales/CEO contacts via Apollo.io). A separate, opt-in
+    enrichment stage -- never triggered automatically inside a
+    Sourcing Agent run."""
+    if not request.supplier_id and not request.pending:
+        raise HTTPException(status_code=422, detail="Specify either supplier_id or pending.")
+    job_id = str(uuid.uuid4())
+    options = request.model_dump()
+    label = f"[contacts] supplier #{request.supplier_id}" if request.supplier_id else "[contacts] pending batch"
+    repo.create_pipeline_job(job_id=job_id, query=label, options=options)
+    background_tasks.add_task(run_contacts_job, job_id, options)
     job = repo.get_pipeline_job(job_id)
     return _to_job_response(job)
 
