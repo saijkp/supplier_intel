@@ -305,6 +305,9 @@ class TestSupplierScorer:
     def test_fully_qualified_supplier_scores_high(self):
         scorer = SupplierScorer()
         supplier = {
+            "product_keywords": ["axle", "brake", "coupling", "led light"],  # 4 BOM categories
+            "domain": "foo.com",
+            "address": "1 Factory Road, Foo City",
             "uscc_verified": 1,
             "is_manufacturer": 1,
             "iso_9001": 1,
@@ -323,34 +326,64 @@ class TestSupplierScorer:
             "primary_email": "sales@foo.com",
             "whatsapp": "+86 123",
             "primary_phone": "+86 123",
+            "capability_extracted_at": "2026-01-01T00:00:00",
+            "manufacturer_verified_at": "2026-01-01T00:00:00",
+            "contacts_found_at": "2026-01-01T00:00:00",
         }
-        result = scorer.score(supplier)
+        result = scorer.score(supplier, sources={"trade", "automechanika_2026", "hktdc"})
+        assert result["product_fit_score"] == 100
         assert result["verification_score"] == 100
         assert result["export_score"] == 100
         assert result["platform_score"] == 100
         assert result["contact_score"] == 100
-        assert result["composite_score"] == 100
+        assert result["evidence_coverage"] == 100
+        assert result["composite_score"] == 100  # weighted formula alone exceeds 100 before the +10 bonus, capped
         assert result["recommendation"] == "recommended"
 
-    def test_empty_supplier_scores_zero_and_avoid(self):
+    def test_empty_supplier_is_unscored_not_avoid(self):
+        """The core bug this rewrite fixes: absence of evidence must
+        never resolve to 'avoid' -- that bucket is reserved for actual
+        negative evidence (flagged / confirmed trader)."""
         scorer = SupplierScorer()
         result = scorer.score({})
         assert result["composite_score"] == 0
-        assert result["recommendation"] == "avoid"
+        assert result["evidence_coverage"] == 0
+        assert result["recommendation"] == "unscored"
+
+    def test_avoid_requires_negative_evidence_not_absence(self):
+        """A real supplier with strong product fit and provenance but
+        no certs/exports/contacts on file yet (the SAF-Holland case)
+        must not be 'avoid' just because that evidence hasn't been
+        collected."""
+        scorer = SupplierScorer()
+        supplier = {
+            "canonical_name": "SAF-HOLLAND GmbH",
+            "domain": "safholland.com",
+            "address": "SAF-HOLLAND GmbH, Hauptstr. 26, 63856 Bessenbach, Germany",
+            "product_keywords": ["Axles", "Brake pads / linings", "Fifth-wheel couplings"],
+        }
+        result = scorer.score(supplier, sources={"automechanika_2026"})
+        assert result["recommendation"] != "avoid"
 
     def test_composite_matches_weighted_formula(self):
         scorer = SupplierScorer()
         supplier = {
-            "uscc_verified": 1,       # verification += 30
-            "confirmed_shipments_uk": 1,  # export += 40
-            "alibaba_years": 1,       # platform += 10
-            "contact_name": "Li Wei", # contact += 30
+            "is_manufacturer": 1,          # verification += 40
+            "confirmed_shipments_uk": 1,   # export += 40
+            "contact_name": "Li Wei",      # contact += 30
         }
         result = scorer.score(supplier)
-        expected = round(
-            30 * 0.35 + 40 * 0.30 + 10 * 0.20 + 30 * 0.15
-        )
+        expected = round(0 * 0.25 + 0 * 0.25 + 40 * 0.25 + 40 * 0.15 + 30 * 0.10)
         assert result["composite_score"] == expected
+
+    def test_uscc_and_alibaba_are_bonuses_not_weighted(self):
+        """USCC verification and Alibaba platform strength must move
+        the composite by at most their small capped bonus, never by a
+        full weighted-dimension's worth."""
+        scorer = SupplierScorer()
+        base = scorer.score({"is_manufacturer": 1})["composite_score"]
+        with_uscc = scorer.score({"is_manufacturer": 1, "uscc_verified": 1})["composite_score"]
+        assert with_uscc == base + 5
 
     def test_flagged_supplier_always_avoid_regardless_of_score(self):
         scorer = SupplierScorer()
@@ -377,22 +410,75 @@ class TestSupplierScorer:
         # the "confirmed trader" auto-avoid rule.
         supplier = {"uscc_verified": 1, "iso_9001": 1, "e_mark_certified": 1, "confirmed_shipments_uk": 15}
         result = scorer.score(supplier)
-        assert result["recommendation"] != "avoid" or result["composite_score"] < 25
+        assert result["recommendation"] != "avoid"
 
     def test_recommendation_thresholds(self):
         scorer = SupplierScorer()
-        # composite ~80 -> recommended
+        # strong evidence across every dimension -> recommended (>= 70)
         high = scorer.score({
+            "product_keywords": ["axle", "brake"],
+            "domain": "foo.com", "address": "1 Road",
             "uscc_verified": 1, "is_manufacturer": 1, "iso_9001": 1, "e_mark_certified": 1,
             "confirmed_shipments_uk": 15, "confirmed_shipments_eu": 1,
             "alibaba_years": 5, "alibaba_trade_assurance": 1, "alibaba_rating": 4.8,
             "contact_name": "A", "primary_email": "a@b.com",
-        })
+        }, sources={"trade", "hktdc"})
         assert high["recommendation"] == "recommended"
 
-        # nothing at all -> avoid
+        # nothing at all -> unscored, never avoid
         low = scorer.score({})
-        assert low["recommendation"] == "avoid"
+        assert low["recommendation"] == "unscored"
+
+    def test_product_fit_rewards_more_matched_categories(self):
+        scorer = SupplierScorer()
+        none_matched = scorer._product_fit_score({"product_keywords": ["widget"]})
+        one_matched = scorer._product_fit_score({"product_keywords": ["axle"]})
+        three_matched = scorer._product_fit_score({"product_keywords": ["axle", "brake", "coupling"]})
+        assert none_matched == 0
+        assert 0 < one_matched < three_matched <= 100
+
+    def test_provenance_is_source_aware_not_flat(self):
+        """Regression test for the exact bug caught in review: provenance
+        must not give the same flat credit to every supplier sourced
+        from the same bulk import. A supplier corroborated by 2
+        independent sources must outscore one seen only once, and a
+        higher-quality single source must outscore a lower-quality one."""
+        scorer = SupplierScorer()
+        one_source = scorer._provenance_score({}, {"automechanika_2026"})
+        two_sources = scorer._provenance_score({}, {"automechanika_2026", "trade"})
+        assert two_sources > one_source
+
+        weak_source = scorer._provenance_score({}, {"google"})
+        strong_source = scorer._provenance_score({}, {"trade"})
+        assert strong_source > weak_source
+
+    def test_provenance_unknown_source_gets_conservative_default(self):
+        scorer = SupplierScorer()
+        known = scorer._provenance_score({}, {"trade"})
+        unknown = scorer._provenance_score({}, {"some_future_source_not_yet_curated"})
+        assert unknown < known
+
+    def test_evidence_coverage_low_routes_to_unscored(self):
+        scorer = SupplierScorer()
+        result = scorer.score({"canonical_name": "Mystery Co"})
+        assert result["recommendation"] == "unscored"
+        assert result["evidence_coverage"] < 30
+
+    def test_evidence_coverage_and_composite_are_independent(self):
+        """A supplier can have full coverage (we checked everything)
+        and still score low (what we found wasn't good) — coverage and
+        composite quality must not be conflated."""
+        scorer = SupplierScorer()
+        result = scorer.score({
+            "domain": "example.com", "address": "1 Street, Town",
+            "product_keywords": ["widget"],  # matches no BOM category
+            "exports_to_uk": True,
+            "capability_extracted_at": "2026-01-01T00:00:00",
+            "manufacturer_verified_at": "2026-01-01T00:00:00",
+            "contacts_found_at": "2026-01-01T00:00:00",
+        }, sources={"google"})
+        assert result["evidence_coverage"] == 100
+        assert result["composite_score"] < 40
 
     def test_export_score_recent_shipment_bonus(self):
         scorer = SupplierScorer()
@@ -415,12 +501,13 @@ class TestSupplierScorer:
 
     def test_score_handles_sqlite_integer_booleans(self):
         """Repository reads return 0/1 ints for BOOLEAN columns, not
-        True/False — the scorer must treat these correctly."""
+        True/False — the scorer must treat these correctly. uscc_verified
+        now only feeds the bonus (see test_uscc_and_alibaba_are_bonuses_not_weighted),
+        so this checks the bonus path handles 0/1 ints correctly."""
         scorer = SupplierScorer()
         result_true = scorer.score({"uscc_verified": 1})
         result_false = scorer.score({"uscc_verified": 0})
-        assert result_true["verification_score"] == 30
-        assert result_false["verification_score"] == 0
+        assert result_true["composite_score"] == result_false["composite_score"] + 5
 
     def test_scorer_output_compatible_with_repository_update(self, tmp_path):
         db_path = tmp_path / "test.db"
@@ -438,3 +525,6 @@ class TestSupplierScorer:
         updated = repo.get_supplier(supplier_id)
         assert updated["composite_score"] == scores["composite_score"]
         assert updated["recommendation"] == scores["recommendation"]
+        assert updated["evidence_coverage"] == scores["evidence_coverage"]
+        assert updated["product_fit_score"] == scores["product_fit_score"]
+        assert updated["provenance_score"] == scores["provenance_score"]

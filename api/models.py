@@ -24,6 +24,7 @@ class SupplierSearchResult(BaseModel):
     country: Optional[str] = None
     domain: Optional[str] = None
     composite_score: Optional[int] = None
+    evidence_coverage: Optional[int] = None
     recommendation: Optional[str] = None
     is_manufacturer: Optional[bool] = None
     primary_email: Optional[str] = None
@@ -384,6 +385,7 @@ class CommercialSearchResult(BaseModel):
     country: Optional[str] = None
     domain: Optional[str] = None
     composite_score: Optional[int] = None
+    evidence_coverage: Optional[int] = None
     recommendation: Optional[str] = None
     is_manufacturer: Optional[bool] = None
     commercial_compatibility_score: Optional[float] = None

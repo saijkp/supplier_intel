@@ -9,7 +9,7 @@ Usage:
     python main.py doctor                      Check config / API keys / DB health
     python main.py run "LED marker light"      Run the full scrape->dedup->verify->score pipeline
     python main.py verify                      Re-run Qichacha verification only
-    python main.py rescore                     Re-run scoring only
+    python main.py rescore [--all]              Re-run scoring (only unscored suppliers, or every one with --all)
     python main.py certs                       Check for expiring/malformed certifications
     python main.py coverage --gaps-only         BOM category coverage vs shortlist targets
     python main.py search "wheel bearings" --require "e-mark approval" --manufacturers-only
@@ -225,12 +225,15 @@ def verify() -> None:
 
 
 @cli.command("rescore")
-def rescore() -> None:
-    """Re-run scoring for any currently-unscored suppliers."""
+@click.option("--all", "rescore_all", is_flag=True,
+              help="Re-score every supplier, not just never-scored ones -- needed after "
+                   "changing SCORING_WEIGHTS or verification/scorer.py's logic itself.")
+def rescore(rescore_all: bool) -> None:
+    """Re-run scoring for any currently-unscored suppliers (or every supplier with --all)."""
     from pipeline.orchestrator import SupplierIntelligencePipeline
 
     pipeline = SupplierIntelligencePipeline()
-    stats = pipeline.run_scoring_only()
+    stats = pipeline.run_full_rescore() if rescore_all else pipeline.run_scoring_only()
     console.print(f"[green]✓[/green] Scored {stats['scored']} supplier(s).")
 
 
@@ -799,7 +802,7 @@ def certs(days_ahead: int) -> None:
 
 
 @cli.command("list")
-@click.option("--recommendation", type=click.Choice(["recommended", "review", "unverified", "avoid"]))
+@click.option("--recommendation", type=click.Choice(["recommended", "review", "unverified", "unscored", "avoid"]))
 @click.option("--min-score", type=int, default=None)
 @click.option("--country", default=None)
 @click.option("--limit", default=25)
@@ -829,7 +832,7 @@ def list_suppliers(recommendation: str, min_score: int, country: str, limit: int
 
 
 @cli.command("report")
-@click.option("--recommendation", type=click.Choice(["recommended", "review", "unverified", "avoid"]))
+@click.option("--recommendation", type=click.Choice(["recommended", "review", "unverified", "unscored", "avoid"]))
 @click.option("--min-score", type=int, default=None)
 @click.option("--limit", default=50)
 @click.option("--output", "-o", default=None, help="Write to this file instead of printing to the console.")
@@ -846,7 +849,7 @@ def report(recommendation: str, min_score: int, limit: int, output: str) -> None
 
 
 @cli.command("export-csv")
-@click.option("--recommendation", type=click.Choice(["recommended", "review", "unverified", "avoid"]))
+@click.option("--recommendation", type=click.Choice(["recommended", "review", "unverified", "unscored", "avoid"]))
 @click.option("--min-score", type=int, default=None)
 @click.option("--limit", default=1000)
 @click.option("--output", "-o", default="data/exports/suppliers.csv")
@@ -860,7 +863,7 @@ def export_csv(recommendation: str, min_score: int, limit: int, output: str) -> 
 
 
 @cli.command("export-excel")
-@click.option("--recommendation", type=click.Choice(["recommended", "review", "unverified", "avoid"]))
+@click.option("--recommendation", type=click.Choice(["recommended", "review", "unverified", "unscored", "avoid"]))
 @click.option("--min-score", type=int, default=None)
 @click.option("--limit", default=1000)
 @click.option("--output", "-o", default="data/exports/suppliers.xlsx")

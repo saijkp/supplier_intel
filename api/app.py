@@ -115,6 +115,7 @@ def _to_search_result(row: Dict[str, Any]) -> SupplierSearchResult:
         country=row.get("country"),
         domain=row.get("domain"),
         composite_score=row.get("composite_score"),
+        evidence_coverage=row.get("evidence_coverage"),
         recommendation=row.get("recommendation"),
         is_manufacturer=(
             bool(row["is_manufacturer"]) if row.get("is_manufacturer") is not None else None
@@ -727,7 +728,8 @@ def search_for_buyer_profile(
     return [
         CommercialSearchResult(
             id=r["id"], canonical_name=r["canonical_name"], country=r.get("country"), domain=r.get("domain"),
-            composite_score=r.get("composite_score"), recommendation=r.get("recommendation"),
+            composite_score=r.get("composite_score"), evidence_coverage=r.get("evidence_coverage"),
+            recommendation=r.get("recommendation"),
             is_manufacturer=bool(r["is_manufacturer"]) if r.get("is_manufacturer") is not None else None,
             commercial_compatibility_score=r.get("commercial_compatibility_score"),
             commercial_compatibility=r.get("commercial_compatibility") or {},

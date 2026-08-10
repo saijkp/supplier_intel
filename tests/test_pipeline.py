@@ -125,7 +125,7 @@ class TestPipelineFullRun:
         assert supplier["canonical_name"] == "Shenzhen LED Masters Co Ltd"
         assert supplier["source_count"] == 2
         assert supplier["composite_score"] is not None
-        assert supplier["recommendation"] in ("recommended", "review", "unverified", "avoid")
+        assert supplier["recommendation"] in ("recommended", "review", "unverified", "unscored", "avoid")
 
     def test_results_limit_truncates_per_source(self, repo):
         """A hard, source-agnostic cap on raw results kept per source --

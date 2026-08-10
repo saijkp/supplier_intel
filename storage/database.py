@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 
 # ═══════════════════════════════════════════════════════════
@@ -157,6 +157,15 @@ CREATE TABLE IF NOT EXISTS suppliers (
     made_in_china_url       TEXT,
 
     -- SCORING
+    -- product_fit_score/provenance_score/evidence_coverage (v16) -- see
+    -- verification/scorer.py's rewrite. platform_score is retained
+    -- (still written by SupplierScorer._platform_score) but no longer a
+    -- weighted composite dimension -- it now only feeds a small capped
+    -- bonus, same demotion as uscc_verified (v16).
+    product_fit_score        INTEGER NOT NULL DEFAULT 0
+                             CHECK (product_fit_score BETWEEN 0 AND 100),
+    provenance_score         INTEGER NOT NULL DEFAULT 0
+                             CHECK (provenance_score BETWEEN 0 AND 100),
     verification_score      INTEGER NOT NULL DEFAULT 0
                              CHECK (verification_score BETWEEN 0 AND 100),
     export_score             INTEGER NOT NULL DEFAULT 0
@@ -167,9 +176,11 @@ CREATE TABLE IF NOT EXISTS suppliers (
                              CHECK (contact_score BETWEEN 0 AND 100),
     composite_score           INTEGER NOT NULL DEFAULT 0
                              CHECK (composite_score BETWEEN 0 AND 100),
+    evidence_coverage        INTEGER NOT NULL DEFAULT 0
+                             CHECK (evidence_coverage BETWEEN 0 AND 100),
     recommendation            TEXT NOT NULL DEFAULT 'unverified'
                              CHECK (recommendation IN
-                                 ('recommended', 'review', 'unverified', 'avoid')),
+                                 ('recommended', 'review', 'unverified', 'unscored', 'avoid')),
 
     -- METADATA
     source_count             INTEGER NOT NULL DEFAULT 1,
@@ -977,6 +988,268 @@ MIGRATIONS: dict[int, dict] = {
             ("suppliers", "factory_facts_extracted_at", "TIMESTAMP"),
         ],
     },
+    16: {
+        "description": (
+            "Scoring engine rewrite (verification/scorer.py): replaces the flat "
+            "verification/export/platform/contact weighting -- which read only "
+            "near-empty China/Alibaba-shaped columns and structurally floored "
+            "every non-Chinese, non-marketplace-listed supplier near zero -- "
+            "with product_fit/provenance/verification/export/contact, demoting "
+            "uscc_verified and Alibaba platform strength from weighted "
+            "dimensions to small capped bonuses. Adds product_fit_score, "
+            "provenance_score, evidence_coverage (0-100, same CHECK convention "
+            "as the existing score columns) and 'unscored' as a valid "
+            "recommendation value, for suppliers with too little evidence to "
+            "judge either way (see verification.scorer.SupplierScorer._recommend). "
+            "SQLite can't ALTER a CHECK constraint in place, so this rebuilds "
+            "suppliers -- same DROP+RENAME pattern v4/v9 used, and SQLite does "
+            "DROP a table it's PARENT to when foreign_keys is ON without an "
+            "explicit PRAGMA foreign_keys=OFF bracket first -- verified by dry "
+            "run: without it, DROP TABLE suppliers performs an implicit DELETE "
+            "that fires every child table's ON DELETE CASCADE/SET NULL action, "
+            "silently wiping dedup_candidates/supplier_capabilities/"
+            "supplier_change_log and de-linking raw_source_data.golden_record_id "
+            "for every row. With foreign_keys OFF during the rebuild and ids "
+            "preserved verbatim by the INSERT...SELECT below, every child FK "
+            "still resolves correctly once foreign_keys is re-enabled at the "
+            "end (checked with PRAGMA foreign_key_check). platform_score is "
+            "retained (still "
+            "written by SupplierScorer._platform_score) rather than dropped, "
+            "now feeding only that capped bonus instead of 20% of the weighted "
+            "composite. A Python callable (see _rebuild_suppliers_v16 below), not "
+            "static SQL statements like v4/v9 used -- two reasons: (1) PRAGMA "
+            "foreign_keys is a documented no-op mid-transaction, and this loop's "
+            "own schema_migrations INSERT after each prior migration leaves one "
+            "open when several migrations apply in the same initialise_schema() "
+            "call (e.g. upgrading a real pre-v4 database straight through to "
+            "v16, exactly what tests/test_uk_trade_gap.py's v4 migration test "
+            "does) -- so the OFF/ON pair needs conn.commit() brackets a static "
+            "statement list can't express; (2) the INSERT...SELECT column list "
+            "must be the intersection of what the OLD table actually has with "
+            "the new shape, not a hardcoded full column list -- a real database "
+            "can be mid-migration-history with fewer columns than current "
+            "SCHEMA_SQL (see tests/test_phase1.py's "
+            "test_v11_migration_upgrades_a_real_pre_v11_database, which "
+            "reproduces exactly that against a deliberately minimal old "
+            "suppliers table -- a hardcoded column list breaks with 'no such "
+            "column' against it)."
+        ),
+        "python": ["_rebuild_suppliers_v16"],
+    },
+}
+
+
+# suppliers_v16's target shape -- the new table _rebuild_suppliers_v16 (below)
+# creates before copying across whatever columns the old suppliers table
+# actually has. Kept as its own statement (not folded into MIGRATIONS[16])
+# so the CREATE TABLE text isn't buried inside a Python string concatenation.
+_SUPPLIERS_V16_CREATE_SQL = """
+            CREATE TABLE suppliers_v16 (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                canonical_name          TEXT NOT NULL,
+                aliases                 TEXT,
+                domain                  TEXT UNIQUE,
+
+                country                 TEXT,
+                province_state          TEXT,
+                city                    TEXT,
+                address                 TEXT,
+
+                primary_email           TEXT,
+                secondary_emails        TEXT,
+                primary_phone           TEXT,
+                whatsapp                TEXT,
+                wechat_id               TEXT,
+                linkedin_url            TEXT,
+                contact_name            TEXT,
+                contact_title           TEXT,
+
+                uscc                    TEXT UNIQUE,
+                uscc_verified           BOOLEAN NOT NULL DEFAULT 0,
+                uscc_verified_at        TIMESTAMP,
+                company_reg_number      TEXT,
+                is_manufacturer         BOOLEAN,
+                manufacturer_confidence INTEGER NOT NULL DEFAULT 0
+                                        CHECK (manufacturer_confidence BETWEEN 0 AND 100),
+                manufacturer_signals    TEXT,
+                manufacturer_verified_at TIMESTAMP,
+                capability_extracted_at TIMESTAMP,
+                website_search_attempted_at TIMESTAMP,
+                facility_address_verified BOOLEAN,
+                facility_address_verification_source TEXT,
+                facility_address_verified_at TIMESTAMP,
+                linkedin_checked_at TIMESTAMP,
+                contact_form_url TEXT,
+                registered_capital_rmb  REAL,
+                business_scope          TEXT,
+                factory_photo_urls      TEXT,
+                factory_photo_verdict   TEXT,
+                factory_photo_assessed_at TIMESTAMP,
+                year_established        INTEGER,
+                employee_count          TEXT,
+                factory_size_sqm        INTEGER,
+                annual_revenue_usd      TEXT,
+
+                iso_9001                BOOLEAN NOT NULL DEFAULT 0,
+                iso_9001_expiry         DATE,
+                iso_ts_16949            BOOLEAN NOT NULL DEFAULT 0,
+                e_mark_certified        BOOLEAN NOT NULL DEFAULT 0,
+                e_mark_numbers          TEXT,
+                ce_certified            BOOLEAN NOT NULL DEFAULT 0,
+                ukca_certified          BOOLEAN NOT NULL DEFAULT 0,
+                iatf_16949              BOOLEAN NOT NULL DEFAULT 0,
+                other_certifications    TEXT,
+
+                primary_categories      TEXT,
+                product_keywords        TEXT,
+                trailer_components      TEXT,
+                moq_notes               TEXT,
+
+                exports_to_uk           BOOLEAN NOT NULL DEFAULT 0,
+                exports_to_eu           BOOLEAN NOT NULL DEFAULT 0,
+                exports_to_us           BOOLEAN NOT NULL DEFAULT 0,
+                active_export_countries TEXT,
+                confirmed_shipments_uk  INTEGER NOT NULL DEFAULT 0,
+                confirmed_shipments_eu  INTEGER NOT NULL DEFAULT 0,
+                confirmed_shipments_us  INTEGER NOT NULL DEFAULT 0,
+                last_shipment_date      DATE,
+                annual_export_volume    TEXT,
+                known_buyers            TEXT,
+                sinosure_coverage       BOOLEAN,
+
+                payment_terms_offered   TEXT,
+                incoterms_supported     TEXT,
+                currencies_accepted     TEXT,
+                can_do_ddp_uk           BOOLEAN NOT NULL DEFAULT 0,
+
+                alibaba_url             TEXT,
+                alibaba_gold_supplier   BOOLEAN NOT NULL DEFAULT 0,
+                alibaba_years           INTEGER,
+                alibaba_trade_assurance BOOLEAN NOT NULL DEFAULT 0,
+                alibaba_rating          REAL,
+                indiamart_url           TEXT,
+                hktdc_url               TEXT,
+                made_in_china_url       TEXT,
+
+                product_fit_score        INTEGER NOT NULL DEFAULT 0
+                                         CHECK (product_fit_score BETWEEN 0 AND 100),
+                provenance_score         INTEGER NOT NULL DEFAULT 0
+                                         CHECK (provenance_score BETWEEN 0 AND 100),
+                verification_score      INTEGER NOT NULL DEFAULT 0
+                                         CHECK (verification_score BETWEEN 0 AND 100),
+                export_score             INTEGER NOT NULL DEFAULT 0
+                                         CHECK (export_score BETWEEN 0 AND 100),
+                platform_score           INTEGER NOT NULL DEFAULT 0
+                                         CHECK (platform_score BETWEEN 0 AND 100),
+                contact_score             INTEGER NOT NULL DEFAULT 0
+                                         CHECK (contact_score BETWEEN 0 AND 100),
+                composite_score           INTEGER NOT NULL DEFAULT 0
+                                         CHECK (composite_score BETWEEN 0 AND 100),
+                evidence_coverage        INTEGER NOT NULL DEFAULT 0
+                                         CHECK (evidence_coverage BETWEEN 0 AND 100),
+                recommendation            TEXT NOT NULL DEFAULT 'unverified'
+                                         CHECK (recommendation IN
+                                             ('recommended', 'review', 'unverified', 'unscored', 'avoid')),
+
+                source_count             INTEGER NOT NULL DEFAULT 1,
+                first_seen                TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_updated               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_verified               TIMESTAMP,
+                notes                        TEXT,
+                flagged                      BOOLEAN NOT NULL DEFAULT 0,
+                flag_reason                  TEXT,
+
+                ai_confidence_score          INTEGER,
+                ai_confidence_assessed_at    TIMESTAMP,
+                ai_summary                   TEXT,
+                ai_strengths                 TEXT,
+                ai_risks                     TEXT,
+                ai_suitable_customer_types   TEXT,
+                ai_verification_model        TEXT,
+
+                discovery_source              TEXT,
+                collection_last_run_at        TIMESTAMP,
+                collection_status             TEXT,
+
+                sourcing_oem_odm_notes         TEXT,
+                sourcing_factory_notes         TEXT,
+                sourcing_engineering_notes     TEXT,
+                sourcing_export_notes          TEXT,
+                sourcing_volume_suitability    TEXT,
+                sourcing_payment_terms_notes   TEXT,
+                sourcing_verification_status   TEXT,
+
+                key_contacts                   TEXT,
+                contacts_found_at              TIMESTAMP,
+
+                ai_confidence_breakdown        TEXT,
+                procurement_recommendation     TEXT,
+                procurement_recommendation_reason TEXT,
+
+                certificate_document_urls      TEXT,
+                production_lines_notes         TEXT,
+                machinery_notes                TEXT,
+                factory_ownership               TEXT,
+                factory_facts_extracted_at     TIMESTAMP
+            )
+            """
+
+_SUPPLIERS_V16_INDEX_STATEMENTS = (
+    "CREATE INDEX IF NOT EXISTS idx_sup_domain ON suppliers(domain)",
+    "CREATE INDEX IF NOT EXISTS idx_sup_uscc ON suppliers(uscc)",
+    "CREATE INDEX IF NOT EXISTS idx_sup_country ON suppliers(country)",
+    "CREATE INDEX IF NOT EXISTS idx_sup_score ON suppliers(composite_score DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_sup_recommendation ON suppliers(recommendation)",
+    "CREATE INDEX IF NOT EXISTS idx_sup_e_mark ON suppliers(e_mark_certified)",
+    "CREATE INDEX IF NOT EXISTS idx_sup_manufacturer ON suppliers(is_manufacturer)",
+    "CREATE INDEX IF NOT EXISTS idx_sup_canonical_name ON suppliers(canonical_name)",
+)
+
+
+def _rebuild_suppliers_v16(conn: sqlite3.Connection) -> None:
+    """See MIGRATIONS[16]'s description for the full reasoning. Two
+    things a static "statements" list can't express, which is why this
+    is a Python callable instead:
+
+    1. PRAGMA foreign_keys is a documented SQLite no-op when set inside
+       an open transaction -- and this migration runner's own "INSERT
+       INTO schema_migrations" after each prior migration leaves one
+       open whenever several migrations apply in a single
+       initialise_schema() call. conn.commit() first guarantees the
+       OFF (and later the ON) actually takes effect.
+    2. The INSERT...SELECT column list is the intersection of the OLD
+       table's actual columns with the new shape, discovered via
+       PRAGMA table_info at migration time -- not a hardcoded full
+       column list, which breaks with "no such column" against a real
+       database that's behind current SCHEMA_SQL (mid-migration-history
+       production data, or a test fixture reconstructing an old shape).
+    """
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute(_SUPPLIERS_V16_CREATE_SQL)
+
+    old_columns = [row["name"] for row in conn.execute("PRAGMA table_info(suppliers)").fetchall()]
+    new_columns = {row["name"] for row in conn.execute("PRAGMA table_info(suppliers_v16)").fetchall()}
+    common_columns = [c for c in old_columns if c in new_columns]
+    col_list = ", ".join(common_columns)
+    conn.execute(f"INSERT INTO suppliers_v16 ({col_list}) SELECT {col_list} FROM suppliers")
+
+    conn.execute("DROP TABLE suppliers")
+    conn.execute("ALTER TABLE suppliers_v16 RENAME TO suppliers")
+    for statement in _SUPPLIERS_V16_INDEX_STATEMENTS:
+        conn.execute(statement)
+
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = ON")
+
+
+# Migration entries may reference a Python callable by name (string) in a
+# "python" list -- resolved here rather than at MIGRATIONS-definition time
+# since the callables (e.g. _rebuild_suppliers_v16 above) are defined after
+# MIGRATIONS in this module for readability.
+_MIGRATION_FUNCTIONS = {
+    "_rebuild_suppliers_v16": _rebuild_suppliers_v16,
 }
 
 
@@ -1086,6 +1359,8 @@ def initialise_schema(db_path: Path | str | None = None) -> None:
                 _add_column_if_missing(conn, table, column, col_type)
             for statement in migration.get("statements", []):
                 conn.execute(statement)
+            for func_name in migration.get("python", []):
+                _MIGRATION_FUNCTIONS[func_name](conn)
             conn.execute(
                 "INSERT INTO schema_migrations (version, description) VALUES (?, ?)",
                 (version, migration["description"]),

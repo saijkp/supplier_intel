@@ -682,9 +682,13 @@ class TestPipelineManufacturerStage:
         assert forced["manufacturer_assessed"] == 1
 
     def test_manufacturer_assessment_uses_scorer_downstream(self, repo):
-        """A confirmed trader (is_manufacturer=False with high confidence)
-        should now correctly trigger the scorer's 'avoid' override, since
-        manufacturer_confidence is finally a real computed number."""
+        """A trader signal alone (is_manufacturer=False, but only ~30
+        confidence -- well short of the >80 verification.scorer requires
+        to auto-disqualify as a confirmed trader) plus otherwise near-zero
+        evidence must land on 'unscored', not 'avoid': there isn't enough
+        here to call it either way. 'avoid' is reserved for real negative
+        evidence (flagged, or a confirmed trader at high confidence), and
+        a bare guess at ~30 confidence isn't that."""
         pipeline = SupplierIntelligencePipeline(repo=repo, scrapers={}, normalizers={})
         supplier_id = repo.create_golden_record({
             "canonical_name": "Trader Co",
@@ -697,4 +701,4 @@ class TestPipelineManufacturerStage:
 
         assert supplier["is_manufacturer"] == 0
         assert supplier["manufacturer_confidence"] <= 30
-        assert supplier["recommendation"] == "avoid"
+        assert supplier["recommendation"] == "unscored"

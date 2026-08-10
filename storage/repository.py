@@ -103,8 +103,9 @@ SUPPLIER_WRITABLE_FIELDS: Sequence[str] = (
 )
 
 SCORE_FIELDS: Sequence[str] = (
-    "verification_score", "export_score", "platform_score",
-    "contact_score", "composite_score", "recommendation",
+    "product_fit_score", "provenance_score", "verification_score", "export_score",
+    "platform_score", "contact_score", "composite_score", "evidence_coverage",
+    "recommendation",
 )
 
 
@@ -767,6 +768,28 @@ class SupplierRepository:
                 (limit,),
             ).fetchall()
             return _rows_to_dicts(rows, SUPPLIER_JSON_FIELDS)
+
+    def get_sources_by_supplier(self, supplier_ids: Sequence[int]) -> Dict[int, set]:
+        """Batch-fetch which raw_source_data.source values fed each
+        golden record, for verification.scorer.SupplierScorer's
+        provenance dimension (source quality + independent-source
+        corroboration). One grouped query rather than one per supplier
+        -- this is meant to back a full-database rescore."""
+        if not supplier_ids:
+            return {}
+        with connection_scope(self.db_path) as conn:
+            placeholders = ", ".join("?" for _ in supplier_ids)
+            rows = conn.execute(
+                f"""
+                SELECT golden_record_id, source FROM raw_source_data
+                WHERE golden_record_id IN ({placeholders})
+                """,
+                list(supplier_ids),
+            ).fetchall()
+        result: Dict[int, set] = {sid: set() for sid in supplier_ids}
+        for row in rows:
+            result[row["golden_record_id"]].add(row["source"])
+        return result
 
     def update_scores(self, supplier_id: int, scores: Dict[str, Any]) -> None:
         """Persist the output of SupplierScorer.score(). Only the five

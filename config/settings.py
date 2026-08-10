@@ -424,6 +424,7 @@ VALID_RECOMMENDATIONS: Tuple[str, ...] = (
     "recommended",
     "review",
     "unverified",
+    "unscored",
     "avoid",
 )
 
@@ -432,12 +433,20 @@ VALID_RECOMMENDATIONS: Tuple[str, ...] = (
 # Scoring Weights (must sum to 1.0 — enforced by an assertion below
 # so a typo here fails loudly at import time rather than silently
 # skewing every composite score)
+#
+# verification.scorer.SupplierScorer's five weighted dimensions.
+# USCC verification and Alibaba platform strength are deliberately
+# NOT weighted dimensions here -- they're small capped bonuses added
+# on top of the composite instead, so a supplier with no Chinese
+# marketplace presence (most non-Chinese manufacturers) never has
+# points it structurally cannot reach.
 # ─────────────────────────────────────────────────────────────
 SCORING_WEIGHTS: Dict[str, float] = {
-    "verification": 0.35,  # USCC, certifications
-    "export": 0.30,        # Shipment history
-    "platform": 0.20,      # Alibaba years, rating
-    "contact": 0.15,       # Quality of contact info
+    "product_fit": 0.25,    # product_keywords matched against reports.coverage.BOM_CATEGORIES
+    "provenance": 0.25,     # source quality/corroboration, live domain, real address
+    "verification": 0.25,   # confirmed manufacturer, ISO 9001, E-mark, IATF/TS 16949
+    "export": 0.15,         # shipment history
+    "contact": 0.10,        # quality of contact info
 }
 
 _weight_sum = round(sum(SCORING_WEIGHTS.values()), 6)

@@ -824,10 +824,25 @@ class SupplierIntelligencePipeline:
         """Standalone re-scoring pass — e.g. after tweaking
         config.settings.SCORING_WEIGHTS, or after a batch of manual
         edits. Only rescoring currently-unscored suppliers keeps this
-        cheap; a full-database rescore can be done via
-        repo.list_suppliers() directly if the weights changed."""
+        cheap; see run_full_rescore() for a full-database rescore after
+        changing the scoring logic itself."""
         stats = {"scored": 0}
         self._scoring_stage(stats)
+        return stats
+
+    def run_full_rescore(self) -> Dict[str, Any]:
+        """Re-score every supplier regardless of composite_score --
+        get_unscored() only catches composite_score == 0 rows, which
+        misses every supplier that already has a score under a
+        since-changed formula (e.g. after rewriting
+        verification/scorer.py or changing SCORING_WEIGHTS)."""
+        stats = {"scored": 0}
+        suppliers = self.repo.list_suppliers(limit=1_000_000)
+        sources_by_id = self.repo.get_sources_by_supplier([s["id"] for s in suppliers])
+        for supplier in suppliers:
+            scores = self.scorer.score(supplier, sources=sources_by_id.get(supplier["id"]))
+            self.repo.update_scores(supplier["id"], scores)
+            stats["scored"] += 1
         return stats
 
     # ═════════════════════════════════════════════════════
