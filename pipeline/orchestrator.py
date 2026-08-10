@@ -814,11 +814,25 @@ class SupplierIntelligencePipeline:
     # Stage 5: scoring
     # ═════════════════════════════════════════════════════
 
-    def _scoring_stage(self, stats: Dict[str, Any]) -> None:
-        for supplier in self.repo.get_unscored():
-            scores = self.scorer.score(supplier)
+    def _score_suppliers(self, suppliers: List[Dict[str, Any]], stats: Dict[str, Any]) -> None:
+        """Shared by _scoring_stage and run_full_rescore -- batch-fetches
+        the provenance (sources) and self-asserted-verification
+        (capability_findings) inputs SupplierScorer.score() needs, once
+        per call rather than once per supplier."""
+        supplier_ids = [s["id"] for s in suppliers]
+        sources_by_id = self.repo.get_sources_by_supplier(supplier_ids)
+        findings_by_id = self.repo.get_capability_findings_by_supplier(supplier_ids)
+        for supplier in suppliers:
+            scores = self.scorer.score(
+                supplier,
+                sources=sources_by_id.get(supplier["id"]),
+                capability_findings=findings_by_id.get(supplier["id"]),
+            )
             self.repo.update_scores(supplier["id"], scores)
             stats["scored"] += 1
+
+    def _scoring_stage(self, stats: Dict[str, Any]) -> None:
+        self._score_suppliers(self.repo.get_unscored(), stats)
 
     def run_scoring_only(self) -> Dict[str, Any]:
         """Standalone re-scoring pass — e.g. after tweaking
@@ -837,12 +851,7 @@ class SupplierIntelligencePipeline:
         since-changed formula (e.g. after rewriting
         verification/scorer.py or changing SCORING_WEIGHTS)."""
         stats = {"scored": 0}
-        suppliers = self.repo.list_suppliers(limit=1_000_000)
-        sources_by_id = self.repo.get_sources_by_supplier([s["id"] for s in suppliers])
-        for supplier in suppliers:
-            scores = self.scorer.score(supplier, sources=sources_by_id.get(supplier["id"]))
-            self.repo.update_scores(supplier["id"], scores)
-            stats["scored"] += 1
+        self._score_suppliers(self.repo.list_suppliers(limit=1_000_000), stats)
         return stats
 
     # ═════════════════════════════════════════════════════

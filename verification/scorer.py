@@ -29,6 +29,17 @@ Low coverage routes the recommendation to 'unscored' rather than
 negative evidence (flagged, or a confirmed trader), never for gaps in
 what this pipeline happens to have collected yet.
 
+self_asserted_score (v17) is a second, deliberately separate signal:
+capability claims verification.capability_extractor found on a
+supplier's own website (stored in supplier_capabilities) are a
+self-report, not independent verification -- see
+_self_asserted_verification_score's own docstring for exactly which
+findings count and why they're scored as a small capped bonus rather
+than folded into verification_score itself. The two numbers are never
+blended into one: a supplier can have a high self_asserted_score and a
+zero verification_score (claims but no independent check), or the
+reverse, and both facts stay visible.
+
 Note on SQLite booleans: columns declared BOOLEAN in suppliers come back
 from the repository as Python ints (0/1), not True/False, since SQLite
 has no native boolean type. Every check below uses truthiness (`if
@@ -42,7 +53,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, timedelta
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from config.settings import SCORING_WEIGHTS
 from reports.coverage import BOM_CATEGORIES, _haystack, _matches
@@ -77,6 +88,21 @@ _DEFAULT_SOURCE_QUALITY = 30  # unclassified/not-yet-curated source
 _UNSCORED_COVERAGE_FLOOR = 30
 
 _JSON_HAYSTACK_FIELDS = ("product_keywords", "primary_categories", "trailer_components")
+
+# Which supplier_capabilities findings count toward the self-asserted
+# verification bonus (see _self_asserted_verification_score): claims
+# about actually making things (relationship = in_house/subcontracted,
+# covers verification.capability_vocabulary's CATEGORY_PROCESS/
+# CATEGORY_CAPABILITY/CATEGORY_ENGINEERING and unmapped findings alike)
+# or a claimed certification/standard (category = 'standard', always
+# stored with relationship='asserted' since a cert isn't something you
+# "do in-house"). Deliberately excludes CATEGORY_MARKET_PRESENCE/
+# CATEGORY_LOGISTICS/CATEGORY_OEM_READINESS findings ("serves the EU
+# market", "OEM supplier") -- real signal, but about who a supplier
+# sells to, not whether they actually make or hold what they claim,
+# so it doesn't belong in a *verification*-adjacent score.
+_SELF_ASSERTED_RELATIONSHIPS = {"in_house", "subcontracted"}
+_SELF_ASSERTED_STANDARD_CATEGORY = "standard"
 
 
 class SupplierScorer:
@@ -119,12 +145,25 @@ class SupplierScorer:
     - Alibaba platform strength:  +0-5, proportional to platform_score
       (still computed by _platform_score, unchanged formula -- just no
       longer a weighted dimension).
+    - Self-asserted capability claims (v17): +0-5, proportional to
+      self_asserted_score -- deliberately capped below what a single
+      real independently-verified certificate is worth (iso_9001 alone
+      contributes 25 * 0.25 = 6.25 composite points inside the
+      verification dimension), since a claim scraped from a supplier's
+      own website is not the same evidence as an independent check.
+      See _self_asserted_verification_score's own docstring.
     """
 
-    def score(self, supplier: Dict[str, Any], sources: Optional[Set[str]] = None) -> Dict[str, Any]:
+    def score(
+        self,
+        supplier: Dict[str, Any],
+        sources: Optional[Set[str]] = None,
+        capability_findings: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         fit = self._product_fit_score(supplier)
         prov = self._provenance_score(supplier, sources)
         v = self._verification_score(supplier)
+        self_asserted = self._self_asserted_verification_score(capability_findings)
         e = self._export_score(supplier)
         c = self._contact_score(supplier)
         platform = self._platform_score(supplier)
@@ -140,7 +179,8 @@ class SupplierScorer:
         bonus = 0
         if supplier.get("uscc_verified"):
             bonus += 5
-        bonus += round(platform * 0.05)  # 0-5, proportional to platform_score
+        bonus += round(platform * 0.05)        # 0-5, proportional to platform_score
+        bonus += round(self_asserted * 0.05)   # 0-5, proportional to self_asserted_score
 
         composite = int(round(weighted)) + bonus
         composite = max(0, min(100, composite))
@@ -151,6 +191,7 @@ class SupplierScorer:
             "product_fit_score": fit,
             "provenance_score": prov,
             "verification_score": v,
+            "self_asserted_score": self_asserted,
             "export_score": e,
             "platform_score": platform,
             "contact_score": c,
@@ -236,6 +277,49 @@ class SupplierScorer:
         if s.get("iso_ts_16949"):
             score += 15
         return min(score, 100)
+
+    def _self_asserted_verification_score(
+        self, capability_findings: Optional[List[Dict[str, Any]]]
+    ) -> int:
+        """
+        A capability finding scraped from a supplier's own website
+        (verification.capability_extractor, stored in
+        supplier_capabilities) is a claim, not verification -- the
+        company is asserting it about itself, with no independent check
+        behind it the way iso_9001/e_mark_certified/is_manufacturer
+        above are (set by cert_checker.py / manufacturer_verifier.py,
+        or a marketplace normalizer). This is real signal, worth
+        something, but a materially weaker kind of evidence -- so it's
+        surfaced as its own number and only feeds a small capped bonus
+        (see score()), never blended into verification_score itself.
+
+        Only findings relevant to *verification* count -- see
+        _SELF_ASSERTED_RELATIONSHIPS/_SELF_ASSERTED_STANDARD_CATEGORY's
+        own comment for exactly which ones and why "serves the EU
+        market"-style market-presence claims are excluded.
+
+        Weighted by each finding's own confidence (0.0-1.0, set by the
+        extractor's LLM call per capability_extractor.py) -- averaged
+        across the relevant findings, not summed, so a supplier with
+        one high-confidence claim and a supplier with ten equally
+        high-confidence claims score the same here (count isn't a
+        verification signal; confidence is). Returns 0 if there are no
+        capability findings at all, or none of the ones present are
+        verification-relevant.
+        """
+        if not capability_findings:
+            return 0
+
+        relevant = [
+            f for f in capability_findings
+            if f.get("relationship") in _SELF_ASSERTED_RELATIONSHIPS
+            or f.get("category") == _SELF_ASSERTED_STANDARD_CATEGORY
+        ]
+        if not relevant:
+            return 0
+
+        avg_confidence = sum(f.get("confidence") or 0.0 for f in relevant) / len(relevant)
+        return max(0, min(100, round(avg_confidence * 100)))
 
     def _export_score(self, s: Dict[str, Any]) -> int:
         """

@@ -103,8 +103,8 @@ SUPPLIER_WRITABLE_FIELDS: Sequence[str] = (
 )
 
 SCORE_FIELDS: Sequence[str] = (
-    "product_fit_score", "provenance_score", "verification_score", "export_score",
-    "platform_score", "contact_score", "composite_score", "evidence_coverage",
+    "product_fit_score", "provenance_score", "verification_score", "self_asserted_score",
+    "export_score", "platform_score", "contact_score", "composite_score", "evidence_coverage",
     "recommendation",
 )
 
@@ -789,6 +789,35 @@ class SupplierRepository:
         result: Dict[int, set] = {sid: set() for sid in supplier_ids}
         for row in rows:
             result[row["golden_record_id"]].add(row["source"])
+        return result
+
+    def get_capability_findings_by_supplier(
+        self, supplier_ids: Sequence[int]
+    ) -> Dict[int, List[Dict[str, Any]]]:
+        """Batch-fetch supplier_capabilities rows for
+        verification.scorer.SupplierScorer's self-asserted-verification
+        bonus -- a capability finding scraped from a supplier's own
+        website is a claim, not independent verification (see
+        _verification_score's own docstring), so this is kept as its
+        own signal rather than blended into the hard-evidence
+        verification_score. One grouped query rather than one per
+        supplier, mirroring get_sources_by_supplier's exact pattern --
+        this is meant to back a full-database rescore."""
+        if not supplier_ids:
+            return {}
+        with connection_scope(self.db_path) as conn:
+            placeholders = ", ".join("?" for _ in supplier_ids)
+            rows = conn.execute(
+                f"""
+                SELECT supplier_id, category, relationship, confidence
+                FROM supplier_capabilities
+                WHERE supplier_id IN ({placeholders})
+                """,
+                list(supplier_ids),
+            ).fetchall()
+        result: Dict[int, List[Dict[str, Any]]] = {sid: [] for sid in supplier_ids}
+        for row in rows:
+            result[row["supplier_id"]].append(dict(row))
         return result
 
     def update_scores(self, supplier_id: int, scores: Dict[str, Any]) -> None:

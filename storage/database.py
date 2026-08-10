@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 
 # ═══════════════════════════════════════════════════════════
@@ -168,6 +168,7 @@ CREATE TABLE IF NOT EXISTS suppliers (
                              CHECK (provenance_score BETWEEN 0 AND 100),
     verification_score      INTEGER NOT NULL DEFAULT 0
                              CHECK (verification_score BETWEEN 0 AND 100),
+    self_asserted_score     INTEGER,             -- 0-100, no DB CHECK (v17) -- see MIGRATIONS[17]'s own comment for why (same reason as ai_confidence_score)
     export_score             INTEGER NOT NULL DEFAULT 0
                              CHECK (export_score BETWEEN 0 AND 100),
     platform_score           INTEGER NOT NULL DEFAULT 0
@@ -1035,6 +1036,27 @@ MIGRATIONS: dict[int, dict] = {
             "column' against it)."
         ),
         "python": ["_rebuild_suppliers_v16"],
+    },
+    17: {
+        "description": (
+            "suppliers.self_asserted_score -- verification/scorer.py's new "
+            "self-asserted-verification bonus, computed from supplier_capabilities "
+            "findings (a capability claim scraped from a supplier's own website) "
+            "weighted by each finding's confidence. Deliberately kept separate from "
+            "verification_score (independently-checked certificates/manufacturer "
+            "status only) rather than blended into it -- a self-report and an "
+            "independent check are different kinds of evidence, and collapsing them "
+            "into one number would hide which one a given supplier actually has. No "
+            "DB CHECK constraint -- same reason ai_confidence_score/"
+            "procurement_recommendation/factory_ownership have none (see their own "
+            "SCHEMA_SQL comments): ALTER TABLE ADD COLUMN can't add one consistently "
+            "with a fresh-DB CREATE TABLE, so this is validated by construction "
+            "(only SupplierScorer ever writes it, always clamped 0-100) rather than "
+            "at the DB layer."
+        ),
+        "columns": [
+            ("suppliers", "self_asserted_score", "INTEGER"),
+        ],
     },
 }
 

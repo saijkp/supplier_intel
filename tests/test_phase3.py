@@ -499,6 +499,78 @@ class TestSupplierScorer:
         })
         assert multi == single + 20
 
+    def test_self_asserted_score_excludes_market_presence_findings(self):
+        """A capability_extractor finding about market reach ("serves
+        the EU market", "OEM supplier") is real signal, but it's about
+        who a supplier sells to, not whether they actually make or hold
+        what they claim -- must not count toward the self-asserted
+        verification bonus."""
+        scorer = SupplierScorer()
+        only_market_presence = [
+            {"category": "market_presence", "relationship": "asserted", "confidence": 0.95},
+        ]
+        assert scorer._self_asserted_verification_score(only_market_presence) == 0
+
+        mixed = only_market_presence + [
+            {"category": "standard", "relationship": "asserted", "confidence": 0.8},
+        ]
+        assert scorer._self_asserted_verification_score(mixed) == 80  # only the standard finding counts
+
+    def test_self_asserted_score_includes_unmapped_in_house_claims(self):
+        """An unmapped finding (category=None -- not in
+        capability_vocabulary.VOCABULARY, per its own "unmapped rather
+        than discarded" philosophy) still counts here if it's a real
+        in-house/subcontracted manufacturing claim, e.g. "in-house
+        manufacturing" -- category is irrelevant to this filter when
+        relationship says it's a real capability claim."""
+        scorer = SupplierScorer()
+        unmapped_in_house = [{"category": None, "relationship": "in_house", "confidence": 0.9}]
+        assert scorer._self_asserted_verification_score(unmapped_in_house) == 90
+
+    def test_self_asserted_score_averages_not_sums_confidence(self):
+        """Weighted by confidence, not by count -- ten low-confidence
+        claims must not outscore one high-confidence claim."""
+        scorer = SupplierScorer()
+        one_high_confidence = [{"category": "standard", "relationship": "asserted", "confidence": 0.9}]
+        ten_low_confidence = [
+            {"category": "standard", "relationship": "asserted", "confidence": 0.3}
+            for _ in range(10)
+        ]
+        assert scorer._self_asserted_verification_score(one_high_confidence) == 90
+        assert scorer._self_asserted_verification_score(ten_low_confidence) == 30
+        assert scorer._self_asserted_verification_score(one_high_confidence) > \
+            scorer._self_asserted_verification_score(ten_low_confidence)
+
+    def test_no_capability_findings_scores_zero(self):
+        scorer = SupplierScorer()
+        assert scorer._self_asserted_verification_score(None) == 0
+        assert scorer._self_asserted_verification_score([]) == 0
+
+    def test_self_asserted_and_verification_score_stay_distinguishable(self):
+        """The core requirement: a self-report and an independent check
+        are different kinds of evidence and must never collapse into
+        one number. A supplier with only capability-page claims (no
+        cert_checker.py/manufacturer_verifier.py verification) must show
+        verification_score == 0 alongside a nonzero self_asserted_score
+        -- not a single blended 'verification' figure."""
+        scorer = SupplierScorer()
+        claims_only = [{"category": "standard", "relationship": "asserted", "confidence": 0.9}]
+        result = scorer.score({}, capability_findings=claims_only)
+        assert result["verification_score"] == 0
+        assert result["self_asserted_score"] == 90
+
+    def test_self_asserted_bonus_scores_lower_than_one_verified_cert(self):
+        """A capability claim must never be worth more to the composite
+        than a single independently-checked certificate -- even a
+        supplier with nothing but maximum-confidence self-assertions
+        should score below a supplier whose only evidence is one real
+        verified ISO 9001."""
+        scorer = SupplierScorer()
+        max_claims = [{"category": "standard", "relationship": "asserted", "confidence": 1.0}] * 5
+        self_asserted_only = scorer.score({}, capability_findings=max_claims)
+        one_real_cert = scorer.score({"iso_9001": 1})
+        assert self_asserted_only["composite_score"] < one_real_cert["composite_score"]
+
     def test_score_handles_sqlite_integer_booleans(self):
         """Repository reads return 0/1 ints for BOOLEAN columns, not
         True/False — the scorer must treat these correctly. uscc_verified
@@ -528,3 +600,4 @@ class TestSupplierScorer:
         assert updated["evidence_coverage"] == scores["evidence_coverage"]
         assert updated["product_fit_score"] == scores["product_fit_score"]
         assert updated["provenance_score"] == scores["provenance_score"]
+        assert updated["self_asserted_score"] == scores["self_asserted_score"]
