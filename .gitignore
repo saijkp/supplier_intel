@@ -23,3 +23,5 @@ data/exports/*
 
 # Logs
 logs/*.log
+*.bak
+data/*.db*
