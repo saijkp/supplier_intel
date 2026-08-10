@@ -218,3 +218,96 @@ class TestSelfDeclaredTraderExclusion:
         result = validator.validate(_candidate(), "trailer axle")
 
         assert result.validated is True
+
+
+class TestMarketplaceHostExclusion:
+    """A supplier whose only web presence is a B2B marketplace
+    storefront is a negative manufacturer signal, not a valid company
+    website -- checked before any fetch/LLM call (a marketplace page
+    routinely contains a real company name and mentions the searched
+    product, since it's advertising it, so without this gate such a
+    candidate could otherwise sail through every other check)."""
+
+    def _marketplace_candidate(self, domain):
+        return Candidate(
+            title="Acme Trailer Co", link=f"https://{domain}/", snippet="trailer axle manufacturer", domain=domain,
+        )
+
+    def test_goldsupplier_domain_is_rejected(self):
+        fetcher = FakeWebsiteFetcher()
+        llm = FakeLLMClient()
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(self._marketplace_candidate("acmetrailer.goldsupplier.com"), "trailer axle")
+
+        assert result.validated is False
+        assert "marketplace" in result.reason
+        assert fetcher.calls == []  # never even attempted to fetch
+
+    def test_alibaba_root_domain_is_rejected(self):
+        fetcher = FakeWebsiteFetcher()
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=FakeLLMClient())
+        result = validator.validate(self._marketplace_candidate("alibaba.com"), "trailer axle")
+        assert result.validated is False
+        assert fetcher.calls == []
+
+    def test_en_alibaba_subdomain_is_rejected(self):
+        """The exact real-world shape: a company's storefront under
+        Alibaba's own en.alibaba.com subdomain, not their own site."""
+        fetcher = FakeWebsiteFetcher()
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=FakeLLMClient())
+        result = validator.validate(self._marketplace_candidate("acmetrailer.en.alibaba.com"), "trailer axle")
+        assert result.validated is False
+        assert fetcher.calls == []
+
+    def test_made_in_china_domain_is_rejected(self):
+        fetcher = FakeWebsiteFetcher()
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=FakeLLMClient())
+        result = validator.validate(self._marketplace_candidate("acmetrailer.made-in-china.com"), "trailer axle")
+        assert result.validated is False
+        assert fetcher.calls == []
+
+    def test_indiamart_domain_is_rejected(self):
+        fetcher = FakeWebsiteFetcher()
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=FakeLLMClient())
+        result = validator.validate(self._marketplace_candidate("acmetrailer.indiamart.com"), "trailer axle")
+        assert result.validated is False
+        assert fetcher.calls == []
+
+    def test_tradeindia_domain_is_rejected(self):
+        fetcher = FakeWebsiteFetcher()
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=FakeLLMClient())
+        result = validator.validate(self._marketplace_candidate("acmetrailer.tradeindia.com"), "trailer axle")
+        assert result.validated is False
+        assert fetcher.calls == []
+
+    def test_no_fetch_or_llm_call_is_made_for_a_marketplace_domain(self):
+        """Rejected before any real work happens -- saves the HTTP
+        fetch and the LLM call, not just the eventual storage."""
+        fetcher = FakeWebsiteFetcher()
+        llm = FakeLLMClient()
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        validator.validate(self._marketplace_candidate("acmetrailer.alibaba.com"), "trailer axle")
+
+        assert fetcher.calls == []
+
+    def test_a_companys_own_domain_that_merely_contains_a_marketplace_name_is_not_rejected(self):
+        """Precision matters -- this checks the REGISTERED domain via
+        tldextract, not a raw substring, so a company legitimately
+        named e.g. "Alibabatrading Co" at its own domain must not be
+        caught by this filter."""
+        candidate = Candidate(
+            title="Alibabatrading Co", link="https://alibabatrading.com/",
+            snippet="trailer axle manufacturer", domain="alibabatrading.com",
+        )
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Alibabatrading Co is a manufacturer of trailer axle assemblies.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Alibabatrading Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(candidate, "trailer axle")
+
+        assert fetcher.calls == ["alibabatrading.com"]  # fetch WAS attempted -- not a marketplace host
+        assert result.validated is True

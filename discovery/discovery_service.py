@@ -52,6 +52,7 @@ from discovery.candidate_validator import (
     REASON_EMPTY_PAGE,
     REASON_FETCH_EXCEPTION_PREFIX,
     REASON_FETCH_UNSUCCESSFUL_PREFIX,
+    REASON_MARKETPLACE_HOST_PREFIX,
     REASON_TRADER_PREFIX,
     CandidateValidator,
 )
@@ -182,20 +183,25 @@ class DiscoveryService:
             outcome.candidates_rejected += 1
             return
 
-        # Website resolved = didn't fail at the fetch/empty-page gates
-        # (validate() gates 1-2) -- reason-text-matched, since "the site
-        # fetched" isn't otherwise exposed on ValidationResult. Content
-        # matched = reached and passed the product-term gate (gate 5):
-        # `validation.validated` already covers a full success without
-        # any string-matching (the actually-contracted field, unlike
-        # reason's exact wording -- callers/tests are free to use any
-        # reason text alongside validated=True); the trader-prefix check
-        # only exists for the one case that boolean can't distinguish --
-        # a candidate that reached and passed gate 5 but was then
-        # rejected at gate 6 (trader self-declaration).
+        # Website resolved = a fetch was actually attempted and didn't
+        # fail (validate() gates 2-3) -- reason-text-matched, since "the
+        # site fetched" isn't otherwise exposed on ValidationResult. A
+        # marketplace-host rejection (gate 2) never even attempts a
+        # fetch, so it must be excluded here too, same as an actual
+        # fetch failure -- otherwise a never-fetched candidate would be
+        # miscounted as resolved. Content matched = reached and passed
+        # the product-term gate (gate 6): `validation.validated` already
+        # covers a full success without any string-matching (the
+        # actually-contracted field, unlike reason's exact wording --
+        # callers/tests are free to use any reason text alongside
+        # validated=True); the trader-prefix check only exists for the
+        # one case that boolean can't distinguish -- a candidate that
+        # reached and passed gate 6 but was then rejected at gate 7
+        # (trader self-declaration).
         reason = validation.reason
         website_did_not_resolve = (
-            reason.startswith(REASON_FETCH_EXCEPTION_PREFIX)
+            reason.startswith(REASON_MARKETPLACE_HOST_PREFIX)
+            or reason.startswith(REASON_FETCH_EXCEPTION_PREFIX)
             or reason.startswith(REASON_FETCH_UNSUCCESSFUL_PREFIX)
             or reason == REASON_EMPTY_PAGE
         )

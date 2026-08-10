@@ -121,6 +121,12 @@ class TestIsPlatformSubdomain:
         assert is_platform_subdomain(None) is False
         assert is_platform_subdomain("") is False
 
+    def test_goldsupplier_detected(self):
+        assert is_platform_subdomain("acmetrailer.goldsupplier.com") is True
+
+    def test_tradeindia_detected(self):
+        assert is_platform_subdomain("acmetrailer.tradeindia.com") is True
+
 
 # ═════════════════════════════════════════════════════════════
 # SupplierMatcher

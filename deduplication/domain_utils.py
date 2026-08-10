@@ -26,6 +26,8 @@ PLATFORM_REGISTERED_DOMAINS = {
     "hktdc.com",
     "made-in-china.com",
     "globalsources.com",
+    "goldsupplier.com",
+    "tradeindia.com",
 }
 
 

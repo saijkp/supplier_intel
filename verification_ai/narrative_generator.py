@@ -27,9 +27,30 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from llm.client import LLMClient
+from verification_ai.confidence_scorer import CHECK_WEIGHTS
 from verification_ai.cross_checker import CrossCheckResult
 
 logger = logging.getLogger(__name__)
+
+# linkedin_presence and phone_format answer "does this exist and is it
+# formatted plausibly" -- not "can this supplier actually make the
+# product." Real bug this guards against: a correctly-formatted phone
+# number with every other check at NO SIGNAL produced narrative text
+# like "indicating some level of operational legitimacy" -- prose
+# analysis over what is, substantively, an empty evidence base.
+# phone_format is already excluded from CHECK_WEIGHTS (see
+# confidence_scorer.py's own comment) but was still being shown to the
+# narrative LLM as evidence; linkedin_presence IS weighted (it's a real,
+# if weak, signal for the numeric ai_confidence_score) but must not be
+# what a narrative gets written from either. Excluded from the evidence
+# text entirely below (_build_evidence_text) and from what counts as
+# "enough signal to narrate at all" (generate()) -- neither change
+# touches CrossChecker/ConfidenceScorer, so ai_confidence_score's number
+# is unaffected.
+_EXISTENCE_ONLY_CHECKS = frozenset({"linkedin_presence", "phone_format"})
+_SUBSTANTIVE_CHECK_NAMES = frozenset(name for name, _ in CHECK_WEIGHTS) - _EXISTENCE_ONLY_CHECKS
+
+INSUFFICIENT_EVIDENCE_SUMMARY = "Insufficient evidence — not assessed."
 
 SYSTEM_PROMPT = """You are assessing a B2B supplier's profile for a procurement buyer, based ONLY on the structured evidence provided below (cross-check sub-signals and any detected inconsistencies). You have no other knowledge of this specific company -- do not use anything you might otherwise know or assume about a company with this name.
 
@@ -70,6 +91,12 @@ def _build_evidence_text(supplier: Dict[str, Any], cross_check_result: CrossChec
         "Cross-check sub-signals:",
     ]
     for check in cross_check_result.sub_checks:
+        if check.name in _EXISTENCE_ONLY_CHECKS:
+            # Existence-only signal (see module docstring) -- never
+            # shown to the narrative LLM, so it structurally cannot
+            # write commentary "from" a formatted phone number or a
+            # LinkedIn page existing.
+            continue
         label = _VERDICT_LABELS.get(str(check.verdict), "NO SIGNAL")
         lines.append(f"- {check.name}: {label} -- {check.detail}")
     if cross_check_result.inconsistencies:
@@ -94,6 +121,21 @@ class NarrativeGenerator:
     def generate(
         self, supplier: Dict[str, Any], cross_check_result: CrossCheckResult, confidence_score: int,
     ) -> Optional[NarrativeResult]:
+        by_name = {c.name: c.verdict for c in cross_check_result.sub_checks}
+        has_substantive_signal = any(
+            by_name.get(name) is not None for name in _SUBSTANTIVE_CHECK_NAMES
+        )
+        if not has_substantive_signal:
+            # Every weighted check that actually speaks to manufacturing
+            # capability/identity is NO SIGNAL -- linkedin_presence/
+            # phone_format alone (existence checks, not capability
+            # signals) must never be enough to justify writing narrative
+            # commentary, so this returns a real, explicit result
+            # (actively overwriting any stale narrative from a
+            # previous, better-evidenced run) rather than calling the
+            # LLM at all.
+            return NarrativeResult(summary=INSUFFICIENT_EVIDENCE_SUMMARY, model_used="")
+
         evidence_text = _build_evidence_text(supplier, cross_check_result, confidence_score)
         raw = self.llm_client.complete_json(SYSTEM_PROMPT, evidence_text)
         if not isinstance(raw, dict):

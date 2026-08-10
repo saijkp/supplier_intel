@@ -13,15 +13,29 @@ not reimplemented).
 
 A candidate is "validated" only if every gate passes:
 1. Real SerpAPI search hit (candidate_extractor.py, upstream of this).
-2. Real fetch of the candidate site succeeded.
-3. The LLM found a company name explicitly stated in the page text
+2. The candidate's domain is NOT a known B2B marketplace host
+   (goldsupplier.com, alibaba.com, made-in-china.com, indiamart.com,
+   tradeindia.com and subdomains thereof, e.g. en.alibaba.com --
+   deduplication.domain_utils.PLATFORM_REGISTERED_DOMAINS) -- checked
+   before any fetch. candidate_extractor.py already filters these out
+   upstream for the serpapi path, but this is a deliberate second,
+   independent gate here too: a marketplace storefront page routinely
+   contains a real company name and mentions the searched product (it's
+   advertising it), so without this check such a candidate could
+   otherwise sail through gates 3-5 below and be stored as if it were
+   the company's own independently-verified website. A supplier whose
+   only web presence is a marketplace storefront is a negative
+   manufacturer signal, not a valid company website -- flagged here,
+   never passed as verified.
+3. Real fetch of the candidate site succeeded.
+4. The LLM found a company name explicitly stated in the page text
    (grounded-only prompt discipline -- same "quote-required, omit
    rather than infer" rules verification.capability_extractor.py's
    system prompt already established).
-4. That extracted name fuzzy-matches the original search result
+5. That extracted name fuzzy-matches the original search result
    (proves the fetched page is genuinely about the company the search
    surfaced, not an unrelated site that happens to share the domain).
-5. The fetched page text actually mentions the searched product term
+6. The fetched page text actually mentions the searched product term
    -- a second, DETERMINISTIC keyword check, not another LLM call.
 """
 
@@ -33,6 +47,7 @@ from typing import Any, Optional
 
 from rapidfuzz import fuzz
 
+from deduplication.domain_utils import is_platform_subdomain
 from deduplication.name_utils import normalise_company_name
 from discovery.candidate_extractor import Candidate
 from llm.client import LLMClient
@@ -87,11 +102,12 @@ def _find_trader_self_declaration(page_text: str) -> str | None:
 # dependency in a different file. Gate order is fixed and documented in
 # this module's own docstring -- reaching gate N's reason implies every
 # earlier gate already passed.
-REASON_FETCH_EXCEPTION_PREFIX = "fetch failed"                                   # gate 2 (raised)
-REASON_FETCH_UNSUCCESSFUL_PREFIX = "could not fetch candidate site"              # gate 2 (no success/no pages)
-REASON_EMPTY_PAGE = "fetched page had no readable text"                          # gate 2 (blank text)
-REASON_TERM_MISSING_PREFIX = "fetched page text does not mention the searched term"  # gate 5
-REASON_TRADER_PREFIX = "page self-identifies as a trading company/distributor"   # gate 6
+REASON_MARKETPLACE_HOST_PREFIX = "candidate domain is a known B2B marketplace host"  # gate 2
+REASON_FETCH_EXCEPTION_PREFIX = "fetch failed"                                   # gate 3 (raised)
+REASON_FETCH_UNSUCCESSFUL_PREFIX = "could not fetch candidate site"              # gate 3 (no success/no pages)
+REASON_EMPTY_PAGE = "fetched page had no readable text"                          # gate 3 (blank text)
+REASON_TERM_MISSING_PREFIX = "fetched page text does not mention the searched term"  # gate 6
+REASON_TRADER_PREFIX = "page self-identifies as a trading company/distributor"   # gate 7
 REASON_SUCCESS_PREFIX = "validated: name corroborated"                           # every gate passed
 
 SYSTEM_PROMPT = """You are reading the text of a company website. Extract ONLY what is explicitly stated in the text below -- never guess, infer, or fill in based on typical industry patterns or the domain name.
@@ -129,6 +145,22 @@ class CandidateValidator:
         self.llm_client = llm_client or LLMClient()
 
     def validate(self, candidate: Candidate, product_term: str) -> ValidationResult:
+        if is_platform_subdomain(candidate.domain):
+            # Checked before any fetch -- a marketplace storefront is a
+            # negative signal (this is not an independent company
+            # website), not just "no signal yet." Deliberately still
+            # checked here even though candidate_extractor.py already
+            # filters these out upstream for the serpapi path: a
+            # marketplace page routinely contains a real company name
+            # and mentions the searched product (it's advertising it),
+            # so without this gate such a candidate could otherwise pass
+            # every check below and be stored as if it were the
+            # company's own verified site.
+            return ValidationResult(
+                candidate, False, None, None, None,
+                f"{REASON_MARKETPLACE_HOST_PREFIX}: {candidate.domain}",
+            )
+
         try:
             fetch_result = self.website_fetcher.fetch(candidate.domain)
         except Exception as e:
