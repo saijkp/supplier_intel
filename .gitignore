@@ -16,6 +16,7 @@ __pycache__/
 # NOT excluded -- reference exports like the Automechanika workbook
 # belong in the repo, only the live database doesn't.
 data/*.db
+data/*.db.bak
 data/*.db-journal
 data/*.db-wal
 data/exports/*
