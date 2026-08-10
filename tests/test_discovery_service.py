@@ -298,6 +298,197 @@ class TestDiscoverMaxCandidates:
         assert outcome.candidates_found == 3
 
 
+class FakeLLMCandidateSource:
+    """Mirrors FakeGoogleScraper's convention: a fixed return value,
+    recording every call for assertion."""
+
+    def __init__(self, candidates=None, stats=None):
+        from discovery.llm_candidate_source import GenerationStats
+        self._candidates = candidates or []
+        self._stats = stats or GenerationStats(
+            raw_generated=len(self._candidates), deduplicated=len(self._candidates),
+        )
+        self.calls = []
+
+    def find_candidates(self, product, country=None, max_candidates=20):
+        self.calls.append((product, country, max_candidates))
+        return self._candidates, self._stats
+
+
+class TestDiscoverLLMSource:
+    """source='llm' must flow through the exact same
+    CandidateValidator/SupplierMatcher pipeline as source='serpapi'
+    (the default) -- only candidate generation and raw_source_data
+    provenance differ. See discovery/llm_candidate_source.py."""
+
+    def _llm_service(self, repo, candidates, validated_domain, extracted_name="Acme Trailer Co", extracted_country="China", **overrides):
+        llm_source = overrides.get("llm_candidate_source") or FakeLLMCandidateSource(candidates=candidates)
+        validator = overrides.get("candidate_validator")
+        if validator is None:
+            validator = FakeCandidateValidator(outcomes={
+                validated_domain: ValidationResult(
+                    candidates[0], True, extracted_name, extracted_country, 95.0, "validated: name corroborated",
+                ),
+            })
+        return DiscoveryService(
+            repo=repo, google_scraper=FakeGoogleScraper(results=[]), website_fetcher=SimpleNamespace(),
+            candidate_validator=validator, matcher=overrides.get("matcher") or SupplierMatcher(repo),
+            llm_candidate_source=llm_source,
+        )
+
+    def test_source_llm_uses_llm_candidate_source_not_google_scraper(self, repo):
+        from discovery.candidate_extractor import Candidate
+        candidate = Candidate(title="Acme Trailer Co", link="https://acmetrailer.com", snippet="makes trailer axles", domain="acmetrailer.com")
+        google_scraper = FakeGoogleScraper(results=[])
+        llm_source = FakeLLMCandidateSource(candidates=[candidate])
+        service = self._llm_service(repo, [candidate], "acmetrailer.com", llm_candidate_source=llm_source)
+        service.google_scraper = google_scraper
+
+        service.discover("trailer axle", source="llm")
+
+        assert llm_source.calls == [("trailer axle", None, 20)]
+        assert google_scraper.queries == []
+
+    def test_source_llm_writes_raw_source_data_with_llm_discovery_provenance(self, repo):
+        from discovery.candidate_extractor import Candidate
+        candidate = Candidate(title="Acme Trailer Co", link="https://acmetrailer.com", snippet="makes trailer axles", domain="acmetrailer.com")
+        service = self._llm_service(repo, [candidate], "acmetrailer.com")
+
+        service.discover("trailer axle", source="llm")
+
+        from storage.database import connection_scope
+        with connection_scope(repo.db_path) as conn:
+            discovery_rows = conn.execute("SELECT * FROM raw_source_data WHERE source = 'discovery'").fetchall()
+            llm_rows = conn.execute("SELECT * FROM raw_source_data WHERE source = 'llm-discovery'").fetchall()
+        assert discovery_rows == []
+        assert len(llm_rows) == 1
+        assert llm_rows[0]["golden_record_id"] is not None
+
+    def test_source_llm_still_creates_a_supplier_via_the_same_validator_and_matcher(self, repo):
+        from discovery.candidate_extractor import Candidate
+        candidate = Candidate(title="Acme Trailer Co", link="https://acmetrailer.com", snippet="makes trailer axles", domain="acmetrailer.com")
+        service = self._llm_service(repo, [candidate], "acmetrailer.com")
+
+        outcome = service.discover("trailer axle", source="llm")
+
+        assert len(outcome.new_supplier_ids) == 1
+        supplier = repo.get_supplier(outcome.new_supplier_ids[0])
+        assert supplier["canonical_name"] == "Acme Trailer Co"
+        assert supplier["domain"] == "acmetrailer.com"
+
+    def test_source_llm_rejected_candidate_is_not_stored_but_is_recorded(self, repo):
+        """The critical requirement: an LLM-proposed candidate whose
+        site doesn't resolve or doesn't corroborate must be dropped,
+        not written to suppliers -- exactly like a bad serpapi hit."""
+        from discovery.candidate_extractor import Candidate
+        candidate = Candidate(title="Ghost Co", link="https://ghostco-imaginary.example", snippet="", domain="ghostco-imaginary.example")
+        validator = FakeCandidateValidator(outcomes={
+            "ghostco-imaginary.example": ValidationResult(
+                candidate, False, None, None, None, "could not fetch candidate site: connection refused",
+            ),
+        })
+        service = self._llm_service(repo, [candidate], "ghostco-imaginary.example", candidate_validator=validator)
+
+        outcome = service.discover("trailer axle", source="llm")
+
+        assert outcome.new_supplier_ids == []
+        assert outcome.candidates_rejected == 1
+        from storage.database import connection_scope
+        with connection_scope(repo.db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) AS n FROM suppliers").fetchone()["n"]
+        assert count == 0
+
+    def test_candidates_generated_reflects_llm_source_stats(self, repo):
+        from discovery.candidate_extractor import Candidate
+        from discovery.llm_candidate_source import GenerationStats
+        candidate = Candidate(title="Acme Trailer Co", link="https://acmetrailer.com", snippet="", domain="acmetrailer.com")
+        llm_source = FakeLLMCandidateSource(
+            candidates=[candidate], stats=GenerationStats(raw_generated=7, deduplicated=1),
+        )
+        service = self._llm_service(repo, [candidate], "acmetrailer.com", llm_candidate_source=llm_source)
+
+        outcome = service.discover("trailer axle", source="llm")
+
+        assert outcome.candidates_generated == 7
+        assert outcome.candidates_found == 1
+
+    def test_unknown_source_raises(self, repo):
+        service = DiscoveryService(
+            repo=repo, google_scraper=FakeGoogleScraper(results=[]), website_fetcher=SimpleNamespace(),
+            candidate_validator=FakeCandidateValidator(), matcher=SupplierMatcher(repo),
+        )
+        with pytest.raises(ValueError):
+            service.discover("trailer axle", source="bogus")
+
+
+class TestDiscoverResolutionCounters:
+    """website_resolved/content_matched -- the funnel breakdown behind
+    `main.py discover --source llm`'s report. Exercised via the
+    serpapi path (the shared _process_candidate code, not source-specific)
+    since these counters aren't specific to either source."""
+
+    def test_fetch_failure_counts_as_not_resolved(self, repo):
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        from discovery.candidate_extractor import Candidate
+        candidate = Candidate(title="Acme Trailer Co", link="https://acmetrailer.com/", snippet="trailer axle manufacturer", domain="acmetrailer.com")
+        validator = FakeCandidateValidator(outcomes={
+            "acmetrailer.com": ValidationResult(candidate, False, None, None, None, "could not fetch candidate site: 404"),
+        })
+        service = _service(repo, results, "acmetrailer.com", candidate_validator=validator)
+
+        outcome = service.discover("trailer axle")
+
+        assert outcome.website_resolved == 0
+        assert outcome.content_matched == 0
+
+    def test_resolved_but_term_missing_counts_as_resolved_not_matched(self, repo):
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        from discovery.candidate_extractor import Candidate
+        candidate = Candidate(title="Acme Trailer Co", link="https://acmetrailer.com/", snippet="trailer axle manufacturer", domain="acmetrailer.com")
+        validator = FakeCandidateValidator(outcomes={
+            "acmetrailer.com": ValidationResult(
+                candidate, False, "Acme Trailer Co", "China", 90.0,
+                "fetched page text does not mention the searched term 'trailer axle'",
+            ),
+        })
+        service = _service(repo, results, "acmetrailer.com", candidate_validator=validator)
+
+        outcome = service.discover("trailer axle")
+
+        assert outcome.website_resolved == 1
+        assert outcome.content_matched == 0
+
+    def test_fully_validated_counts_as_both(self, repo):
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        service = _service(repo, results, "acmetrailer.com")
+
+        outcome = service.discover("trailer axle")
+
+        assert outcome.website_resolved == 1
+        assert outcome.content_matched == 1
+
+    def test_trader_exclusion_still_counts_as_content_matched(self, repo):
+        """The product term WAS found (gate 5 passed) -- only gate 6
+        (trader self-declaration) failed. content_matched must reflect
+        gate 5's own outcome, not the final validated verdict."""
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        from discovery.candidate_extractor import Candidate
+        candidate = Candidate(title="Acme Trailer Co", link="https://acmetrailer.com/", snippet="trailer axle manufacturer", domain="acmetrailer.com")
+        validator = FakeCandidateValidator(outcomes={
+            "acmetrailer.com": ValidationResult(
+                candidate, False, "Acme Trailer Co", "China", 90.0,
+                "page self-identifies as a trading company/distributor (matched phrase: 'we are a distributor') -- excluded, not a manufacturer",
+            ),
+        })
+        service = _service(repo, results, "acmetrailer.com", candidate_validator=validator)
+
+        outcome = service.discover("trailer axle")
+
+        assert outcome.website_resolved == 1
+        assert outcome.content_matched == 1
+        assert outcome.candidates_rejected == 1  # still rejected overall
+
+
 class TestBackfillProductKeywords:
     """discover() itself already writes product_keywords on create (see
     TestDiscoverCreatesNewSuppliers) -- these tests cover the separate

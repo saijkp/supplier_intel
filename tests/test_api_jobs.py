@@ -418,18 +418,19 @@ class FakeDiscoveryService:
         self.last_discover_call = None
         FakeDiscoveryService.last_instance = self
 
-    def discover(self, product, category=None, country=None, max_candidates=20):
+    def discover(self, product, category=None, country=None, max_candidates=20, source="serpapi"):
         from discovery.discovery_service import DiscoveryOutcome
 
         self.last_discover_call = {
-            "product": product, "category": category, "country": country, "max_candidates": max_candidates,
+            "product": product, "category": category, "country": country,
+            "max_candidates": max_candidates, "source": source,
         }
         return DiscoveryOutcome(candidates_found=5, candidates_validated=2, candidates_rejected=3,
                                  new_supplier_ids=[10, 11])
 
 
 class FailingFakeDiscoveryService(FakeDiscoveryService):
-    def discover(self, product, category=None, country=None, max_candidates=20):
+    def discover(self, product, category=None, country=None, max_candidates=20, source="serpapi"):
         raise RuntimeError("search API down")
 
 
@@ -445,7 +446,8 @@ class TestRunDiscoveryJob:
         })
 
         assert FakeDiscoveryService.last_instance.last_discover_call == {
-            "product": "trailer axle", "category": "Axles", "country": "China", "max_candidates": 15,
+            "product": "trailer axle", "category": "Axles", "country": "China",
+            "max_candidates": 15, "source": "serpapi",
         }
         job = repo.get_pipeline_job("job50")
         assert job["status"] == "completed"
@@ -459,8 +461,18 @@ class TestRunDiscoveryJob:
         jobs_module.run_discovery_job("job51", {"product": "trailer axle"})
 
         assert FakeDiscoveryService.last_instance.last_discover_call == {
-            "product": "trailer axle", "category": None, "country": None, "max_candidates": 20,
+            "product": "trailer axle", "category": None, "country": None,
+            "max_candidates": 20, "source": "serpapi",
         }
+
+    def test_source_llm_is_passed_through(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "DiscoveryService", FakeDiscoveryService)
+
+        repo.create_pipeline_job(job_id="job53", query="[discovery] jockey wheel",
+                                  options={"product": "jockey wheel", "source": "llm"})
+        jobs_module.run_discovery_job("job53", {"product": "jockey wheel", "source": "llm"})
+
+        assert FakeDiscoveryService.last_instance.last_discover_call["source"] == "llm"
 
     def test_failing_job_marks_failed_not_raised(self, repo, monkeypatch):
         monkeypatch.setattr(jobs_module, "DiscoveryService", FailingFakeDiscoveryService)

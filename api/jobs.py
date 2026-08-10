@@ -215,7 +215,7 @@ def run_discovery_job(job_id: str, options: Dict[str, Any]) -> None:
         service = DiscoveryService(repo=repo)
         outcome = service.discover(
             options["product"], category=options.get("category"), country=options.get("country"),
-            max_candidates=options.get("max_candidates", 20),
+            max_candidates=options.get("max_candidates", 20), source=options.get("source", "serpapi"),
         )
         repo.mark_pipeline_job_completed(job_id, stats=dataclasses.asdict(outcome))
     except Exception as e:

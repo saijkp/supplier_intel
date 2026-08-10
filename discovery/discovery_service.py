@@ -1,35 +1,43 @@
 """
 discovery/discovery_service.py
 
-AI-assisted supplier discovery, grounded entirely in real SerpAPI
-search results -- never a freeform "list me suppliers for X" prompt.
-Every accepted supplier traces to: a real SerpAPI search hit (Google,
-via config.settings.SERPAPI_KEY) -> a real successfully-fetched
-website -> that website's own text corroborating the identity found in
-the search result. The only LLM call anywhere in this pipeline
-(discovery.candidate_validator.CandidateValidator) reads a real fetched
-document; it never generates a company from nothing. See
-.claude/plans/deep-wibbling-rivest.md for the full design rationale.
+AI-assisted supplier discovery. Two candidate sources feed the same
+validation/dedup pipeline (source="serpapi", the default, or
+source="llm"):
 
-Pipeline:
-1. discovery.query_builder.build_queries() -- mechanical query variants.
-2. scrapers.google_search_scraper.GoogleSearchScraper.scrape() -- the
-   entire web-research grounding source, already integrated elsewhere
-   in this codebase.
-3. discovery.candidate_extractor.extract_candidates() -- mechanical,
-   no LLM: dedupe to one candidate per registered domain, filtering
-   platform/social/directory domains via the same logic
-   scrapers.company_website_finder.py already established.
-4. discovery.candidate_validator.CandidateValidator.validate() -- the
-   one LLM call, reading a real fetched page.
-5. deduplication.matcher.SupplierMatcher.resolve_and_store() -- the
+- serpapi: grounded entirely in real SerpAPI search results -- never a
+  freeform "list me suppliers for X" prompt. Every accepted supplier
+  traces to: a real SerpAPI search hit (Google, via
+  config.settings.SERPAPI_KEY) -> a real successfully-fetched website
+  -> that website's own text corroborating the identity found in the
+  search result.
+- llm: discovery.llm_candidate_source.LLMCandidateSource asks
+  gpt-4o-mini directly for manufacturer names it already has
+  confidence about -- see that module's own docstring for why this
+  doesn't weaken the anti-hallucination guarantee: nothing it proposes
+  is ever trusted on its own, it still has to pass the identical
+  validation gate below. Written to raw_source_data with
+  source="llm-discovery" (not "discovery"), so
+  verification.scorer.SOURCE_QUALITY_WEIGHTS treats a candidate found
+  this way as weaker provenance than one independently corroborated by
+  a real search hit.
+
+Either way, from "candidate found" onward the pipeline is identical:
+1. discovery.candidate_validator.CandidateValidator.validate() -- the
+   one LLM call in the serpapi path (two, for the llm path -- one to
+   generate the candidate, one to validate it, reading a REAL fetched
+   page either way); grounded corroboration, never a bare LLM claim
+   trusted on its own.
+2. deduplication.matcher.SupplierMatcher.resolve_and_store() -- the
    SAME dedup engine already in production, so a rediscovered existing
    supplier merges automatically. Zero new dedup logic.
-6. Every candidate -- accepted or rejected -- is written to
-   raw_source_data (source='discovery') via the existing
-   save_raw()/mark_raw_processed(), plus a summary row in
-   discovery_runs. Full evidence trail either way, so a rejected
-   candidate is auditable, not silently discarded.
+3. Every candidate -- accepted or rejected -- is written to
+   raw_source_data via the existing save_raw()/mark_raw_processed(),
+   plus a summary row in discovery_runs. Full evidence trail either
+   way, so a rejected candidate is auditable, not silently discarded.
+
+See .claude/plans/deep-wibbling-rivest.md for the original serpapi-path
+design rationale.
 """
 
 from __future__ import annotations
@@ -40,21 +48,33 @@ from typing import Any, List, Optional
 
 from deduplication.matcher import SupplierMatcher
 from discovery.candidate_extractor import extract_candidates
-from discovery.candidate_validator import CandidateValidator
+from discovery.candidate_validator import (
+    REASON_EMPTY_PAGE,
+    REASON_FETCH_EXCEPTION_PREFIX,
+    REASON_FETCH_UNSUCCESSFUL_PREFIX,
+    REASON_TRADER_PREFIX,
+    CandidateValidator,
+)
+from discovery.llm_candidate_source import LLMCandidateSource
 from discovery.query_builder import build_queries
 from storage.repository import SupplierRepository
 
 logger = logging.getLogger(__name__)
 
+_VALID_SOURCES = ("serpapi", "llm")
+
 
 @dataclass
 class DiscoveryOutcome:
+    candidates_generated: int = 0  # llm source only -- raw (name, website) pairs the model proposed before any filtering; 0 for serpapi
     candidates_found: int = 0
     candidates_validated: int = 0
     candidates_rejected: int = 0
     candidates_duplicate: int = 0  # validated AND auto-merged into an existing supplier -- no new row
     new_supplier_ids: List[int] = field(default_factory=list)  # a genuinely new row, whether outright ("created") or pending human review ("review_queued")
     review_queued_supplier_ids: List[int] = field(default_factory=list)  # subset of new_supplier_ids also awaiting dedup review
+    website_resolved: int = 0  # candidates whose site fetched successfully (validate() gate 2), whether or not they went on to validate
+    content_matched: int = 0   # candidates whose fetched page actually mentioned the product term (validate() gate 5) -- see _process_candidate's own comment
 
 
 class DiscoveryService:
@@ -66,6 +86,7 @@ class DiscoveryService:
         website_fetcher: Optional[Any] = None,
         candidate_validator: Optional[CandidateValidator] = None,
         matcher: Optional[SupplierMatcher] = None,
+        llm_candidate_source: Optional[LLMCandidateSource] = None,
     ):
         self.repo = repo or SupplierRepository()
         if google_scraper is not None:
@@ -82,13 +103,34 @@ class DiscoveryService:
             self.website_fetcher = OwnWebsiteScraper()
         self.candidate_validator = candidate_validator or CandidateValidator(website_fetcher=self.website_fetcher)
         self.matcher = matcher or SupplierMatcher(self.repo)
+        self.llm_candidate_source = llm_candidate_source or LLMCandidateSource()
 
     def discover(
         self, product: str, category: Optional[str] = None, country: Optional[str] = None,
         max_candidates: int = 20, application: Optional[str] = None,
-        key_specifications: Optional[List[str]] = None,
+        key_specifications: Optional[List[str]] = None, source: str = "serpapi",
     ) -> DiscoveryOutcome:
+        if source not in _VALID_SOURCES:
+            raise ValueError(f"unknown discovery source {source!r} -- expected one of {_VALID_SOURCES}")
+
         outcome = DiscoveryOutcome()
+
+        if source == "llm":
+            all_candidates, generation_stats = self.llm_candidate_source.find_candidates(
+                product, country=country, max_candidates=max_candidates,
+            )
+            outcome.candidates_generated = generation_stats.raw_generated
+            raw_source = "llm-discovery"
+            outcome.candidates_found = len(all_candidates)
+            for candidate in all_candidates:
+                self._process_candidate(candidate, product, country, outcome, raw_source=raw_source)
+            self.repo.record_discovery_run(
+                product_query=product, category=category, country=country,
+                candidates_found=outcome.candidates_found, candidates_validated=outcome.candidates_validated,
+                candidates_rejected=outcome.candidates_rejected, candidates_duplicate=outcome.candidates_duplicate,
+            )
+            return outcome
+
         queries = build_queries(
             product, category=category, country=country,
             application=application, key_specifications=key_specifications,
@@ -115,7 +157,7 @@ class DiscoveryService:
         outcome.candidates_found = len(all_candidates)
 
         for candidate in all_candidates:
-            self._process_candidate(candidate, product, country, outcome)
+            self._process_candidate(candidate, product, country, outcome, raw_source="discovery")
 
         self.repo.record_discovery_run(
             product_query=product, category=category, country=country,
@@ -124,21 +166,46 @@ class DiscoveryService:
         )
         return outcome
 
-    def _process_candidate(self, candidate, product: str, country: Optional[str], outcome: DiscoveryOutcome) -> None:
+    def _process_candidate(
+        self, candidate, product: str, country: Optional[str], outcome: DiscoveryOutcome,
+        raw_source: str = "discovery",
+    ) -> None:
         try:
             validation = self.candidate_validator.validate(candidate, product)
         except Exception as e:  # noqa: BLE001 -- one candidate's failure must never abort the whole discovery run
             logger.error("discovery: validation failed for %s: %s", candidate.domain, e)
             self.repo.save_raw(
-                source="discovery",
+                source=raw_source,
                 raw_data={"title": candidate.title, "link": candidate.link, "domain": candidate.domain},
                 source_id=candidate.domain, processing_status="failed",
             )
             outcome.candidates_rejected += 1
             return
 
+        # Website resolved = didn't fail at the fetch/empty-page gates
+        # (validate() gates 1-2) -- reason-text-matched, since "the site
+        # fetched" isn't otherwise exposed on ValidationResult. Content
+        # matched = reached and passed the product-term gate (gate 5):
+        # `validation.validated` already covers a full success without
+        # any string-matching (the actually-contracted field, unlike
+        # reason's exact wording -- callers/tests are free to use any
+        # reason text alongside validated=True); the trader-prefix check
+        # only exists for the one case that boolean can't distinguish --
+        # a candidate that reached and passed gate 5 but was then
+        # rejected at gate 6 (trader self-declaration).
+        reason = validation.reason
+        website_did_not_resolve = (
+            reason.startswith(REASON_FETCH_EXCEPTION_PREFIX)
+            or reason.startswith(REASON_FETCH_UNSUCCESSFUL_PREFIX)
+            or reason == REASON_EMPTY_PAGE
+        )
+        if not website_did_not_resolve:
+            outcome.website_resolved += 1
+            if validation.validated or reason.startswith(REASON_TRADER_PREFIX):
+                outcome.content_matched += 1
+
         raw_id = self.repo.save_raw(
-            source="discovery",
+            source=raw_source,
             raw_data={
                 "title": candidate.title, "link": candidate.link, "snippet": candidate.snippet,
                 "domain": candidate.domain, "extracted_name": validation.extracted_name,

@@ -22,6 +22,7 @@ Usage:
     python main.py export-csv                  Export suppliers to CSV
     python main.py export-excel                 Export suppliers to Excel (.xlsx), with contact/address enrichment columns
     python main.py discover "trailer axle" --country China   AI-assisted supplier discovery, grounded in real search results
+    python main.py discover --product "jockey wheel" --source llm --limit 100   Same, but candidates come from an LLM's own knowledge instead of SerpAPI
     python main.py collect --supplier-id 123     Visit a supplier's website with a real headless browser (collection.SiteCollector)
     python main.py verify-ai --supplier-id 123   AI cross-check + confidence score against existing verification signals
     python main.py reverify --supplier-id 123    Re-collect then re-verify an already-known supplier
@@ -333,34 +334,66 @@ def verify_facilities(force: bool, limit: int) -> None:
 
 
 @cli.command("discover")
-@click.argument("product")
+@click.argument("product_arg", metavar="PRODUCT", required=False)
+@click.option("--product", "product_opt", default=None,
+              help="The product to discover manufacturers for. Same as the positional PRODUCT "
+                   "argument -- accepted as an option too so --source llm's documented invocation "
+                   "(--product \"jockey wheel\" --source llm --limit 100) works as written.")
 @click.option("--category", default=None, help="Optional product category, recorded on discovery_runs.")
 @click.option("--country", default=None, help="Optional country to qualify the search (e.g. China).")
+@click.option("--source", type=click.Choice(["serpapi", "llm"]), default="serpapi", show_default=True,
+              help="serpapi (default): candidates from real SerpAPI search hits. llm: candidates "
+                   "gpt-4o-mini proposes from its own knowledge (discovery/llm_candidate_source.py), "
+                   "costing OpenAI calls instead of SerpAPI ones -- still gated by the exact same "
+                   "real-fetch/content-match validation before anything is stored, see that module's "
+                   "docstring for why this doesn't weaken the anti-hallucination guarantee.")
 @click.option("--limit", "max_candidates", default=20, show_default=True,
               help="Stop after this many candidate companies. Each one costs a paid SerpAPI "
-                   "search plus, for candidates that pass initial filtering, a real HTTP fetch "
-                   "and an OpenAI call -- start small on a first run.")
-def discover(product: str, category: Optional[str], country: Optional[str], max_candidates: int) -> None:
-    """AI-assisted supplier discovery, grounded entirely in real SerpAPI search
-    results -- every accepted supplier traces to a real search hit, a real
-    fetched website, and that website's own text corroborating the identity
-    (see discovery/discovery_service.py's module docstring for the full
-    anti-hallucination pipeline). Rediscovering an existing supplier merges
-    via the same dedup engine main.py run already uses, never duplicates."""
+                   "search (--source serpapi) or an OpenAI call (--source llm) plus, for "
+                   "candidates that pass initial filtering, a real HTTP fetch and an OpenAI "
+                   "validation call either way -- start small on a first run.")
+def discover(
+    product_arg: Optional[str], product_opt: Optional[str], category: Optional[str],
+    country: Optional[str], source: str, max_candidates: int,
+) -> None:
+    """AI-assisted supplier discovery. Every accepted supplier traces to a
+    real fetched website and that website's own text corroborating the
+    identity and product -- see discovery/discovery_service.py's module
+    docstring for the full anti-hallucination pipeline, for both
+    --source serpapi (grounded in real search hits) and --source llm
+    (grounded the same way, just proposed by the model instead of a
+    search engine). Rediscovering an existing supplier merges via the
+    same dedup engine main.py run already uses, never duplicates."""
     from discovery.discovery_service import DiscoveryService
 
+    product = product_opt or product_arg
+    if not product:
+        console.print("[yellow]Give a product, either as PRODUCT or --product.[/yellow]")
+        return
+
     service = DiscoveryService()
-    outcome = service.discover(product, category=category, country=country, max_candidates=max_candidates)
+    outcome = service.discover(
+        product, category=category, country=country, max_candidates=max_candidates, source=source,
+    )
 
     table = Table(show_header=False)
     table.add_column("Metric", style="cyan")
     table.add_column("Count", justify="right", style="magenta")
-    table.add_row("candidates found", str(outcome.candidates_found))
-    table.add_row("candidates validated", str(outcome.candidates_validated))
-    table.add_row("candidates rejected", str(outcome.candidates_rejected))
-    table.add_row("merged into existing supplier", str(outcome.candidates_duplicate))
-    table.add_row("new suppliers created", str(len(outcome.new_supplier_ids)))
-    table.add_row("  (queued for dedup review)", str(len(outcome.review_queued_supplier_ids)))
+    if source == "llm":
+        table.add_row("generated", str(outcome.candidates_generated))
+        table.add_row("website resolved", str(outcome.website_resolved))
+        table.add_row("content matched", str(outcome.content_matched))
+        table.add_row("deduplicated (merged into existing supplier)", str(outcome.candidates_duplicate))
+        table.add_row("inserted (new suppliers created)", str(len(outcome.new_supplier_ids)))
+        table.add_row("  (queued for dedup review)", str(len(outcome.review_queued_supplier_ids)))
+        table.add_row("rejected", str(outcome.candidates_rejected))
+    else:
+        table.add_row("candidates found", str(outcome.candidates_found))
+        table.add_row("candidates validated", str(outcome.candidates_validated))
+        table.add_row("candidates rejected", str(outcome.candidates_rejected))
+        table.add_row("merged into existing supplier", str(outcome.candidates_duplicate))
+        table.add_row("new suppliers created", str(len(outcome.new_supplier_ids)))
+        table.add_row("  (queued for dedup review)", str(len(outcome.review_queued_supplier_ids)))
     console.print(table)
 
 

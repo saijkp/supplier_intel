@@ -275,6 +275,13 @@ class DiscoveryJobRequest(BaseModel):
     product: str = Field(description="Product/component search term, e.g. 'trailer axle'.")
     category: Optional[str] = Field(default=None, description="Optional product category, recorded on discovery_runs.")
     country: Optional[str] = Field(default=None, description="Optional country to qualify the search.")
+    source: str = Field(
+        default="serpapi",
+        description="'serpapi' (default): candidates from real SerpAPI search hits. 'llm': "
+                     "candidates gpt-4o-mini proposes from its own knowledge "
+                     "(discovery/llm_candidate_source.py) -- still gated by the same real-fetch/"
+                     "content-match validation before anything is stored.",
+    )
     max_candidates: int = Field(
         default=20,
         description="Stop after this many candidate companies. Each one costs a paid SerpAPI "

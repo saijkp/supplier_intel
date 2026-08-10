@@ -423,9 +423,11 @@ def create_discovery_job(
 ) -> PipelineJobResponse:
     """Same async job/poll pattern as POST /collection/jobs, but for
     discovery.discovery_service.DiscoveryService -- AI-assisted supplier
-    discovery grounded entirely in real SerpAPI search results (see
-    discovery/discovery_service.py's module docstring). The HTTP
-    equivalent of `main.py discover`."""
+    discovery, grounded in either real SerpAPI search results or an
+    LLM's own knowledge per `request.source` (see
+    discovery/discovery_service.py's module docstring for how both
+    paths converge on the same real-fetch/content-match validation
+    gate). The HTTP equivalent of `main.py discover`."""
     job_id = str(uuid.uuid4())
     options = request.model_dump()
     repo.create_pipeline_job(job_id=job_id, query=f"[discovery] {request.product}", options=options)

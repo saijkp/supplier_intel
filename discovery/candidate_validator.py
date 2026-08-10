@@ -79,6 +79,21 @@ def _find_trader_self_declaration(page_text: str) -> str | None:
             return phrase
     return None
 
+
+# Named, not just inline f-strings, so discovery_service.py can classify
+# a ValidationResult's outcome (e.g. "did the website resolve" vs "did the
+# content actually match") by checking which gate a candidate reached,
+# without duplicating these strings as a separate hidden magic-string
+# dependency in a different file. Gate order is fixed and documented in
+# this module's own docstring -- reaching gate N's reason implies every
+# earlier gate already passed.
+REASON_FETCH_EXCEPTION_PREFIX = "fetch failed"                                   # gate 2 (raised)
+REASON_FETCH_UNSUCCESSFUL_PREFIX = "could not fetch candidate site"              # gate 2 (no success/no pages)
+REASON_EMPTY_PAGE = "fetched page had no readable text"                          # gate 2 (blank text)
+REASON_TERM_MISSING_PREFIX = "fetched page text does not mention the searched term"  # gate 5
+REASON_TRADER_PREFIX = "page self-identifies as a trading company/distributor"   # gate 6
+REASON_SUCCESS_PREFIX = "validated: name corroborated"                           # every gate passed
+
 SYSTEM_PROMPT = """You are reading the text of a company website. Extract ONLY what is explicitly stated in the text below -- never guess, infer, or fill in based on typical industry patterns or the domain name.
 
 Rules, strictly enforced:
@@ -118,17 +133,17 @@ class CandidateValidator:
             fetch_result = self.website_fetcher.fetch(candidate.domain)
         except Exception as e:
             logger.warning("discovery: fetch failed for %s: %s", candidate.domain, e)
-            return ValidationResult(candidate, False, None, None, None, f"fetch failed: {e}")
+            return ValidationResult(candidate, False, None, None, None, f"{REASON_FETCH_EXCEPTION_PREFIX}: {e}")
 
         if not fetch_result.success or not fetch_result.pages:
             return ValidationResult(
                 candidate, False, None, None, None,
-                f"could not fetch candidate site: {getattr(fetch_result, 'error', 'unknown error')}",
+                f"{REASON_FETCH_UNSUCCESSFUL_PREFIX}: {getattr(fetch_result, 'error', 'unknown error')}",
             )
 
         page_text = fetch_result.pages[0].text
         if not page_text or not page_text.strip():
-            return ValidationResult(candidate, False, None, None, None, "fetched page had no readable text")
+            return ValidationResult(candidate, False, None, None, None, REASON_EMPTY_PAGE)
 
         extracted = self.llm_client.complete_json(SYSTEM_PROMPT, f"Website page content:\n\n{page_text[:20_000]}")
         if not isinstance(extracted, dict):
@@ -156,18 +171,18 @@ class CandidateValidator:
         if product_term.lower() not in page_text.lower():
             return ValidationResult(
                 candidate, False, extracted_name, extracted_country, score,
-                f"fetched page text does not mention the searched term '{product_term}'",
+                f"{REASON_TERM_MISSING_PREFIX} '{product_term}'",
             )
 
         self_declared_trader = _find_trader_self_declaration(page_text)
         if self_declared_trader:
             return ValidationResult(
                 candidate, False, extracted_name, extracted_country, score,
-                f"page self-identifies as a trading company/distributor (matched phrase: "
+                f"{REASON_TRADER_PREFIX} (matched phrase: "
                 f"'{self_declared_trader}') -- excluded, not a manufacturer",
             )
 
         return ValidationResult(
             candidate, True, extracted_name, extracted_country, score,
-            f"validated: name corroborated (score={score:.0f}), product term found on page",
+            f"{REASON_SUCCESS_PREFIX} (score={score:.0f}), product term found on page",
         )

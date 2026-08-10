@@ -79,7 +79,12 @@ SOURCE_QUALITY_WEIGHTS: Dict[str, int] = {
     "alibaba": 35,                    # self-service marketplace listing
     "china_1688": 35,
     "indiamart": 35,
-    "google": 25,                     # generic web search hit -- weakest identity signal
+    "google": 25,                     # generic web search hit -- weakest identity signal from a real search
+    "llm-discovery": 20,              # discovery.llm_candidate_source -- an LLM's own claim about a company,
+                                       # independently gated by the same real-fetch/content-match validation
+                                       # every other source goes through (see discovery/discovery_service.py),
+                                       # but starting from an unconstrained model guess rather than a real
+                                       # search hit or a directory listing -- weaker than even "google" for that reason.
 }
 _DEFAULT_SOURCE_QUALITY = 30  # unclassified/not-yet-curated source
 
