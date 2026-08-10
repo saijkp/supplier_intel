@@ -11,6 +11,7 @@ Usage:
     python main.py verify                      Re-run Qichacha verification only
     python main.py rescore                     Re-run scoring only
     python main.py certs                       Check for expiring/malformed certifications
+    python main.py coverage --gaps-only         BOM category coverage vs shortlist targets
     python main.py search "wheel bearings" --require "e-mark approval" --manufacturers-only
                                             The full procurement search: product + required certifications + verified-manufacturer filter, one call
     python main.py find-websites               Find a domain for suppliers whose listing didn't give one
@@ -1028,6 +1029,112 @@ def match_product(references: tuple, candidate: str, context: str) -> None:
     console.print(f"[bold]Verdict:[/bold] [{verdict_color}]{result['verdict']}[/{verdict_color}]  "
                   f"(compared against {result['reference_count']} reference photo(s))")
     console.print(f"[bold]Reasoning:[/bold] {result['reasoning']}")
+
+
+# Countries that can realistically quote DDP in EUR/GBP on open account —
+# the shape of IWT's commercial terms, not a judgement on capability.
+DDP_NATIVE_COUNTRIES = [
+    "Germany", "Italy", "Poland", "Türkiye", "Turkey", "Spain", "France",
+    "Netherlands", "Belgium", "Czech Republic", "Slovakia", "Slovenia",
+    "Austria", "Portugal", "Sweden", "Denmark", "Hungary", "Romania",
+    "Lithuania", "Ireland", "Great Britain and Northern Ireland",
+]
+
+_STATUS_STYLE = {
+    "EMPTY": "bold red",
+    "CRITICAL": "red",
+    "THIN": "yellow",
+    "OK": "green",
+}
+
+
+@cli.command("coverage")
+@click.option("--gaps-only", is_flag=True, help="Hide categories already at target.")
+@click.option("--group", default=None, help="Filter to one BOM group, e.g. 'Hardware'.")
+@click.option("--tier", type=click.Choice(["A", "B", "C"]), default=None,
+              help="Filter to one criticality tier.")
+@click.option("--ddp-native", is_flag=True,
+              help="Count only suppliers in countries that quote DDP in EUR/GBP.")
+@click.option("--detail", is_flag=True, help="Show top sourcing countries per category.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def coverage(gaps_only: bool, group: str, tier: str, ddp_native: bool,
+             detail: bool, as_json: bool) -> None:
+    """
+    BOM category coverage vs shortlist targets.
+
+    Answers "what can't we source yet?" rather than "how many rows do we
+    have?". Use the gap column to decide what to scrape next — expansion
+    driven by coverage holes beats expansion driven by scraper convenience.
+    """
+    import json as _json
+    from reports.coverage import analyse_coverage, BOM_CATEGORIES
+
+    result = analyse_coverage(
+        countries=DDP_NATIVE_COUNTRIES if ddp_native else None,
+    )
+    rows = result["categories"]
+
+    if group:
+        rows = [r for r in rows if r["group"].lower() == group.lower()]
+    if tier:
+        rows = [r for r in rows if r["tier"] == tier]
+    if gaps_only:
+        rows = [r for r in rows if r["gap"] > 0]
+
+    if as_json:
+        console.print_json(_json.dumps({**result, "categories": rows}))
+        return
+
+    if not rows:
+        console.print("[green]Every category in this filter is at target.[/green]")
+        return
+
+    rows.sort(key=lambda r: (-r["gap"], r["label"]))
+
+    scope = " (DDP-native countries only)" if ddp_native else ""
+    table = Table(title=f"BOM Coverage vs Target{scope}")
+    table.add_column("Category")
+    table.add_column("Group", style="dim")
+    table.add_column("Tier", justify="center")
+    table.add_column("Have", justify="right")
+    table.add_column("Site", justify="right")
+    table.add_column("Email", justify="right")
+    table.add_column("Target", justify="right")
+    table.add_column("Gap", justify="right")
+    table.add_column("Status")
+    if detail:
+        table.add_column("Top countries", style="dim")
+
+    for r in rows:
+        cells = [
+            r["label"],
+            r["group"],
+            r["tier"],
+            str(r["total"]),
+            str(r["with_domain"]),
+            str(r["with_email"]),
+            str(r["target"]),
+            f"[bold]{r['gap']}[/bold]" if r["gap"] else "-",
+            f"[{_STATUS_STYLE[r['status']]}]{r['status']}[/{_STATUS_STYLE[r['status']]}]",
+        ]
+        if detail:
+            cells.append(", ".join(f"{c} {n}" for c, n in r["top_countries"]) or "-")
+        table.add_row(*cells)
+
+    console.print(table)
+    console.print(
+        f"\n[bold]{result['covered_categories']}/{len(result['categories'])}[/bold] "
+        f"categories at target · "
+        f"[bold]{result['total_gap']}[/bold] suppliers short of a full shortlist · "
+        f"{result['suppliers_analysed']} analysed · "
+        f"{result['unmatched']} matched no category"
+    )
+    if result["unmatched"]:
+        console.print(
+            f"[dim]{result['unmatched']} suppliers matched no BOM category — either "
+            f"out of scope, or the taxonomy in reports/coverage.py needs a term "
+            f"adding. Worth eyeballing before trusting the gaps.[/dim]"
+        )
 
 
 if __name__ == "__main__":
