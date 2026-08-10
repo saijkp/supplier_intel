@@ -152,14 +152,50 @@ class AutomechanikaNormaliser(BaseNormalizer):
 
         return result
 
-    @staticmethod
-    def _parse_country(address: str) -> str:
+    # Official ISO 3166 short names that themselves contain a comma --
+    # naively splitting the address on "," and taking the last segment
+    # truncates these (e.g. "...Korea, the Republic of (South)" ->
+    # "the Republic of (South)"). Checked as a full-string suffix before
+    # falling back to the plain last-segment split.
+    _COMMA_CONTAINING_COUNTRIES = (
+        "Korea, the Republic of (South)",
+        "Korea, the Democratic People's Republic of (North)",
+        "Taiwan, Province of China",
+        "Moldova, Republic of",
+        "Iran, Islamic Republic of",
+        "Tanzania, United Republic of",
+        "Venezuela, Bolivarian Republic of",
+        "Bolivia, Plurinational State of",
+        "Congo, the Democratic Republic of the",
+        "Micronesia, Federated States of",
+        "Virgin Islands, British",
+        "Virgin Islands, U.S.",
+        "Macedonia, the Former Yugoslav Republic of",
+        "Palestine, State of",
+    )
+
+    @classmethod
+    def _parse_country(cls, address: str) -> str:
         """The country is consistently the last comma-separated
         segment in this file's address format -- verified against a
         sample spanning Ireland, Italy, Belgium, India, Germany,
         Taiwan, and Bosnia and Herzegovina before relying on it. Not a
         general-purpose address parser; specific to this export's own
         consistent formatting.
+
+        Two failure modes handled before the plain split:
+        - No comma at all means the row lost its delimiters somewhere
+          upstream (a run-on blob); guessing a country from raw text
+          isn't defensible, so this returns "" (leaves country unset)
+          rather than storing the whole address as a fake country.
+        - The real country name itself contains a comma (see
+          `_COMMA_CONTAINING_COUNTRIES`); checked as a suffix so the
+          full name is kept instead of just its tail.
         """
+        if "," not in address:
+            return ""
+        for full_name in cls._COMMA_CONTAINING_COUNTRIES:
+            if address.endswith(full_name):
+                return full_name
         parts = [p.strip() for p in address.split(",") if p.strip()]
         return parts[-1] if parts else ""
