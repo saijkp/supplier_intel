@@ -54,6 +54,14 @@ nor verification_ai.VerificationService extracted contact details --
 meaning "Collect site"/"Verify (AI)" alone would never surface an
 email or phone for a freshly-discovered company, no matter how many
 times either ran.
+
+Every typed phone number found (landline/mobile via
+phonenumbers.number_type(), whatsapp/wechat/fax via nearby-text
+context -- see website_contact_extractor.py) is saved to
+supplier_phone_numbers, not just the first one -- suppliers.primary_phone
+still only ever holds one number (unchanged, gap-fill-only, for
+backward compatibility with every existing caller), but nothing found
+is silently discarded anymore.
 """
 
 from __future__ import annotations
@@ -197,6 +205,15 @@ class CollectionService:
         parsing bug here can never fail an otherwise-successful
         collection run.
 
+        Every typed phone number found (not just the first) is saved
+        to supplier_phone_numbers -- see that table's own SCHEMA_SQL
+        comment for why a single mobile number silently discarded in
+        favour of whatever landline appeared first in page order was a
+        real, found-via-calibration bug. The first WhatsApp-typed and
+        first WeChat-typed number found also gap-fill
+        suppliers.whatsapp/wechat_id (never overwriting an existing
+        value) -- previously dead columns nothing could reliably set.
+
         Text-only: a phone/email rendered as an image (a common
         anti-scraping pattern on contact pages) is invisible to this --
         out of scope for now (see batch/ feature notes). If added
@@ -204,12 +221,19 @@ class CollectionService:
         each page's image URLs (already available on `pages` via
         SiteCollector) and feed the resulting text through the same
         `extract_contact_details` regex path, not a separate pipeline."""
-        stats = {"contact_emails_added": 0, "contact_phones_added": 0, "contact_forms_recorded": 0}
+        stats = {
+            "contact_emails_added": 0, "contact_phones_added": 0, "contact_forms_recorded": 0,
+            "contact_phone_types_saved": 0,
+        }
         try:
             region_hint = country_name_to_region_code(country)
             findings = extract_contact_details(pages, default_region=region_hint)
             all_emails: list = []
             all_phones: list = []
+            phone_rows: list = []
+            source_pages: list = []
+            whatsapp_number = None
+            wechat_number = None
             for finding in findings:
                 for email in finding.emails:
                     if email not in all_emails:
@@ -217,6 +241,17 @@ class CollectionService:
                 for phone in finding.phone_numbers:
                     if phone not in all_phones:
                         all_phones.append(phone)
+                if finding.emails or finding.phone_numbers:
+                    source_pages.append(finding.source_url)
+                for typed in finding.typed_phone_numbers:
+                    phone_rows.append({
+                        "phone_number": typed.number, "phone_type": typed.phone_type,
+                        "source_url": finding.source_url,
+                    })
+                    if typed.phone_type == "whatsapp" and whatsapp_number is None:
+                        whatsapp_number = typed.number
+                    if typed.phone_type == "wechat" and wechat_number is None:
+                        wechat_number = typed.number
 
             fallback = best_contact_method(findings)
             form_url = fallback["value"] if fallback["method"] == "contact_form" else None
@@ -224,6 +259,7 @@ class CollectionService:
             if all_emails or all_phones or form_url:
                 enrichment = self.repo.enrich_contact_details(
                     supplier_id, emails=all_emails, phones=all_phones, contact_form_url=form_url,
+                    whatsapp=whatsapp_number, wechat_id=wechat_number, source_pages=source_pages,
                 )
                 if enrichment.get("primary_email_set") or enrichment.get("secondary_emails_added"):
                     stats["contact_emails_added"] = 1
@@ -231,6 +267,9 @@ class CollectionService:
                     stats["contact_phones_added"] = 1
                 if enrichment.get("contact_form_url_set"):
                     stats["contact_forms_recorded"] = 1
+
+            if phone_rows:
+                stats["contact_phone_types_saved"] = self.repo.save_phone_numbers(supplier_id, phone_rows)
         except Exception as e:
             logger.error("collection: contact extraction failed for supplier #%s: %s", supplier_id, e)
         return stats

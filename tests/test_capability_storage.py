@@ -46,7 +46,7 @@ def _finding(**overrides):
 class TestSchemaVersion:
 
     def test_current_schema_version(self):
-        assert SCHEMA_VERSION == 19
+        assert SCHEMA_VERSION == 20
 
     def test_fresh_database_has_supplier_capabilities_table(self, db_path):
         conn = sqlite3.connect(str(db_path))
@@ -277,6 +277,7 @@ class TestEnrichContactDetails:
         assert result == {
             "primary_email_set": False, "secondary_emails_added": 0,
             "primary_phone_set": False, "contact_form_url_set": False,
+            "whatsapp_set": False, "wechat_id_set": False, "source_pages_added": 0,
         }
 
     def test_nonexistent_supplier_does_not_raise(self, repo):

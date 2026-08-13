@@ -16,11 +16,13 @@ from batch.csv_exporter import flatten_batch_results
 
 
 class FakeRepo:
-    def __init__(self, suppliers=None, field_provenance=None):
+    def __init__(self, suppliers=None, field_provenance=None, phone_numbers=None):
         self._suppliers = suppliers or {}
         # supplier_id -> list of {"field_name": ..., "value": ...} dicts,
         # oldest first -- matches the real repository's ORDER BY created_at.
         self._field_provenance = field_provenance or {}
+        # supplier_id -> list of {"phone_number": ..., "phone_type": ...} dicts.
+        self._phone_numbers = phone_numbers or {}
         self.get_supplier_calls = []
 
     def get_supplier(self, supplier_id):
@@ -32,6 +34,9 @@ class FakeRepo:
         if field_name is None:
             return entries
         return [e for e in entries if e.get("field_name") == field_name]
+
+    def get_phone_numbers(self, supplier_id):
+        return self._phone_numbers.get(supplier_id, [])
 
 
 def _read_csv(text):
@@ -132,7 +137,7 @@ class TestResolvedSupplierFields:
             "status": "success", "company_name": "Acme Co", "name_source": "csv",
             "supplier_id": 5, "error_message": None,
         }]
-        csv_text = flatten_batch_results(rows, repo=repo)
+        csv_text = flatten_batch_results(rows, repo=repo, excel_safe_phone=False)
         parsed = _read_csv(csv_text)
         assert parsed[0]["resolved_domain"] == "acmetrailer.com"
         assert parsed[0]["primary_email"] == "sales@acmetrailer.com"
@@ -176,6 +181,110 @@ class TestResolvedSupplierFields:
         csv_text = flatten_batch_results(rows, repo=repo)  # must not raise
         parsed = _read_csv(csv_text)
         assert parsed[0]["resolved_domain"] == ""
+
+
+class TestPhoneAndEmailColumns:
+
+    def test_secondary_emails_joined_with_semicolons(self):
+        repo = FakeRepo(suppliers={5: {
+            "id": 5, "canonical_name": "Acme Co",
+            "secondary_emails": ["sales@acme.com", "support@acme.com"],
+        }})
+        rows = [{
+            "row_index": 0, "original_columns": {"Company Name": "Acme Co"},
+            "status": "success", "company_name": "Acme Co", "name_source": "csv",
+            "supplier_id": 5, "error_message": None,
+        }]
+        parsed = _read_csv(flatten_batch_results(rows, repo=repo))
+        assert parsed[0]["secondary_emails"] == "sales@acme.com; support@acme.com"
+
+    def test_secondary_emails_blank_when_empty(self):
+        repo = FakeRepo(suppliers={5: {"id": 5, "canonical_name": "Acme Co"}})
+        rows = [{
+            "row_index": 0, "original_columns": {"Company Name": "Acme Co"},
+            "status": "success", "company_name": "Acme Co", "name_source": "csv",
+            "supplier_id": 5, "error_message": None,
+        }]
+        parsed = _read_csv(flatten_batch_results(rows, repo=repo))
+        assert parsed[0]["secondary_emails"] == ""
+
+    def test_all_phones_shows_number_and_type_pairs(self):
+        repo = FakeRepo(
+            suppliers={5: {"id": 5, "canonical_name": "Acme Co"}},
+            phone_numbers={5: [
+                {"phone_number": "+862112345678", "phone_type": "landline"},
+                {"phone_number": "+8613800001111", "phone_type": "mobile"},
+            ]},
+        )
+        rows = [{
+            "row_index": 0, "original_columns": {"Company Name": "Acme Co"},
+            "status": "success", "company_name": "Acme Co", "name_source": "csv",
+            "supplier_id": 5, "error_message": None,
+        }]
+        parsed = _read_csv(flatten_batch_results(rows, repo=repo))
+        assert parsed[0]["all_phones"] == "+862112345678 (landline); +8613800001111 (mobile)"
+
+    def test_source_pages_joined_with_semicolons(self):
+        repo = FakeRepo(suppliers={5: {
+            "id": 5, "canonical_name": "Acme Co",
+            "contact_source_pages": ["https://acme.com/", "https://acme.com/contact"],
+        }})
+        rows = [{
+            "row_index": 0, "original_columns": {"Company Name": "Acme Co"},
+            "status": "success", "company_name": "Acme Co", "name_source": "csv",
+            "supplier_id": 5, "error_message": None,
+        }]
+        parsed = _read_csv(flatten_batch_results(rows, repo=repo))
+        assert parsed[0]["source_pages"] == "https://acme.com/; https://acme.com/contact"
+
+
+class TestExcelSafePhone:
+
+    def test_default_wraps_primary_phone_as_a_formula_string(self):
+        repo = FakeRepo(suppliers={5: {"id": 5, "canonical_name": "Acme Co", "primary_phone": "+865462883156"}})
+        rows = [{
+            "row_index": 0, "original_columns": {"Company Name": "Acme Co"},
+            "status": "success", "company_name": "Acme Co", "name_source": "csv",
+            "supplier_id": 5, "error_message": None,
+        }]
+        parsed = _read_csv(flatten_batch_results(rows, repo=repo))
+        assert parsed[0]["primary_phone"] == '="+865462883156"'
+
+    def test_excel_safe_phone_false_produces_a_plain_value(self):
+        repo = FakeRepo(suppliers={5: {"id": 5, "canonical_name": "Acme Co", "primary_phone": "+865462883156"}})
+        rows = [{
+            "row_index": 0, "original_columns": {"Company Name": "Acme Co"},
+            "status": "success", "company_name": "Acme Co", "name_source": "csv",
+            "supplier_id": 5, "error_message": None,
+        }]
+        parsed = _read_csv(flatten_batch_results(rows, repo=repo, excel_safe_phone=False))
+        assert parsed[0]["primary_phone"] == "+865462883156"
+
+    def test_empty_primary_phone_is_not_wrapped(self):
+        repo = FakeRepo(suppliers={5: {"id": 5, "canonical_name": "Acme Co"}})
+        rows = [{
+            "row_index": 0, "original_columns": {"Company Name": "Acme Co"},
+            "status": "success", "company_name": "Acme Co", "name_source": "csv",
+            "supplier_id": 5, "error_message": None,
+        }]
+        parsed = _read_csv(flatten_batch_results(rows, repo=repo))
+        assert parsed[0]["primary_phone"] == ""
+
+    def test_all_phones_column_is_never_wrapped(self):
+        """all_phones mixes numbers with text labels/semicolons -- not
+        pure-numeric, so Excel isn't misreading it as a number today;
+        wrapping it would be pointless and would obscure the labels."""
+        repo = FakeRepo(
+            suppliers={5: {"id": 5, "canonical_name": "Acme Co"}},
+            phone_numbers={5: [{"phone_number": "+8613800001111", "phone_type": "mobile"}]},
+        )
+        rows = [{
+            "row_index": 0, "original_columns": {"Company Name": "Acme Co"},
+            "status": "success", "company_name": "Acme Co", "name_source": "csv",
+            "supplier_id": 5, "error_message": None,
+        }]
+        parsed = _read_csv(flatten_batch_results(rows, repo=repo))
+        assert parsed[0]["all_phones"] == "+8613800001111 (mobile)"
 
 
 class TestFailedRows:

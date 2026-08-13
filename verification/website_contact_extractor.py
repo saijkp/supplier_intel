@@ -66,6 +66,23 @@ _JUNK_DOMAINS = {
     "godaddy.com", "yourcompany.com",
 }
 
+# Common ways a page written for humans (not scrapers) obfuscates an
+# email address to dodge naive scrapers -- checked case-insensitively,
+# as a text-level substitution BEFORE re-running the same strict
+# _EMAIL_RE below, not a separate looser regex -- every existing
+# junk-filter (image-extension TLDs, junk local parts/domains) still
+# applies unchanged to whatever this normalises into a real-looking
+# address. Found via a real calibration run: "info[at]ap-bochum.de"
+# was missed entirely before this.
+_AT_MARKERS = (r"\[\s*at\s*\]", r"\(\s*at\s*\)", r"\s+at\s+")
+_DOT_MARKERS = (r"\[\s*dot\s*\]", r"\(\s*dot\s*\)", r"\s+dot\s+")
+
+
+@dataclasses.dataclass(frozen=True)
+class PhoneFinding:
+    number: str          # E.164
+    phone_type: str      # 'mobile' | 'landline' | 'whatsapp' | 'wechat' | 'fax' | 'other'
+
 
 @dataclasses.dataclass(frozen=True)
 class ContactFindings:
@@ -73,16 +90,35 @@ class ContactFindings:
     phone_numbers: List[str]
     source_url: str
     has_contact_form: bool = False
+    typed_phone_numbers: List[PhoneFinding] = dataclasses.field(default_factory=list)
+
+
+def _deobfuscate_email_markers(text: str) -> str:
+    """Normalises "info[at]domain.de" / "info(at)domain.de" /
+    "info at domain dot de"-style obfuscation into a real "@"/"." --
+    see the module-level comment above _AT_MARKERS for why this is a
+    text substitution rather than a second regex."""
+    for pattern in _AT_MARKERS:
+        text = re.sub(pattern, "@", text, flags=re.IGNORECASE)
+    for pattern in _DOT_MARKERS:
+        text = re.sub(pattern, ".", text, flags=re.IGNORECASE)
+    return text
 
 
 def extract_emails(text: str) -> List[str]:
     """Every plausible, non-junk email address in `text`, deduplicated
     and lowercased, in first-seen order. See the module docstring for
-    why `_IMAGE_EXTENSION_TLDS` matters here specifically.
+    why `_IMAGE_EXTENSION_TLDS` matters here specifically. Also finds
+    obfuscated addresses (see `_deobfuscate_email_markers`) by re-
+    running this same regex over a de-obfuscated copy of `text` and
+    unioning the results -- both passes share the identical filtering
+    below, so an obfuscated junk address is rejected exactly like a
+    plain one would be.
     """
     seen: List[str] = []
     seen_set = set()
-    for match in _EMAIL_RE.findall(text):
+    candidates = _EMAIL_RE.findall(text) + _EMAIL_RE.findall(_deobfuscate_email_markers(text))
+    for match in candidates:
         candidate = match.lower().strip(".")
         local_part, _, domain = candidate.partition("@")
         if not domain:
@@ -133,6 +169,89 @@ def extract_phone_numbers(text: str, default_region: Optional[str] = None) -> Li
     return seen
 
 
+# How far back (characters) from a matched number's start position to
+# scan for a WhatsApp/WeChat/fax label -- see _classify_phone_type.
+_TYPE_CONTEXT_WINDOW = 40
+_WHATSAPP_KEYWORDS = ("whatsapp",)
+_WECHAT_KEYWORDS = ("wechat", "weixin", "微信")
+_FAX_KEYWORDS = ("fax", "传真")
+
+
+def _classify_phone_type(parsed_number: "phonenumbers.PhoneNumber", context_text: str) -> str:
+    """'mobile' | 'landline' | 'whatsapp' | 'wechat' | 'fax' | 'other'.
+
+    `context_text` is a short window of page text immediately
+    preceding the matched number -- checked for a WhatsApp/WeChat/fax
+    label, which OVERRIDES phonenumbers' own mobile/landline
+    classification: a labelled use is a more specific signal than the
+    number's format alone (a WhatsApp number IS ordinarily a mobile
+    number; the label is what makes it actionable for the "reaches a
+    salesperson directly" purpose the label exists to signal).
+    Everything else falls back to `phonenumbers.number_type()`, which
+    classifies mobile vs. landline for free -- no LLM call, matching
+    this module's whole reason for existing (see module docstring)."""
+    haystack = context_text.lower()
+    if any(kw in haystack for kw in _FAX_KEYWORDS):
+        return "fax"
+    if any(kw in haystack for kw in _WHATSAPP_KEYWORDS):
+        return "whatsapp"
+    if any(kw in haystack for kw in _WECHAT_KEYWORDS):
+        return "wechat"
+
+    number_type = phonenumbers.number_type(parsed_number)
+    if number_type == phonenumbers.PhoneNumberType.MOBILE:
+        return "mobile"
+    if number_type == phonenumbers.PhoneNumberType.FIXED_LINE:
+        return "landline"
+    if number_type == phonenumbers.PhoneNumberType.FIXED_LINE_OR_MOBILE:
+        return "mobile"  # ambiguous by format alone -- mobile is the more useful default
+    return "other"
+
+
+def extract_typed_phone_numbers(text: str, default_region: Optional[str] = None) -> List[PhoneFinding]:
+    """Like `extract_phone_numbers`, but classifies each number's type
+    (see `_classify_phone_type`) instead of returning a flat list of
+    bare numbers -- `extract_phone_numbers` itself is untouched, so
+    every existing caller of that function sees no change in
+    behaviour. Deduplicated by (number, type) pair, in first-seen
+    order -- the SAME number found again under a DIFFERENT type (e.g.
+    also explicitly labelled WhatsApp elsewhere on the page) is kept
+    as a second, legitimate finding, not merged away.
+
+    Found via a real calibration run: 6 of 20 suppliers had a mobile
+    number displayed on their site that the old (still-existing,
+    untouched) `extract_phone_numbers`/`enrich_contact_details` path
+    silently discarded -- only the first number found ever made it
+    into storage. This is the fix: every number is kept, with enough
+    context (a type label) to tell them apart.
+    """
+    findings: List[PhoneFinding] = []
+    seen: set = set()
+    try:
+        matches = phonenumbers.PhoneNumberMatcher(text, default_region)
+        previous_end = 0
+        for match in matches:
+            formatted = phonenumbers.format_number(match.number, phonenumbers.PhoneNumberFormat.E164)
+            # Bounded by the previous match's end, not just a fixed
+            # lookback -- otherwise a label like "WhatsApp:" can bleed
+            # into a SECOND, closely-following number's context window
+            # ("WhatsApp: +...111, WeChat: +...222" would otherwise
+            # misclassify the WeChat number as WhatsApp too, since
+            # "whatsapp" is still within a naive fixed-size window).
+            context_start = max(0, match.start - _TYPE_CONTEXT_WINDOW, previous_end)
+            context = text[context_start:match.start]
+            phone_type = _classify_phone_type(match.number, context)
+            key = (formatted, phone_type)
+            if key not in seen:
+                seen.add(key)
+                findings.append(PhoneFinding(number=formatted, phone_type=phone_type))
+            previous_end = match.end
+    except Exception:
+        # Same defensive discipline as extract_phone_numbers above.
+        return findings
+    return findings
+
+
 def country_name_to_region_code(country_name: Optional[str]) -> Optional[str]:
     """Best-effort ISO 3166-1 alpha-2 lookup for `extract_phone_numbers`'s
     `default_region` — e.g. "China" -> "CN". Returns `None` on any
@@ -175,10 +294,12 @@ def extract_contact_details(
     for page in pages:
         emails = extract_emails(page.text)
         phones = extract_phone_numbers(page.text, default_region=default_region)
+        typed_phones = extract_typed_phone_numbers(page.text, default_region=default_region)
         has_form = getattr(page, "has_contact_form", False)
         if emails or phones or has_form:
             findings.append(ContactFindings(
                 emails=emails, phone_numbers=phones, source_url=page.url, has_contact_form=has_form,
+                typed_phone_numbers=typed_phones,
             ))
     return findings
 

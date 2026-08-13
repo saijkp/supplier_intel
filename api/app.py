@@ -365,21 +365,25 @@ async def create_batch_upload_job(
 
 @app.get("/batch/{job_id}/export.csv", dependencies=[Depends(require_api_token)])
 def export_batch_csv(
-    job_id: str, repo: SupplierRepository = Depends(get_repo),
+    job_id: str, plain: bool = False, repo: SupplierRepository = Depends(get_repo),
 ) -> PlainTextResponse:
     """Flattens every row of one batch upload to CSV -- original
     spreadsheet columns preserved on the left, see
     batch/csv_exporter.py's own docstring. Works at any job status (a
     still-running batch just exports whatever rows have been written so
     far), not gated on status='completed', so a very long batch can be
-    partially reviewed without waiting for the whole thing."""
+    partially reviewed without waiting for the whole thing.
+
+    `plain=true`: primary_phone is written as a plain value instead of
+    an Excel-safe formula string (default: Excel-safe, since phone
+    numbers otherwise open as scientific notation in Excel)."""
     from batch.csv_exporter import flatten_batch_results
 
     job = repo.get_pipeline_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Batch job not found")
     rows = repo.get_batch_upload_rows(job_id)
-    csv_text = flatten_batch_results(rows, repo=repo)
+    csv_text = flatten_batch_results(rows, repo=repo, excel_safe_phone=not plain)
     return PlainTextResponse(
         csv_text, media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=batch_{job_id}.csv"},

@@ -26,18 +26,41 @@ from storage.repository import SupplierRepository
 # provenance columns (step 2) extend this, they don't replace it.
 _RESULT_COLUMNS = (
     "status", "company_name", "name_source", "resolved_domain",
-    "primary_email", "primary_phone", "contact_form_url", "country",
+    "primary_email", "secondary_emails", "primary_phone", "all_phones",
+    "contact_form_url", "source_pages", "country",
     "address", "address_candidate",
     "error_message", "name_extraction_note",
 )
 
 
-def flatten_batch_results(rows: List[Dict[str, Any]], repo: Optional[SupplierRepository] = None) -> str:
+def _excel_safe_number(value: str) -> str:
+    """Wraps a numeric-looking string as an Excel formula-string
+    ("="value"") so a long digit sequence (a phone number) doesn't get
+    auto-converted to scientific notation on a plain double-click CSV
+    open -- confirmed necessary even with a leading "+" already present
+    (Excel's own numeric auto-detection still applies to "+"-prefixed
+    long digit strings in at least some locales/versions). A non-Excel
+    reader (plain text editor, a script re-parsing the CSV) sees the
+    literal formula text rather than just the number -- see
+    flatten_batch_results' own `excel_safe_phone` parameter to opt out."""
+    return f'="{value}"'
+
+
+def flatten_batch_results(
+    rows: List[Dict[str, Any]], repo: Optional[SupplierRepository] = None,
+    excel_safe_phone: bool = True,
+) -> str:
     """`rows` is storage.repository.SupplierRepository.get_batch_upload_rows()'s
     own return shape. Returns CSV text (not bytes) -- caller decides
     encoding/response headers. Never raises for a row with no resolved
     supplier (needs_url/needs_name/failed rows) -- those columns are
-    just left blank."""
+    just left blank.
+
+    `excel_safe_phone`: wraps `primary_phone` as an Excel formula-
+    string (see `_excel_safe_number`) so it opens as text, not
+    scientific notation, in Excel -- the default, since that's where
+    this file normally lands. Pass False for a clean, plain
+    machine-readable CSV (e.g. for scripted re-processing)."""
     repo = repo or SupplierRepository()
 
     # Union of every original column across all rows, in first-seen
@@ -64,6 +87,9 @@ def flatten_batch_results(rows: List[Dict[str, Any]], repo: Optional[SupplierRep
     # would show no evidence at all of whether extraction worked, since
     # the applied `address` column just echoes the pre-existing value.
     address_candidate_cache: Dict[int, str] = {}
+    # All typed phone numbers per supplier (supplier_phone_numbers) --
+    # see storage.repository.save_phone_numbers/get_phone_numbers.
+    phone_numbers_cache: Dict[int, List[Dict[str, Any]]] = {}
 
     for row in rows:
         original = row.get("original_columns") or {}
@@ -72,6 +98,7 @@ def flatten_batch_results(rows: List[Dict[str, Any]], repo: Optional[SupplierRep
         supplier_id = row.get("supplier_id")
         supplier: Optional[Dict[str, Any]] = None
         address_candidate = ""
+        all_phones = ""
         if supplier_id is not None:
             if supplier_id not in supplier_cache:
                 supplier_cache[supplier_id] = repo.get_supplier(supplier_id)
@@ -82,6 +109,12 @@ def flatten_batch_results(rows: List[Dict[str, Any]], repo: Optional[SupplierRep
                 address_candidate_cache[supplier_id] = (entries[-1].get("value") or "") if entries else ""
             address_candidate = address_candidate_cache[supplier_id]
 
+            if supplier_id not in phone_numbers_cache:
+                phone_numbers_cache[supplier_id] = repo.get_phone_numbers(supplier_id)
+            all_phones = "; ".join(
+                f'{p["phone_number"]} ({p["phone_type"]})' for p in phone_numbers_cache[supplier_id]
+            )
+
         # Prefer the live supplier record's canonical_name over the
         # batch row's own snapshot -- it's the authoritative, current
         # value (could have changed since this row was written, e.g.
@@ -89,14 +122,21 @@ def flatten_batch_results(rows: List[Dict[str, Any]], repo: Optional[SupplierRep
         # row-level copy is a consistency nicety, not the source of truth.
         company_name = (supplier or {}).get("canonical_name") or row.get("company_name") or ""
 
+        primary_phone = (supplier or {}).get("primary_phone") or ""
+        if primary_phone and excel_safe_phone:
+            primary_phone = _excel_safe_number(primary_phone)
+
         result_values = [
             row.get("status") or "",
             company_name,
             row.get("name_source") or "",
             (supplier or {}).get("domain") or "",
             (supplier or {}).get("primary_email") or "",
-            (supplier or {}).get("primary_phone") or "",
+            "; ".join((supplier or {}).get("secondary_emails") or []),
+            primary_phone,
+            all_phones,
             (supplier or {}).get("contact_form_url") or "",
+            "; ".join((supplier or {}).get("contact_source_pages") or []),
             (supplier or {}).get("country") or "",
             (supplier or {}).get("address") or "",
             address_candidate,

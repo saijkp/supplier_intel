@@ -11,11 +11,13 @@ from __future__ import annotations
 
 from verification.website_contact_extractor import (
     ContactFindings,
+    PhoneFinding,
     best_contact_method,
     country_name_to_region_code,
     extract_contact_details,
     extract_emails,
     extract_phone_numbers,
+    extract_typed_phone_numbers,
 )
 
 
@@ -69,6 +71,47 @@ class TestJunkFiltering:
         assert extract_emails("sales@sentry.io") == []
 
 
+class TestObfuscatedEmails:
+    """Found via a real calibration run: "info[at]ap-bochum.de" was
+    missed entirely before this."""
+
+    def test_bracket_at_marker(self):
+        assert extract_emails("Email us: info[at]ap-bochum.de for details") == ["info@ap-bochum.de"]
+
+    def test_paren_at_marker(self):
+        assert extract_emails("Email us: info(at)ap-bochum.de for details") == ["info@ap-bochum.de"]
+
+    def test_spaced_at_word(self):
+        assert extract_emails("Reach us at info at ap-bochum.de anytime") == ["info@ap-bochum.de"]
+
+    def test_bracket_dot_marker(self):
+        assert extract_emails("Contact: info[at]ap-bochum[dot]de") == ["info@ap-bochum.de"]
+
+    def test_paren_dot_marker(self):
+        assert extract_emails("Contact: info(at)ap-bochum(dot)de") == ["info@ap-bochum.de"]
+
+    def test_spaced_dot_word(self):
+        assert extract_emails("Contact: info at ap-bochum dot de") == ["info@ap-bochum.de"]
+
+    def test_case_insensitive_markers(self):
+        assert extract_emails("Contact: info[AT]ap-bochum[DOT]de") == ["info@ap-bochum.de"]
+
+    def test_obfuscated_and_plain_emails_both_found(self):
+        text = "Sales: sales@acme.com. Support: support[at]acme.com."
+        assert extract_emails(text) == ["sales@acme.com", "support@acme.com"]
+
+    def test_obfuscated_junk_domain_is_still_excluded(self):
+        assert extract_emails("test[at]test.com") == []
+
+    def test_ordinary_prose_with_the_word_at_produces_no_false_positive(self):
+        """The " at " marker is the riskiest one -- it's an ordinary
+        English word. Confirms the strict email-shape regex still
+        gates the substitution's output, so plain prose never
+        accidentally forms something email-shaped."""
+        text = "Look at our new products at booth 5 during the trade show this year."
+        assert extract_emails(text) == []
+
+
 class TestExtractPhoneNumbers:
 
     def test_finds_a_number_with_explicit_country_code(self):
@@ -98,6 +141,76 @@ class TestExtractPhoneNumbers:
         # one page abort a batch run.
         assert extract_phone_numbers("") == []
         assert extract_phone_numbers("+" * 50) == []
+
+
+class TestExtractTypedPhoneNumbers:
+    """Found via a real calibration run: 6 of 20 suppliers had a
+    mobile number displayed that the old first-number-only path
+    silently discarded. This is the fix -- every number is kept, with
+    a type label so they can be told apart."""
+
+    def test_mobile_number_classified_via_phonenumbers_library(self):
+        findings = extract_typed_phone_numbers("Mobile: +8613800001111")
+        assert findings == [PhoneFinding(number="+8613800001111", phone_type="mobile")]
+
+    def test_landline_number_classified_via_phonenumbers_library(self):
+        findings = extract_typed_phone_numbers("Tel: +862112345678")
+        assert findings == [PhoneFinding(number="+862112345678", phone_type="landline")]
+
+    def test_both_a_landline_and_a_mobile_are_kept_not_just_the_first(self):
+        """The exact bug: a landline appearing first in page order must
+        not cause the mobile number later in the same text to be lost."""
+        text = "Tel: +862112345678, Mobile: +8613800001111"
+        findings = extract_typed_phone_numbers(text)
+        assert len(findings) == 2
+        types = {f.phone_type for f in findings}
+        assert types == {"landline", "mobile"}
+
+    def test_whatsapp_label_overrides_mobile_landline_classification(self):
+        findings = extract_typed_phone_numbers("WhatsApp: +8613800001111")
+        assert findings == [PhoneFinding(number="+8613800001111", phone_type="whatsapp")]
+
+    def test_wechat_label_is_detected(self):
+        findings = extract_typed_phone_numbers("WeChat: +8613800001111")
+        assert findings[0].phone_type == "wechat"
+
+    def test_fax_label_is_detected(self):
+        findings = extract_typed_phone_numbers("Fax: +862112345678")
+        assert findings[0].phone_type == "fax"
+
+    def test_same_number_labelled_differently_on_different_lines_produces_two_findings(self):
+        text = "Mobile: +8613800001111\nWhatsApp: +8613800001111"
+        findings = extract_typed_phone_numbers(text)
+        assert len(findings) == 2
+        assert {f.phone_type for f in findings} == {"mobile", "whatsapp"}
+
+    def test_a_labels_context_does_not_bleed_into_a_second_nearby_number(self):
+        """A closely-following second number must not inherit the
+        first number's label just because it's still within a naive
+        fixed-size lookback window."""
+        text = "WhatsApp: +8613800001111, WeChat: +8613900002222"
+        findings = extract_typed_phone_numbers(text)
+        by_number = {f.number: f.phone_type for f in findings}
+        assert by_number["+8613800001111"] == "whatsapp"
+        assert by_number["+8613900002222"] == "wechat"
+
+    def test_region_hint_is_respected_same_as_extract_phone_numbers(self):
+        findings = extract_typed_phone_numbers("Tel: 021-1234 5678", default_region="CN")
+        assert len(findings) == 1
+        assert findings[0].number.startswith("+86")
+
+    def test_no_numbers_returns_empty_list(self):
+        assert extract_typed_phone_numbers("We manufacture trailer components.") == []
+
+    def test_malformed_input_never_raises(self):
+        assert extract_typed_phone_numbers("") == []
+        assert extract_typed_phone_numbers("+" * 50) == []
+
+    def test_extract_phone_numbers_itself_is_unchanged(self):
+        """Backward compatibility: existing callers of the flat-list
+        function must see identical behaviour."""
+        text = "Tel: +862112345678, Mobile: +8613800001111"
+        assert extract_phone_numbers(text) == ["+862112345678", "+8613800001111"]
 
 
 class TestCountryNameToRegionCode:
@@ -130,6 +243,11 @@ class TestExtractContactDetails:
         assert len(findings) == 2
         assert findings[0].phone_numbers == ["+8657487654321"]
         assert findings[1].emails == ["sales@acme.example.com"]
+
+    def test_typed_phone_numbers_are_populated_alongside_the_flat_list(self):
+        pages = [_FakePage("https://acme.example.com/contact", "Mobile: +8613800001111")]
+        findings = extract_contact_details(pages)
+        assert findings[0].typed_phone_numbers == [PhoneFinding(number="+8613800001111", phone_type="mobile")]
 
     def test_page_with_neither_is_excluded_from_results(self):
         pages = [

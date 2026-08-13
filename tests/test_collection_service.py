@@ -237,6 +237,119 @@ class TestContactExtraction:
         assert outcome["contact_emails_added"] == 0
         assert outcome["contact_phones_added"] == 0
 
+    def test_all_typed_phone_numbers_are_saved_not_just_the_first(self, repo):
+        """The bug found via a real calibration run: a landline
+        appearing first in page text must not cause a later mobile
+        number to be lost -- primary_phone still only holds the first
+        (unchanged), but supplier_phone_numbers keeps everything."""
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(
+                    url="https://acme.example.com/contact",
+                    text="Tel: +862112345678, Mobile: +8613800001111",
+                    has_contact_form=False,
+                ),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        outcome = service.collect(supplier_id)
+
+        assert outcome["contact_phone_types_saved"] == 2
+        supplier = repo.get_supplier(supplier_id)
+        assert supplier["primary_phone"] == "+862112345678"  # first found, unchanged behaviour
+
+        phones = repo.get_phone_numbers(supplier_id)
+        assert len(phones) == 2
+        by_type = {p["phone_type"]: p["phone_number"] for p in phones}
+        assert by_type == {"landline": "+862112345678", "mobile": "+8613800001111"}
+        assert all(p["source_url"] == "https://acme.example.com/contact" for p in phones)
+
+    def test_repeat_collection_does_not_duplicate_phone_rows(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://acme.example.com/contact", text="Mobile: +8613800001111", has_contact_form=False),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        service.collect(supplier_id)
+        second_outcome = service.collect(supplier_id)
+
+        assert second_outcome["contact_phone_types_saved"] == 0  # already on file, nothing new inserted
+        assert len(repo.get_phone_numbers(supplier_id)) == 1
+
+    def test_whatsapp_and_wechat_gap_fill_from_context_labelled_numbers(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(
+                    url="https://acme.example.com/contact",
+                    text="WhatsApp: +8613800001111, WeChat: +8613900002222",
+                    has_contact_form=False,
+                ),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        service.collect(supplier_id)
+
+        supplier = repo.get_supplier(supplier_id)
+        assert supplier["whatsapp"] == "+8613800001111"
+        assert supplier["wechat_id"] == "+8613900002222"
+
+    def test_whatsapp_gap_fill_never_overwrites_an_existing_value(self, repo):
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Acme", "domain": "acme.example.com", "whatsapp": "+10000000000",
+        })
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://acme.example.com/contact", text="WhatsApp: +8613800001111", has_contact_form=False),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        service.collect(supplier_id)
+
+        assert repo.get_supplier(supplier_id)["whatsapp"] == "+10000000000"
+
+    def test_contact_source_pages_accumulates_distinct_urls(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://acme.example.com/", text="Tel: +862112345678", has_contact_form=False),
+                CollectedPage(url="https://acme.example.com/contact", text="Email: sales@acme.example.com", has_contact_form=False),
+                CollectedPage(url="https://acme.example.com/about", text="Founded in 1998.", has_contact_form=False),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        service.collect(supplier_id)
+
+        supplier = repo.get_supplier(supplier_id)
+        assert set(supplier["contact_source_pages"]) == {
+            "https://acme.example.com/", "https://acme.example.com/contact",
+        }
+
+    def test_obfuscated_email_is_found_through_the_full_collection_path(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(
+                    url="https://acme.example.com/contact",
+                    text="Email us: info[at]acme.example.com for a quote.",
+                    has_contact_form=False,
+                ),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        service.collect(supplier_id)
+
+        assert repo.get_supplier(supplier_id)["primary_email"] == "info@acme.example.com"
+
 
 class TestCertificateDocuments:
     """SiteCollector already downloaded/saved certificate files during

@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 SUPPLIER_JSON_FIELDS: Sequence[str] = (
     "aliases",
     "secondary_emails",
+    "contact_source_pages",
     "e_mark_numbers",
     "other_certifications",
     "primary_categories",
@@ -70,7 +71,8 @@ SUPPLIER_WRITABLE_FIELDS: Sequence[str] = (
     "canonical_name", "aliases", "domain",
     "country", "province_state", "city", "address",
     "primary_email", "secondary_emails", "primary_phone",
-    "whatsapp", "wechat_id", "linkedin_url", "contact_name", "contact_title",
+    "whatsapp", "wechat_id", "contact_source_pages",
+    "linkedin_url", "contact_name", "contact_title",
     "uscc", "uscc_verified", "uscc_verified_at", "company_reg_number",
     "is_manufacturer", "manufacturer_confidence", "year_established",
     "employee_count", "factory_size_sqm", "annual_revenue_usd",
@@ -1231,6 +1233,8 @@ class SupplierRepository:
     def enrich_contact_details(
         self, supplier_id: int, *, emails: List[str], phones: List[str],
         contact_form_url: Optional[str] = None,
+        whatsapp: Optional[str] = None, wechat_id: Optional[str] = None,
+        source_pages: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Fold website-discovered contact details into a supplier
         record, filling gaps only — never overwriting a value already
@@ -1245,13 +1249,31 @@ class SupplierRepository:
         `primary_email`/`primary_phone` are set only if currently
         empty. Every email beyond the first (or every email at all, if
         `primary_email` was already set) is added to `secondary_emails`,
-        deduplicated against what's already there. Extra phone numbers
-        beyond the first are currently dropped, not stored — the
-        schema has no `secondary_phones` column, unlike
-        `secondary_emails`; a real, disclosed limitation rather than a
-        silent one. `whatsapp`/`wechat_id` are never inferred from a
-        generic phone number, since neither can be reliably
-        distinguished from an ordinary phone number by pattern alone.
+        deduplicated against what's already there.
+
+        `phones` is still used only for `primary_phone` (first found,
+        gap-fill only) — the FULL set of typed phone numbers is a
+        separate concern, see `save_phone_numbers` (a supplier can have
+        several real numbers -- landline, mobile, WhatsApp, WeChat-
+        linked, fax -- which don't fit a single scalar column; this
+        method's job stays "what goes directly on the suppliers row").
+
+        `whatsapp`/`wechat_id`: gap-fill only, same discipline as
+        primary_email/primary_phone -- pass the caller's own
+        context-detected WhatsApp number / WeChat ID (see
+        `verification.website_contact_extractor`'s phone-type
+        classification), never inferred here from a generic phone
+        number alone.
+
+        `source_pages`: unlike the gap-fill fields above, this
+        ACCUMULATES -- every distinct page URL that contributed any
+        contact finding is unioned into `contact_source_pages`,
+        deduplicated, never replaced, matching the same
+        "evidence accumulates across sources" JSON-array-merge
+        philosophy `merge_into_golden` already uses. Row-level (which
+        pages contributed something), not per-value -- per-value
+        source lives on `supplier_phone_numbers.source_url` /
+        `field_provenance`.
 
         `contact_form_url` is filled only when the supplier still has
         no `primary_email` after this call and no `contact_form_url`
@@ -1271,12 +1293,14 @@ class SupplierRepository:
             return {
                 "primary_email_set": False, "secondary_emails_added": 0,
                 "primary_phone_set": False, "contact_form_url_set": False,
+                "whatsapp_set": False, "wechat_id_set": False, "source_pages_added": 0,
             }
 
         fields: Dict[str, Any] = {}
         result = {
             "primary_email_set": False, "secondary_emails_added": 0,
             "primary_phone_set": False, "contact_form_url_set": False,
+            "whatsapp_set": False, "wechat_id_set": False, "source_pages_added": 0,
         }
 
         remaining_emails = list(emails)
@@ -1301,6 +1325,26 @@ class SupplierRepository:
             fields["primary_phone"] = phones[0]
             result["primary_phone_set"] = True
 
+        if not existing.get("whatsapp") and whatsapp:
+            fields["whatsapp"] = whatsapp
+            result["whatsapp_set"] = True
+
+        if not existing.get("wechat_id") and wechat_id:
+            fields["wechat_id"] = wechat_id
+            result["wechat_id_set"] = True
+
+        if source_pages:
+            existing_pages = existing.get("contact_source_pages") or []
+            new_pages = list(existing_pages)
+            added = 0
+            for url in source_pages:
+                if url and url not in new_pages:
+                    new_pages.append(url)
+                    added += 1
+            if added:
+                fields["contact_source_pages"] = new_pages
+                result["source_pages_added"] = added
+
         has_email_now = bool(existing.get("primary_email")) or result["primary_email_set"]
         if contact_form_url and not has_email_now and not existing.get("contact_form_url"):
             fields["contact_form_url"] = contact_form_url
@@ -1310,6 +1354,41 @@ class SupplierRepository:
             self.update_supplier_fields(supplier_id, fields)
 
         return result
+
+    def save_phone_numbers(self, supplier_id: int, phones: List[Dict[str, Any]]) -> int:
+        """Insert-or-ignore per (supplier_id, phone_number, phone_type)
+        -- see supplier_phone_numbers' own SCHEMA_SQL comment for why
+        this is a dedicated table rather than a scalar/JSON column: a
+        supplier can have several real numbers, each independently
+        worth keeping, unlike primary_phone's one-value-only shape.
+        `phones` is a list of {"phone_number", "phone_type",
+        "source_url"} dicts. Returns how many rows were newly inserted
+        (for pipeline stats) -- a repeat collection run re-finding the
+        same (number, type) pair is a no-op, not an error."""
+        if not phones:
+            return 0
+        inserted = 0
+        with connection_scope(self.db_path) as conn:
+            for phone in phones:
+                cur = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO supplier_phone_numbers
+                        (supplier_id, phone_number, phone_type, source_url)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (supplier_id, phone["phone_number"], phone["phone_type"], phone.get("source_url")),
+                )
+                if cur.rowcount:
+                    inserted += 1
+        return inserted
+
+    def get_phone_numbers(self, supplier_id: int) -> List[Dict[str, Any]]:
+        with connection_scope(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM supplier_phone_numbers WHERE supplier_id = ? ORDER BY extracted_at",
+                (supplier_id,),
+            ).fetchall()
+            return _rows_to_dicts(rows)
 
     def record_factory_photo_assessment(
         self, supplier_id: int, *, photo_urls: List[str], verdict: str

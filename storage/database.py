@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 
 # ═══════════════════════════════════════════════════════════
@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS suppliers (
     primary_phone           TEXT,
     whatsapp                TEXT,
     wechat_id               TEXT,
+    contact_source_pages    TEXT,               -- JSON array: distinct page URLs that contributed any email/phone finding during collection (v20) -- row-level, not per-value; per-value source lives on supplier_phone_numbers.source_url / field_provenance
     linkedin_url            TEXT,
     contact_name            TEXT,
     contact_title           TEXT,
@@ -605,6 +606,32 @@ CREATE TABLE IF NOT EXISTS field_provenance (
 
 CREATE INDEX IF NOT EXISTS idx_field_provenance_supplier ON field_provenance(supplier_id);
 CREATE INDEX IF NOT EXISTS idx_field_provenance_field ON field_provenance(supplier_id, field_name);
+
+
+-- Per-phone findings (v20): a supplier can have several real phone
+-- numbers (landline, mobile, WhatsApp, WeChat-linked, fax) and the
+-- pre-v20 schema only ever kept one (suppliers.primary_phone) --
+-- everything else found was silently discarded, found via a real
+-- calibration run (6 of 20 suppliers had a mobile number displayed on
+-- their site that never made it into any column). phone_type is
+-- classified for free via phonenumbers.number_type() for the
+-- mobile/landline axis, plus a nearby-text keyword check (no LLM) for
+-- whatsapp/wechat/fax, which aren't a phone *format*, just a labelled
+-- use of one. UNIQUE on (supplier_id, phone_number, phone_type) so a
+-- repeat collection run doesn't duplicate rows -- the SAME number
+-- found again under a DIFFERENT type (e.g. also explicitly labelled
+-- "WhatsApp" on a different page) is a second, legitimate row.
+CREATE TABLE IF NOT EXISTS supplier_phone_numbers (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id     INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    phone_number    TEXT NOT NULL,               -- E.164 formatted
+    phone_type      TEXT NOT NULL CHECK (phone_type IN ('mobile', 'landline', 'whatsapp', 'wechat', 'fax', 'other')),
+    source_url      TEXT,
+    extracted_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (supplier_id, phone_number, phone_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_supplier_phone_numbers_supplier ON supplier_phone_numbers(supplier_id);
 
 
 -- ═══════════════════════════════════════
@@ -1195,6 +1222,44 @@ MIGRATIONS: dict[int, dict] = {
         ),
         "columns": [
             ("batch_upload_rows", "name_extraction_note", "TEXT"),
+        ],
+    },
+    20: {
+        "description": (
+            "Multi-phone capture: supplier_phone_numbers (one row per "
+            "distinct (phone_number, phone_type) pair, source_url "
+            "included) and suppliers.contact_source_pages (JSON array, "
+            "row-level distinct page URLs that contributed any contact "
+            "finding). Found via a real calibration run: "
+            "verification.website_contact_extractor already found every "
+            "phone number on a page, but storage.repository."
+            "enrich_contact_details only ever kept the first one -- "
+            "6 of 20 calibration suppliers had a mobile number (the one "
+            "that actually reaches a salesperson for Chinese suppliers) "
+            "silently discarded because a landline appeared first in "
+            "page order. phone_type is classified for free via "
+            "phonenumbers.number_type() (mobile/landline) plus a nearby-"
+            "text keyword check (no LLM) for whatsapp/wechat/fax, which "
+            "are a labelled USE of a number, not a distinguishable "
+            "format. UNIQUE on (supplier_id, phone_number, phone_type) "
+            "so repeat collection runs don't duplicate rows."
+        ),
+        "columns": [
+            ("suppliers", "contact_source_pages", "TEXT"),
+        ],
+        "statements": [
+            """
+            CREATE TABLE IF NOT EXISTS supplier_phone_numbers (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_id     INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+                phone_number    TEXT NOT NULL,
+                phone_type      TEXT NOT NULL CHECK (phone_type IN ('mobile', 'landline', 'whatsapp', 'wechat', 'fax', 'other')),
+                source_url      TEXT,
+                extracted_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (supplier_id, phone_number, phone_type)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_supplier_phone_numbers_supplier ON supplier_phone_numbers(supplier_id)",
         ],
     },
 }

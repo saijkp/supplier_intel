@@ -488,7 +488,11 @@ def collect(supplier_id: Optional[int], pending: bool, limit: int, force: bool) 
 @click.option("--output", "-o", default=None,
               help="Write the results CSV here once done (default: <csv_path> with a "
                    "_results suffix, next to the input file).")
-def batch_upload(csv_path: str, output: Optional[str]) -> None:
+@click.option("--plain", is_flag=True, default=False,
+              help="Write primary_phone as a plain value instead of an Excel-safe formula "
+                   "string (default: Excel-safe, since phone numbers otherwise open as "
+                   "scientific notation in Excel). Use --plain for a clean, machine-readable CSV.")
+def batch_upload(csv_path: str, output: Optional[str], plain: bool) -> None:
     """Enrich a spreadsheet of companies through the exact same
     single-company enrichment path collect/discover already use --
     SupplierMatcher.resolve_and_store() then CollectionService.collect()
@@ -548,7 +552,7 @@ def batch_upload(csv_path: str, output: Optional[str]) -> None:
     console.print(table)
 
     rows = repo.get_batch_upload_rows(job_id)
-    csv_text = flatten_batch_results(rows, repo=repo)
+    csv_text = flatten_batch_results(rows, repo=repo, excel_safe_phone=not plain)
     output_path = output or f"{Path(csv_path).with_suffix('')}_results.csv"
     with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
         f.write(csv_text)
