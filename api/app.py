@@ -36,12 +36,13 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, Response
 
 from api.auth import require_api_token
 from api.jobs import (
+    run_batch_job,
     run_collection_job,
     run_contacts_job,
     run_discovery_job,
@@ -325,6 +326,64 @@ def create_collection_job(
     background_tasks.add_task(run_collection_job, job_id, options)
     job = repo.get_pipeline_job(job_id)
     return _to_job_response(job)
+
+
+@app.post(
+    "/batch/upload",
+    response_model=PipelineJobResponse,
+    status_code=202,
+    dependencies=[Depends(require_api_token)],
+)
+async def create_batch_upload_job(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    repo: SupplierRepository = Depends(get_repo),
+) -> PipelineJobResponse:
+    """CSV batch upload -- one job per uploaded file, processed row by
+    row through batch.batch_service.BatchService (each row going
+    through the exact same SupplierMatcher.resolve_and_store() +
+    CollectionService.collect() single-company path every other source
+    already uses, see that module's own docstring). Poll
+    GET /pipeline/jobs/{id} for progress/completion, same as every
+    other job type; download results via GET /batch/{id}/export.csv
+    once status is 'completed'. The only endpoint in this API that
+    accepts a file upload -- read fully into memory before scheduling
+    the background task, since an UploadFile's underlying stream isn't
+    guaranteed to stay valid past this request's lifecycle."""
+    csv_bytes = await file.read()
+    if not csv_bytes:
+        raise HTTPException(status_code=422, detail="Uploaded file is empty.")
+    job_id = str(uuid.uuid4())
+    repo.create_pipeline_job(
+        job_id=job_id, query=f"[batch] {file.filename or 'upload.csv'}",
+        options={"filename": file.filename},
+    )
+    background_tasks.add_task(run_batch_job, job_id, csv_bytes)
+    job = repo.get_pipeline_job(job_id)
+    return _to_job_response(job)
+
+
+@app.get("/batch/{job_id}/export.csv", dependencies=[Depends(require_api_token)])
+def export_batch_csv(
+    job_id: str, repo: SupplierRepository = Depends(get_repo),
+) -> PlainTextResponse:
+    """Flattens every row of one batch upload to CSV -- original
+    spreadsheet columns preserved on the left, see
+    batch/csv_exporter.py's own docstring. Works at any job status (a
+    still-running batch just exports whatever rows have been written so
+    far), not gated on status='completed', so a very long batch can be
+    partially reviewed without waiting for the whole thing."""
+    from batch.csv_exporter import flatten_batch_results
+
+    job = repo.get_pipeline_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Batch job not found")
+    rows = repo.get_batch_upload_rows(job_id)
+    csv_text = flatten_batch_results(rows, repo=repo)
+    return PlainTextResponse(
+        csv_text, media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=batch_{job_id}.csv"},
+    )
 
 
 @app.post(

@@ -1544,6 +1544,102 @@ class SupplierRepository:
             )
 
     # ═════════════════════════════════════════════════════
+    # CSV batch upload (v18) -- see batch/batch_service.py. batch_job_id
+    # is a pipeline_jobs.id; row-level tracking lives here specifically
+    # so the original spreadsheet columns survive untouched through to
+    # export regardless of enrichment outcome, and so needs_url/
+    # needs_name rows are queryable without parsing a JSON blob.
+    # ═════════════════════════════════════════════════════
+
+    def create_batch_upload_row(
+        self, *, batch_job_id: str, row_index: int, original_columns: Dict[str, Any],
+        company_name: Optional[str], name_source: str = "csv", website: Optional[str] = None,
+        status: str = "pending",
+    ) -> int:
+        with connection_scope(self.db_path) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO batch_upload_rows
+                    (batch_job_id, row_index, original_columns, company_name, name_source, website, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (batch_job_id, row_index, json.dumps(original_columns, default=_json_default),
+                 company_name, name_source, website, status),
+            )
+            return cur.lastrowid
+
+    def update_batch_upload_row(self, row_id: int, fields: Dict[str, Any]) -> None:
+        """Direct field update -- status/supplier_id/error_message/
+        company_name (once a placeholder name is confirmed or replaced).
+        No history tracking here (unlike suppliers'
+        update_supplier_fields_with_history) -- a batch row is a
+        one-shot record of what happened to this upload attempt, not a
+        golden record accumulating corrections over time."""
+        if not fields:
+            return
+        set_clause = ", ".join(f"{col} = ?" for col in fields.keys())
+        with connection_scope(self.db_path) as conn:
+            conn.execute(
+                f"UPDATE batch_upload_rows SET {set_clause} WHERE id = ?",
+                [*fields.values(), row_id],
+            )
+
+    def get_batch_upload_rows(self, batch_job_id: str) -> List[Dict[str, Any]]:
+        with connection_scope(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM batch_upload_rows WHERE batch_job_id = ? ORDER BY row_index",
+                (batch_job_id,),
+            ).fetchall()
+            results = []
+            for row in rows:
+                d = dict(row)
+                if d.get("original_columns"):
+                    d["original_columns"] = json.loads(d["original_columns"])
+                results.append(d)
+            return results
+
+    # ═════════════════════════════════════════════════════
+    # Field provenance (v18) -- source_url/raw_snippet/extraction_method
+    # plus the two inputs confidence is derived from (source_tier,
+    # claim_type), not a single pre-computed value -- see
+    # storage/database.py's own field_provenance comment for why.
+    # ═════════════════════════════════════════════════════
+
+    def save_field_provenance(
+        self, *, supplier_id: int, field_name: str, value: Optional[str],
+        source_url: Optional[str], raw_snippet: Optional[str], extraction_method: str,
+        source_tier: str, claim_type: str,
+    ) -> int:
+        with connection_scope(self.db_path) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO field_provenance
+                    (supplier_id, field_name, value, source_url, raw_snippet,
+                     extraction_method, source_tier, claim_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (supplier_id, field_name, value, source_url, raw_snippet,
+                 extraction_method, source_tier, claim_type),
+            )
+            return cur.lastrowid
+
+    def get_field_provenance(
+        self, supplier_id: int, field_name: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        with connection_scope(self.db_path) as conn:
+            if field_name:
+                rows = conn.execute(
+                    "SELECT * FROM field_provenance WHERE supplier_id = ? AND field_name = ? ORDER BY created_at",
+                    (supplier_id, field_name),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM field_provenance WHERE supplier_id = ? ORDER BY field_name, created_at",
+                    (supplier_id,),
+                ).fetchall()
+            return _rows_to_dicts(rows)
+
+    # ═════════════════════════════════════════════════════
     # Buyer profiles (v10) -- named, reusable search + commercial
     # preference bundles. See pipeline.buyer_profile_search's own
     # docstring for exactly how required_capabilities/

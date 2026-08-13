@@ -103,16 +103,24 @@ class CollectionService:
         self.job_max_seconds = job_max_seconds
         self.parallel_workers = parallel_workers
 
-    def collect(self, supplier_id: int) -> Dict[str, Any]:
+    def collect(self, supplier_id: int, return_pages: bool = False) -> Dict[str, Any]:
         """Collect against one supplier by id -- always runs, not
         gated by collection_status/force (a caller who names a specific
-        supplier clearly wants it collected)."""
+        supplier clearly wants it collected).
+
+        `return_pages`: when True, includes the raw fetched
+        `CollectedPage` list under the "pages" key (default False keeps
+        the return shape exactly as every existing caller already
+        expects it). Exists for batch/batch_service.py's placeholder-
+        name-extraction step, which needs the actual page text
+        SiteCollector already fetched -- exposing what this method
+        already computed internally, not a second fetch/pipeline."""
         supplier = self.repo.get_supplier(supplier_id)
         if supplier is None:
             raise ValueError(f"No supplier with id={supplier_id}")
-        return self._collect_one(supplier)
+        return self._collect_one(supplier, return_pages=return_pages)
 
-    def _collect_one(self, supplier: Dict[str, Any]) -> Dict[str, Any]:
+    def _collect_one(self, supplier: Dict[str, Any], return_pages: bool = False) -> Dict[str, Any]:
         supplier_id = supplier["id"]
         domain = supplier.get("domain")
         started_at = datetime.now(timezone.utc).isoformat()
@@ -124,7 +132,10 @@ class CollectionService:
                 proxy_provider=provider_name, started_at=started_at,
                 completed_at=datetime.now(timezone.utc).isoformat(),
             )
-            return {"supplier_id": supplier_id, "status": "failed", "pages_visited": 0, "error": "no domain on file"}
+            outcome = {"supplier_id": supplier_id, "status": "failed", "pages_visited": 0, "error": "no domain on file"}
+            if return_pages:
+                outcome["pages"] = []
+            return outcome
 
         try:
             result = self.site_collector.collect(supplier_id, domain)
@@ -136,7 +147,10 @@ class CollectionService:
                 proxy_provider=provider_name, started_at=started_at,
                 completed_at=datetime.now(timezone.utc).isoformat(),
             )
-            return {"supplier_id": supplier_id, "status": "failed", "pages_visited": 0, "error": str(e)}
+            outcome = {"supplier_id": supplier_id, "status": "failed", "pages_visited": 0, "error": str(e)}
+            if return_pages:
+                outcome["pages"] = []
+            return outcome
 
         completed_at = datetime.now(timezone.utc).isoformat()
         status = "success" if result.success else "failed"
@@ -154,12 +168,15 @@ class CollectionService:
         if result.success and result.certificate_documents:
             certificates_saved = self._save_certificate_documents(supplier_id, result.certificate_documents)
 
-        return {
+        outcome = {
             "supplier_id": supplier_id, "status": status,
             "pages_visited": len(result.pages), "error": result.error,
             "certificates_saved": certificates_saved,
             **contact_stats,
         }
+        if return_pages:
+            outcome["pages"] = result.pages
+        return outcome
 
     def _extract_and_save_contact_details(
         self, supplier_id: int, country: Optional[str], pages: Any,
@@ -168,7 +185,15 @@ class CollectionService:
         (no LLM, no extra cost) the older extract-capabilities pipeline
         stage already uses -- see module docstring. Own try/except so a
         parsing bug here can never fail an otherwise-successful
-        collection run."""
+        collection run.
+
+        Text-only: a phone/email rendered as an image (a common
+        anti-scraping pattern on contact pages) is invisible to this --
+        out of scope for now (see batch/ feature notes). If added
+        later, it would slot in here as another `finding` source: OCR
+        each page's image URLs (already available on `pages` via
+        SiteCollector) and feed the resulting text through the same
+        `extract_contact_details` regex path, not a separate pipeline."""
         stats = {"contact_emails_added": 0, "contact_phones_added": 0, "contact_forms_recorded": 0}
         try:
             region_hint = country_name_to_region_code(country)

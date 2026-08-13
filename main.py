@@ -24,6 +24,7 @@ Usage:
     python main.py discover "trailer axle" --country China   AI-assisted supplier discovery, grounded in real search results
     python main.py discover --product "jockey wheel" --source llm --limit 100   Same, but candidates come from an LLM's own knowledge instead of SerpAPI
     python main.py collect --supplier-id 123     Visit a supplier's website with a real headless browser (collection.SiteCollector)
+    python main.py batch-upload companies.csv    Enrich a spreadsheet of companies through the same single-company enrichment path
     python main.py verify-ai --supplier-id 123   AI cross-check + confidence score against existing verification signals
     python main.py reverify --supplier-id 123    Re-collect then re-verify an already-known supplier
 """
@@ -480,6 +481,74 @@ def collect(supplier_id: Optional[int], pending: bool, limit: int, force: bool) 
         for key in ("attempted", "succeeded", "failed", "total_eligible", "status"):
             table.add_row(key.replace("_", " "), str(stats.get(key, "")))
         console.print(table)
+
+
+@cli.command("batch-upload")
+@click.argument("csv_path", type=click.Path(exists=True))
+@click.option("--output", "-o", default=None,
+              help="Write the results CSV here once done (default: <csv_path> with a "
+                   "_results suffix, next to the input file).")
+def batch_upload(csv_path: str, output: Optional[str]) -> None:
+    """Enrich a spreadsheet of companies through the exact same
+    single-company enrichment path collect/discover already use --
+    SupplierMatcher.resolve_and_store() then CollectionService.collect()
+    per row, no second extraction pipeline (see batch/batch_service.py's
+    own module docstring for exactly how each row is handled, including
+    the needs_url/domain-derived-placeholder-name cases). Company name
+    and/or website columns are detected by fuzzy header matching --
+    "Company", "Company Name", "Website", "URL" and similar all work.
+    Each row costs a real headless-browser visit -- a 50-200 row
+    spreadsheet will take a while, start small on a first run."""
+    import dataclasses
+    import uuid
+    from pathlib import Path
+
+    from batch.batch_service import BatchService
+    from batch.csv_exporter import flatten_batch_results
+    from batch.csv_parser import parse_csv
+
+    with open(csv_path, "rb") as f:
+        csv_bytes = f.read()
+    parsed = parse_csv(csv_bytes)
+    if not parsed.rows:
+        console.print("[yellow]No rows found in this CSV (or no recognisable header).[/yellow]")
+        return
+
+    console.print(
+        f"[bold]{len(parsed.rows)}[/bold] row(s). Detected columns: "
+        f"company name = [cyan]{parsed.company_name_column or '(none found)'}[/cyan], "
+        f"website = [cyan]{parsed.website_column or '(none found)'}[/cyan]"
+    )
+    if parsed.duplicate_row_indices:
+        console.print(f"[dim]{len(parsed.duplicate_row_indices)} duplicate row(s) detected (exact name+website repeat).[/dim]")
+
+    repo = SupplierRepository()
+    job_id = str(uuid.uuid4())
+    repo.create_pipeline_job(job_id=job_id, query=f"[batch] {csv_path}", options={"filename": csv_path})
+    repo.mark_pipeline_job_running(job_id)
+
+    service = BatchService(repo=repo)
+    outcome = service.run_batch(parsed.rows, batch_job_id=job_id)
+    repo.mark_pipeline_job_completed(job_id, stats=dataclasses.asdict(outcome))
+
+    table = Table(show_header=False)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Count", justify="right", style="magenta")
+    table.add_row("total rows", str(outcome.total_rows))
+    table.add_row("needs url", str(outcome.needs_url))
+    table.add_row("processed", str(outcome.processed))
+    table.add_row("succeeded", str(outcome.succeeded))
+    table.add_row("failed", str(outcome.failed))
+    table.add_row("placeholder names used", str(outcome.placeholder_names_used))
+    table.add_row("placeholder names replaced", str(outcome.placeholder_names_replaced))
+    console.print(table)
+
+    rows = repo.get_batch_upload_rows(job_id)
+    csv_text = flatten_batch_results(rows, repo=repo)
+    output_path = output or f"{Path(csv_path).with_suffix('')}_results.csv"
+    with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
+        f.write(csv_text)
+    console.print(f"[green]✓[/green] Results written to [bold]{output_path}[/bold]")
 
 
 @cli.command("verify-ai")

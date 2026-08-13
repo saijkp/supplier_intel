@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 
 # ═══════════════════════════════════════════════════════════
@@ -548,6 +548,64 @@ CREATE TABLE IF NOT EXISTS sourcing_runs (
 CREATE INDEX IF NOT EXISTS idx_sruns_status ON sourcing_runs(status);
 
 
+-- CSV batch upload (v18): one row per uploaded CSV row, tracked
+-- separately from suppliers since a row may not resolve to one yet
+-- (needs_url/needs_name) and the original spreadsheet columns need to
+-- survive untouched through to export regardless of enrichment outcome.
+-- batch_job_id is a pipeline_jobs.id -- batch upload reuses the same
+-- job-tracking table/polling mechanism every other async stage does,
+-- rather than introducing a second job concept.
+CREATE TABLE IF NOT EXISTS batch_upload_rows (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_job_id        TEXT NOT NULL REFERENCES pipeline_jobs(id) ON DELETE CASCADE,
+    row_index           INTEGER NOT NULL,
+    original_columns    TEXT NOT NULL,      -- JSON object: every column from the uploaded row, verbatim, for export pass-through
+    company_name        TEXT,               -- resolved name -- either straight from the CSV or a domain-derived placeholder (see name_source)
+    name_source          TEXT NOT NULL DEFAULT 'csv'
+                          CHECK (name_source IN ('csv', 'inferred_from_domain')),
+    website               TEXT,
+    status                TEXT NOT NULL DEFAULT 'pending'
+                          CHECK (status IN ('pending', 'needs_url', 'needs_name', 'processing', 'success', 'failed')),
+    supplier_id            INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
+    error_message          TEXT,
+    created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_batch_rows_job ON batch_upload_rows(batch_job_id);
+CREATE INDEX IF NOT EXISTS idx_batch_rows_supplier ON batch_upload_rows(supplier_id);
+
+
+-- Field-level provenance (v18): source_url/raw_snippet/extraction_method
+-- for an individual extracted value, plus the two inputs confidence is
+-- derived from -- source_tier (was this the company's own domain, or
+-- somewhere else) and claim_type (a verifiable fact, or a self-assessed
+-- claim -- certifications/capacity/headcount/manufacturer-vs-trader are
+-- marketing copy even from the company's own site). Deliberately stores
+-- the two inputs, not a single pre-computed confidence value, since the
+-- calibration report (step 3) needs to group by source_tier
+-- independently of claim_type, not just read a final label.
+-- confidence = high only when source_tier='own_domain' AND
+-- claim_type='verifiable_fact'; everything else is low by default.
+-- Only written for canonical_name (the domain-derived-placeholder
+-- replacement case) as of v18/batch/ -- extended to every other
+-- extracted field as part of the provenance feature proper.
+CREATE TABLE IF NOT EXISTS field_provenance (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id         INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    field_name          TEXT NOT NULL,
+    value                 TEXT,
+    source_url             TEXT,
+    raw_snippet            TEXT,
+    extraction_method      TEXT NOT NULL,   -- e.g. 'llm_grounded_extraction', 'regex', 'platform_listing'
+    source_tier             TEXT NOT NULL CHECK (source_tier IN ('own_domain', 'other')),
+    claim_type               TEXT NOT NULL CHECK (claim_type IN ('verifiable_fact', 'self_assessed')),
+    created_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_field_provenance_supplier ON field_provenance(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_field_provenance_field ON field_provenance(supplier_id, field_name);
+
+
 -- ═══════════════════════════════════════
 -- SCHEMA VERSIONING
 -- ═══════════════════════════════════════
@@ -1056,6 +1114,60 @@ MIGRATIONS: dict[int, dict] = {
         ),
         "columns": [
             ("suppliers", "self_asserted_score", "INTEGER"),
+        ],
+    },
+    18: {
+        "description": (
+            "CSV batch upload (batch/): batch_upload_rows (one row per uploaded "
+            "CSV row, tracked separately from suppliers since a row may not "
+            "resolve to one yet -- needs_url/needs_name -- and the original "
+            "spreadsheet columns must survive untouched through to export "
+            "regardless of enrichment outcome; batch_job_id is a pipeline_jobs.id, "
+            "reusing the existing job-tracking/polling mechanism rather than a "
+            "second job concept) and field_provenance (source_url/raw_snippet/"
+            "extraction_method plus source_tier/claim_type -- the two inputs "
+            "confidence is derived from, not a single pre-computed value, so the "
+            "calibration report can group by source_tier independently of "
+            "claim_type; only written for canonical_name -- the domain-derived-"
+            "placeholder-replacement case -- as of this migration, extended to "
+            "every other extracted field as part of the provenance feature proper)."
+        ),
+        "statements": [
+            """
+            CREATE TABLE IF NOT EXISTS batch_upload_rows (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_job_id        TEXT NOT NULL REFERENCES pipeline_jobs(id) ON DELETE CASCADE,
+                row_index           INTEGER NOT NULL,
+                original_columns    TEXT NOT NULL,
+                company_name        TEXT,
+                name_source          TEXT NOT NULL DEFAULT 'csv'
+                                     CHECK (name_source IN ('csv', 'inferred_from_domain')),
+                website               TEXT,
+                status                TEXT NOT NULL DEFAULT 'pending'
+                                     CHECK (status IN ('pending', 'needs_url', 'needs_name', 'processing', 'success', 'failed')),
+                supplier_id            INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
+                error_message          TEXT,
+                created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_batch_rows_job ON batch_upload_rows(batch_job_id)",
+            "CREATE INDEX IF NOT EXISTS idx_batch_rows_supplier ON batch_upload_rows(supplier_id)",
+            """
+            CREATE TABLE IF NOT EXISTS field_provenance (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_id         INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+                field_name          TEXT NOT NULL,
+                value                 TEXT,
+                source_url             TEXT,
+                raw_snippet            TEXT,
+                extraction_method      TEXT NOT NULL,
+                source_tier             TEXT NOT NULL CHECK (source_tier IN ('own_domain', 'other')),
+                claim_type               TEXT NOT NULL CHECK (claim_type IN ('verifiable_fact', 'self_assessed')),
+                created_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_field_provenance_supplier ON field_provenance(supplier_id)",
+            "CREATE INDEX IF NOT EXISTS idx_field_provenance_field ON field_provenance(supplier_id, field_name)",
         ],
     },
 }

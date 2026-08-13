@@ -18,6 +18,8 @@ import dataclasses
 import logging
 from typing import Any, Dict
 
+from batch.batch_service import BatchService
+from batch.csv_parser import parse_csv
 from collection.collection_service import CollectionService
 from discovery.discovery_service import DiscoveryService
 from pipeline.orchestrator import SupplierIntelligencePipeline, build_limit_scraper_kwargs
@@ -122,6 +124,43 @@ def run_collection_job(job_id: str, options: Dict[str, Any]) -> None:
         repo.mark_pipeline_job_completed(job_id, stats=stats)
     except Exception as e:
         logger.error("Collection job %s failed: %s", job_id, e)
+        repo.mark_pipeline_job_failed(job_id, error=str(e))
+
+
+def run_batch_job(job_id: str, csv_bytes: bytes) -> None:
+    """The HTTP equivalent of `main.py batch-upload` -- parses the
+    uploaded CSV (batch.csv_parser.parse_csv) and runs every row through
+    BatchService.run_batch(), which is just SupplierMatcher.
+    resolve_and_store() + CollectionService.collect() per row (no
+    second extraction pipeline -- see batch/batch_service.py's own
+    docstring). Progress is written incrementally via
+    update_pipeline_job_progress as rows complete, since a 50-200 row
+    batch (each row potentially launching a real headless browser) can
+    run for a long time -- same "poll before completion" mechanism
+    sourcing/sourcing_agent.py's own per-candidate progress already
+    established. `csv_bytes` is read from the upload BEFORE this is
+    scheduled as a background task (the request's UploadFile isn't
+    guaranteed to stay valid past the request/response cycle), so this
+    function itself never touches the HTTP layer at all.
+    """
+    repo = SupplierRepository()
+    repo.mark_pipeline_job_running(job_id)
+    try:
+        parsed = parse_csv(csv_bytes)
+        service = BatchService(repo=repo)
+
+        def _on_progress(outcome) -> None:
+            repo.update_pipeline_job_progress(job_id, dataclasses.asdict(outcome))
+
+        outcome = service.run_batch(parsed.rows, batch_job_id=job_id, progress_callback=_on_progress)
+
+        stats = dataclasses.asdict(outcome)
+        stats["company_name_column"] = parsed.company_name_column
+        stats["website_column"] = parsed.website_column
+        stats["duplicate_row_count"] = len(parsed.duplicate_row_indices)
+        repo.mark_pipeline_job_completed(job_id, stats=stats)
+    except Exception as e:
+        logger.error("Batch job %s failed: %s", job_id, e)
         repo.mark_pipeline_job_failed(job_id, error=str(e))
 
 

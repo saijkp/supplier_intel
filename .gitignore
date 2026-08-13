@@ -20,6 +20,7 @@ data/*.db.bak
 data/*.db-journal
 data/*.db-wal
 data/exports/*
+data/collection/*
 
 # Logs
 logs/*.log
