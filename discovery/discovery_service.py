@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from deduplication.matcher import SupplierMatcher
 from discovery.candidate_extractor import extract_candidates
@@ -62,7 +62,7 @@ from storage.repository import SupplierRepository
 
 logger = logging.getLogger(__name__)
 
-_VALID_SOURCES = ("serpapi", "llm")
+_VALID_SOURCES = ("serpapi", "llm", "1688")
 
 
 @dataclass
@@ -76,6 +76,7 @@ class DiscoveryOutcome:
     review_queued_supplier_ids: List[int] = field(default_factory=list)  # subset of new_supplier_ids also awaiting dedup review
     website_resolved: int = 0  # candidates whose site fetched successfully (validate() gate 2), whether or not they went on to validate
     content_matched: int = 0   # candidates whose fetched page actually mentioned the product term (validate() gate 5) -- see _process_candidate's own comment
+    raw_1688_listings: List[Dict[str, Any]] = field(default_factory=list)  # source='1688' only -- see _discover_1688's own docstring for why this stops short of validation/storage
 
 
 class DiscoveryService:
@@ -88,6 +89,7 @@ class DiscoveryService:
         candidate_validator: Optional[CandidateValidator] = None,
         matcher: Optional[SupplierMatcher] = None,
         llm_candidate_source: Optional[LLMCandidateSource] = None,
+        china_1688_scraper: Optional[Any] = None,
     ):
         self.repo = repo or SupplierRepository()
         if google_scraper is not None:
@@ -105,6 +107,22 @@ class DiscoveryService:
         self.candidate_validator = candidate_validator or CandidateValidator(website_fetcher=self.website_fetcher)
         self.matcher = matcher or SupplierMatcher(self.repo)
         self.llm_candidate_source = llm_candidate_source or LLMCandidateSource()
+        if china_1688_scraper is not None:
+            self.china_1688_scraper = china_1688_scraper
+        else:
+            # Reused as-is, unmodified -- Apify-actor-backed (real cost
+            # per call), so only constructed when actually needed, same
+            # lazy-import convention as google_scraper/website_fetcher
+            # above. See scrapers/scraper_1688.py's own module docstring
+            # for why this goes through Apify rather than a direct
+            # fetch: 1688's search pages are behind an active anti-bot
+            # CAPTCHA wall (confirmed directly -- a real headless
+            # Chromium hitting the search page on the first request gets
+            # redirected to Alibaba's own "/_____tmd_____/punish"
+            # endpoint), so there is no direct-fetch alternative here.
+            from scrapers.scraper_1688 import China1688Scraper
+
+            self.china_1688_scraper = China1688Scraper()
 
     def discover(
         self, product: str, category: Optional[str] = None, country: Optional[str] = None,
@@ -131,6 +149,9 @@ class DiscoveryService:
                 candidates_rejected=outcome.candidates_rejected, candidates_duplicate=outcome.candidates_duplicate,
             )
             return outcome
+
+        if source == "1688":
+            return self._discover_1688(product, category, max_candidates, outcome)
 
         queries = build_queries(
             product, category=category, country=country,
@@ -164,6 +185,57 @@ class DiscoveryService:
             product_query=product, category=category, country=country,
             candidates_found=outcome.candidates_found, candidates_validated=outcome.candidates_validated,
             candidates_rejected=outcome.candidates_rejected, candidates_duplicate=outcome.candidates_duplicate,
+        )
+        return outcome
+
+    def _discover_1688(
+        self, product: str, category: Optional[str], max_candidates: int, outcome: DiscoveryOutcome,
+    ) -> DiscoveryOutcome:
+        """Deliberately does NOT run candidates through
+        CandidateValidator/SupplierMatcher the way serpapi/llm do, and
+        creates no suppliers rows -- China1688Scraper's real output has
+        no independent company-website field to validate against at all
+        (see normalizers/china_1688_normalizer.py's own docstring: both
+        URLs it returns, the product-detail page and the seller's 1688
+        shop page, are 1688's own marketplace domains, shared across
+        every seller on the platform -- the exact thing
+        discovery.candidate_validator's marketplace-host gate exists to
+        reject, not something to validate a company's identity against).
+        Nor is it yet confirmed which raw field(s) distinguish a
+        生产加工 (manufacturing) listing from a 经销批发
+        (distribution/trading) one -- china_1688_normalizer.py's own
+        confirmed field list (from a prior real run) covers company
+        name/province/city/title/merchantSigns, not that distinction
+        specifically. Fetches real data and preserves it as
+        raw_source_data evidence (same discipline every other source
+        follows), but stops there until a real run's actual field
+        coverage is inspected and a trustworthy classification/storage
+        design can be built on top of confirmed fields, not guessed ones.
+        """
+        try:
+            results = self.china_1688_scraper.scrape(
+                product, max_results=max_candidates, require_super_factory=False,
+            )
+        except Exception as e:
+            logger.error("discovery: 1688 scrape failed for %r: %s", product, e)
+            results = []
+
+        for result in results:
+            if not result.success:
+                logger.warning("discovery: 1688 scraper returned an error result: %s", result.raw_data)
+                continue
+            raw = result.raw_data or {}
+            outcome.raw_1688_listings.append(raw)
+            self.repo.save_raw(
+                source="china_1688", raw_data=raw,
+                source_id=result.source_id or "", processing_status="pending",
+            )
+
+        outcome.candidates_found = len(outcome.raw_1688_listings)
+        self.repo.record_discovery_run(
+            product_query=product, category=category, country="China",
+            candidates_found=outcome.candidates_found, candidates_validated=0,
+            candidates_rejected=0, candidates_duplicate=0,
         )
         return outcome
 

@@ -489,6 +489,155 @@ class TestDiscoverResolutionCounters:
         assert outcome.candidates_rejected == 1  # still rejected overall
 
 
+def _china_1688_result(offer_id, company_name, **overrides):
+    from scrapers.base_scraper import ScraperResult
+    raw = {
+        "offerId": offer_id, "companyName": company_name, "title": "拖车支撑轮",
+        "titleEn": "Trailer jockey wheel", "province": "浙江省", "city": "温州市",
+        "supplierUrl": f"https://winport.m.1688.com/page/index.html?memberId={offer_id}",
+        "merchantSigns": {"powerfulMerchant": False, "trustPass": True, "factory": True, "industrySeller": False},
+        "yearsActive": None,
+    }
+    raw.update(overrides)
+    return ScraperResult(source="china_1688", source_id=str(offer_id), raw_data=raw, success=True)
+
+
+class FakeChina1688Scraper:
+    """Mirrors FakeGoogleScraper's convention: a fixed return value,
+    recording every call for assertion. `raise_error` simulates the
+    real scraper's own never-raises contract (it catches Apify failures
+    internally and returns [error_result(...)]), so tests exercise
+    DiscoveryService's handling of that error-result shape, not an
+    actual exception path."""
+
+    def __init__(self, results=None, error_result=None):
+        from scrapers.base_scraper import ScraperResult
+        self._results = results if results is not None else []
+        self._error_result = error_result or ScraperResult(
+            source="china_1688", source_id="", raw_data={}, success=False, error="actor run failed",
+        )
+        self.calls = []
+
+    def scrape(self, query, max_results=20, require_super_factory=True, **kwargs):
+        self.calls.append((query, max_results, require_super_factory))
+        return self._results
+
+
+class TestDiscover1688Source:
+    """source='1688' is deliberately diagnostic-only right now -- see
+    DiscoveryService._discover_1688's own docstring for why it stops
+    short of CandidateValidator/SupplierMatcher (China1688Scraper's real
+    output has no independent company-website field to validate
+    against, only marketplace-hosted URLs)."""
+
+    def _service_1688(self, repo, scraper):
+        return DiscoveryService(
+            repo=repo, google_scraper=FakeGoogleScraper(results=[]), website_fetcher=SimpleNamespace(),
+            candidate_validator=FakeCandidateValidator(), matcher=SupplierMatcher(repo),
+            china_1688_scraper=scraper,
+        )
+
+    def test_calls_china_1688_scraper_not_google_scraper(self, repo):
+        scraper = FakeChina1688Scraper(results=[_china_1688_result("1001", "瑞安市嘉业汽摩附件有限公司")])
+        google_scraper = FakeGoogleScraper(results=[])
+        service = self._service_1688(repo, scraper)
+        service.google_scraper = google_scraper
+
+        service.discover("拖车支撑轮", source="1688", max_candidates=20)
+
+        assert scraper.calls == [("拖车支撑轮", 20, False)]  # require_super_factory=False -- see module docstring
+        assert google_scraper.queries == []
+
+    def test_creates_no_supplier_rows(self, repo):
+        """The core requirement: diagnostic-only, nothing inserted."""
+        scraper = FakeChina1688Scraper(results=[
+            _china_1688_result("1001", "瑞安市嘉业汽摩附件有限公司"),
+            _china_1688_result("1002", "温州市龙湾永中南牧五金加工厂"),
+        ])
+        service = self._service_1688(repo, scraper)
+
+        outcome = service.discover("拖车支撑轮", source="1688")
+
+        assert outcome.candidates_found == 2
+        assert outcome.new_supplier_ids == []
+        from storage.database import connection_scope
+        with connection_scope(repo.db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) AS n FROM suppliers").fetchone()["n"]
+        assert count == 0
+
+    def test_raw_listings_are_returned_verbatim_for_inspection(self, repo):
+        result = _china_1688_result("1001", "瑞安市嘉业汽摩附件有限公司")
+        scraper = FakeChina1688Scraper(results=[result])
+        service = self._service_1688(repo, scraper)
+
+        outcome = service.discover("拖车支撑轮", source="1688")
+
+        assert outcome.raw_1688_listings == [result.raw_data]
+        assert outcome.raw_1688_listings[0]["companyName"] == "瑞安市嘉业汽摩附件有限公司"
+
+    def test_writes_raw_source_data_evidence_with_china_1688_provenance(self, repo):
+        result = _china_1688_result("1001", "瑞安市嘉业汽摩附件有限公司")
+        scraper = FakeChina1688Scraper(results=[result])
+        service = self._service_1688(repo, scraper)
+
+        service.discover("拖车支撑轮", source="1688")
+
+        from storage.database import connection_scope
+        with connection_scope(repo.db_path) as conn:
+            rows = conn.execute("SELECT * FROM raw_source_data WHERE source = 'china_1688'").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["source_id"] == "1001"
+        assert rows[0]["golden_record_id"] is None  # never linked to a supplier -- nothing was created
+
+    def test_scraper_error_result_is_skipped_not_stored(self, repo):
+        """China1688Scraper never raises -- an Apify failure comes back
+        as a [error_result(...)] list (success=False), not an exception.
+        Real case this covers: the Apify account's own monthly usage
+        cap being hit."""
+        from scrapers.base_scraper import ScraperResult
+        error_result = ScraperResult(
+            source="china_1688", source_id="", raw_data={}, success=False,
+            error="Monthly usage hard limit exceeded",
+        )
+        scraper = FakeChina1688Scraper(results=[error_result])
+        service = self._service_1688(repo, scraper)
+
+        outcome = service.discover("拖车支撑轮", source="1688")  # must not raise
+
+        assert outcome.candidates_found == 0
+        assert outcome.raw_1688_listings == []
+        from storage.database import connection_scope
+        with connection_scope(repo.db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) AS n FROM raw_source_data WHERE source='china_1688'").fetchone()["n"]
+        assert count == 0
+
+    def test_scraper_raising_does_not_propagate(self, repo):
+        class ExplodingScraper:
+            def scrape(self, query, max_results=20, require_super_factory=True, **kwargs):
+                raise RuntimeError("Apify client exploded")
+
+        service = self._service_1688(repo, ExplodingScraper())
+
+        outcome = service.discover("拖车支撑轮", source="1688")  # must not raise
+
+        assert outcome.candidates_found == 0
+
+    def test_writes_a_discovery_runs_summary_row(self, repo):
+        scraper = FakeChina1688Scraper(results=[_china_1688_result("1001", "瑞安市嘉业汽摩附件有限公司")])
+        service = self._service_1688(repo, scraper)
+
+        service.discover("拖车支撑轮", source="1688", category="Running gear")
+
+        from storage.database import connection_scope
+        with connection_scope(repo.db_path) as conn:
+            rows = conn.execute("SELECT * FROM discovery_runs").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["product_query"] == "拖车支撑轮"
+        assert rows[0]["category"] == "Running gear"
+        assert rows[0]["country"] == "China"
+        assert rows[0]["candidates_found"] == 1
+
+
 class TestBackfillProductKeywords:
     """discover() itself already writes product_keywords on create (see
     TestDiscoverCreatesNewSuppliers) -- these tests cover the separate

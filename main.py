@@ -341,12 +341,19 @@ def verify_facilities(force: bool, limit: int) -> None:
                    "(--product \"jockey wheel\" --source llm --limit 100) works as written.")
 @click.option("--category", default=None, help="Optional product category, recorded on discovery_runs.")
 @click.option("--country", default=None, help="Optional country to qualify the search (e.g. China).")
-@click.option("--source", type=click.Choice(["serpapi", "llm"]), default="serpapi", show_default=True,
+@click.option("--source", type=click.Choice(["serpapi", "llm", "1688"]), default="serpapi", show_default=True,
               help="serpapi (default): candidates from real SerpAPI search hits. llm: candidates "
                    "gpt-4o-mini proposes from its own knowledge (discovery/llm_candidate_source.py), "
                    "costing OpenAI calls instead of SerpAPI ones -- still gated by the exact same "
                    "real-fetch/content-match validation before anything is stored, see that module's "
-                   "docstring for why this doesn't weaken the anti-hallucination guarantee.")
+                   "docstring for why this doesn't weaken the anti-hallucination guarantee. 1688: "
+                   "China1688Scraper (Apify-backed, real cost per product) -- a Mandarin search term "
+                   "is expected (pass the term itself, this CLI does not translate it). Currently "
+                   "diagnostic-only: fetches real "
+                   "listings and writes them to raw_source_data as evidence, but does NOT validate "
+                   "or create supplier rows yet -- see DiscoveryService._discover_1688's own "
+                   "docstring for why (1688 gives no independent company-website field to validate "
+                   "against, only marketplace-hosted URLs).")
 @click.option("--limit", "max_candidates", default=20, show_default=True,
               help="Stop after this many candidate companies. Each one costs a paid SerpAPI "
                    "search (--source serpapi) or an OpenAI call (--source llm) plus, for "
@@ -375,6 +382,19 @@ def discover(
     outcome = service.discover(
         product, category=category, country=country, max_candidates=max_candidates, source=source,
     )
+
+    if source == "1688":
+        import json as _json
+
+        console.print(
+            f"[bold]{len(outcome.raw_1688_listings)}[/bold] listing(s) fetched from 1688 "
+            f"(Apify), written to raw_source_data as evidence. Diagnostic-only: nothing "
+            f"validated or inserted into suppliers yet -- see --source 1688's own --help text.\n"
+        )
+        for i, listing in enumerate(outcome.raw_1688_listings, 1):
+            console.print(f"[cyan]--- listing {i} ---[/cyan]")
+            console.print(_json.dumps(listing, ensure_ascii=False, indent=2))
+        return
 
     table = Table(show_header=False)
     table.add_column("Metric", style="cyan")
