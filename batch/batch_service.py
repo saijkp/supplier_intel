@@ -77,6 +77,7 @@ from deduplication.matcher import SupplierMatcher
 from discovery.candidate_validator import SYSTEM_PROMPT as NAME_EXTRACTION_SYSTEM_PROMPT
 from llm.client import LLMClient
 from storage.repository import SupplierRepository
+from verification.website_contact_extractor import parking_page_reason
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +85,10 @@ logger = logging.getLogger(__name__)
 # name happens to CONTAIN "welcome to" (e.g. "Welcome to Chiming") must
 # never be rejected on that basis; only an exact match against a known
 # server-default/parking-page name is high-confidence enough to reject
-# outright. Ambiguous cases are caught by _PARKING_PAGE_TEXT_SIGNATURES
-# below instead of by growing this list.
+# outright. Ambiguous cases are caught by parking_page_reason (see
+# verification.website_contact_extractor -- shared across name, address,
+# and contact extraction, not just this blocklist) instead of by
+# growing this list.
 _JUNK_NAME_EXACT_BLOCKLIST: frozenset = frozenset({
     "nginx", "welcome to nginx", "welcome to nginx!",
     "apache2 ubuntu default page", "apache2 debian default page",
@@ -98,57 +101,41 @@ _JUNK_NAME_EXACT_BLOCKLIST: frozenset = frozenset({
     "default web site page", "test page", "cloudflare",
 })
 
-# Checked as a substring against the fetched PAGE TEXT, not the
-# extracted name -- these are real server-default/parking-page
-# boilerplate phrases, so substring matching here doesn't carry the
-# same false-positive risk a name blocklist substring match would.
-_PARKING_PAGE_TEXT_SIGNATURES: tuple = (
-    "the nginx web server is successfully installed",
-    "apache2 ubuntu default page",
-    "apache2 debian default page",
-    "this is the default welcome page",
-    "the web server software is running but no content has been added",
-    "this domain is parked",
-    "domain is parked",
-    "buy this domain",
-    "this domain is for sale",
-    "godaddy.com",
-    "namecheap parking",
-    "further configuration is required",
-)
 
 # A page with less real content than this (after stripping whitespace)
-# isn't a real company page regardless of what name was extracted from it.
+# isn't trustworthy enough for a grounded LLM CLAIM (a name or an
+# address) regardless of what was extracted from it. NOT part of
+# parking_page_reason itself -- that's shared with contact extraction
+# now too, and a real "Contact Us" page is often legitimately this
+# short (just an address/phone block), unlike a page an LLM is being
+# asked to assert a company name or address from.
 _MIN_MEANINGFUL_PAGE_TEXT_LENGTH = 60
 
 
-def _parking_page_reason(page_text: str) -> Optional[str]:
-    """None if `page_text` looks like a real page; otherwise a
-    human-readable reason it looks like a server-default/parking/
-    holding page. Name-agnostic -- reused by both name extraction
-    (_reject_reason_for_extracted_name) and address extraction
-    (_attempt_address_extraction) as a pre-filter, since a junk page
-    can produce a junk answer for either kind of extraction."""
-    haystack = (page_text or "").lower()
-    for signature in _PARKING_PAGE_TEXT_SIGNATURES:
-        if signature in haystack:
-            return f"page text matches a known server-default/parking-page signature ('{signature}')"
-
+def _reject_reason_for_llm_extraction(page_text: str) -> Optional[str]:
+    """None if `page_text` is trustworthy enough to run a grounded LLM
+    extraction (name or address) against; otherwise a reason. Layers
+    this module's own length floor on top of the shared, signature-only
+    parking_page_reason -- see that function's own docstring and
+    _MIN_MEANINGFUL_PAGE_TEXT_LENGTH above for why the floor lives here
+    rather than in the shared function."""
+    reason = parking_page_reason(page_text)
+    if reason:
+        return reason
     if len(re.sub(r"\s+", "", page_text or "")) < _MIN_MEANINGFUL_PAGE_TEXT_LENGTH:
         return "page text is too short to be a real company page"
-
     return None
 
 
 def _reject_reason_for_extracted_name(name: str, page_text: str) -> Optional[str]:
     """None if `name` passes the floor test; otherwise a human-readable
-    rejection reason. See the constants above for what's checked and
-    why the name check is whole-string, not substring."""
+    rejection reason. See _JUNK_NAME_EXACT_BLOCKLIST for what's checked
+    and why the name check is whole-string, not substring."""
     normalised_name = " ".join(name.strip().lower().rstrip("!.").split())
     if normalised_name in _JUNK_NAME_EXACT_BLOCKLIST:
         return f"extracted name '{name}' matches a known server-default/placeholder page name"
 
-    return _parking_page_reason(page_text)
+    return _reject_reason_for_llm_extraction(page_text)
 
 
 # Grounded-only, same discipline as NAME_EXTRACTION_SYSTEM_PROMPT --
@@ -530,7 +517,7 @@ class BatchService:
             return "skipped"
 
         for tier_label, url, text in _address_candidate_sources(pages):
-            if _parking_page_reason(text):
+            if _reject_reason_for_llm_extraction(text):
                 continue
             try:
                 extracted = self.llm_client.complete_json(

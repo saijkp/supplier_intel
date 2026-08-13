@@ -81,17 +81,11 @@ class TestObfuscatedEmails:
     def test_paren_at_marker(self):
         assert extract_emails("Email us: info(at)ap-bochum.de for details") == ["info@ap-bochum.de"]
 
-    def test_spaced_at_word(self):
-        assert extract_emails("Reach us at info at ap-bochum.de anytime") == ["info@ap-bochum.de"]
-
     def test_bracket_dot_marker(self):
         assert extract_emails("Contact: info[at]ap-bochum[dot]de") == ["info@ap-bochum.de"]
 
     def test_paren_dot_marker(self):
         assert extract_emails("Contact: info(at)ap-bochum(dot)de") == ["info@ap-bochum.de"]
-
-    def test_spaced_dot_word(self):
-        assert extract_emails("Contact: info at ap-bochum dot de") == ["info@ap-bochum.de"]
 
     def test_case_insensitive_markers(self):
         assert extract_emails("Contact: info[AT]ap-bochum[DOT]de") == ["info@ap-bochum.de"]
@@ -104,11 +98,30 @@ class TestObfuscatedEmails:
         assert extract_emails("test[at]test.com") == []
 
     def test_ordinary_prose_with_the_word_at_produces_no_false_positive(self):
-        """The " at " marker is the riskiest one -- it's an ordinary
-        English word. Confirms the strict email-shape regex still
-        gates the substitution's output, so plain prose never
-        accidentally forms something email-shaped."""
+        """A bare " at "/" dot " marker was tried and reverted
+        specifically because of this shape -- see the module-level
+        comment above _AT_MARKERS. Only bracketed/parenthesised forms
+        are recognised now."""
         text = "Look at our new products at booth 5 during the trade show this year."
+        assert extract_emails(text) == []
+
+    def test_bare_at_word_is_no_longer_treated_as_obfuscation(self):
+        """Explicit non-regression: "word at domain.com" with no
+        brackets is ordinary prose, not obfuscation -- must not produce
+        an email."""
+        assert extract_emails("Reach us at info at ap-bochum.de anytime") == []
+
+    def test_bare_dot_word_is_no_longer_treated_as_obfuscation(self):
+        assert extract_emails("Contact: info at ap-bochum dot de") == []
+
+    def test_prose_available_at_a_domain_across_a_line_break_produces_no_false_email(self):
+        """The exact real-world false positive found via a calibration
+        run: a bare nginx default page's own boilerplate text --
+        "Commercial support is available at\\nnginx.com." -- was
+        previously turned into "available@nginx.com" by the (now
+        removed) bare " at " marker, since \\s+ matches the newline
+        between "at" and the domain too."""
+        text = "Commercial support is available at\nnginx.com.\nThank you for using nginx."
         assert extract_emails(text) == []
 
 

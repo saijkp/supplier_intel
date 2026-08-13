@@ -74,8 +74,73 @@ _JUNK_DOMAINS = {
 # applies unchanged to whatever this normalises into a real-looking
 # address. Found via a real calibration run: "info[at]ap-bochum.de"
 # was missed entirely before this.
-_AT_MARKERS = (r"\[\s*at\s*\]", r"\(\s*at\s*\)", r"\s+at\s+")
-_DOT_MARKERS = (r"\[\s*dot\s*\]", r"\(\s*dot\s*\)", r"\s+dot\s+")
+#
+# Bracketed/parenthesised forms only -- deliberately NO bare " at "/
+# " dot " marker. That was tried and reverted: ordinary prose like
+# "support is available at\nnginx.com" (note \s+ matches the newline
+# too) gets turned into a syntactically-valid-looking fake email by a
+# blanket substitution, since nothing about plain English marks it as
+# an address. Someone actually hiding an email from scrapers uses
+# brackets/parens; plain "word at domain.com" is just a sentence.
+_AT_MARKERS = (r"\[\s*at\s*\]", r"\(\s*at\s*\)")
+_DOT_MARKERS = (r"\[\s*dot\s*\]", r"\(\s*dot\s*\)")
+
+# Checked as a substring against a page's fetched TEXT -- real
+# server-default/parking-page boilerplate phrases, so substring
+# matching here doesn't carry the false-positive risk a blocklist
+# substring match against an extracted NAME would (see
+# batch.batch_service._JUNK_NAME_EXACT_BLOCKLIST, which is whole-name
+# only for exactly that reason).
+_PARKING_PAGE_TEXT_SIGNATURES: tuple = (
+    "the nginx web server is successfully installed",
+    "apache2 ubuntu default page",
+    "apache2 debian default page",
+    "this is the default welcome page",
+    "the web server software is running but no content has been added",
+    "this domain is parked",
+    "domain is parked",
+    "buy this domain",
+    "this domain is for sale",
+    "godaddy.com",
+    "namecheap parking",
+    "further configuration is required",
+)
+
+def parking_page_reason(page_text: str) -> Optional[str]:
+    """None if `page_text` doesn't look like a server-default/parking/
+    holding page; otherwise a human-readable reason it does.
+    Deliberately signature-only -- no minimum-length check here (that
+    was tried and reverted: a real "Contact Us" page is often
+    legitimately short -- just an address/phone block, no prose -- and
+    a length floor tuned for "is there enough context for an LLM claim
+    to be trustworthy" incorrectly filtered those out once this became
+    the shared gate for contact extraction too. batch/batch_service.py
+    layers its own length floor on top of this for name/address
+    extraction specifically, where that rationale actually applies --
+    see its _reject_reason_for_llm_extraction).
+
+    Lives here, not in batch/batch_service.py (where it originated) --
+    a page that's a server default/parking page produces a confident
+    WRONG answer for every kind of extraction run against it, not just
+    the name extraction it was first built for (found via a real
+    calibration run: a bare nginx default page produced both a bogus
+    company name AND, via a since-fixed email-deobfuscation bug, a
+    bogus email). verification/ is the shared layer every collection
+    run passes through (batch AND standalone `main.py collect`), so
+    this needs to live below batch/, not inside it -- batch_service.py
+    imports this rather than defining its own copy.
+
+    Used as a per-page pre-filter in three places: name extraction and
+    address extraction (both in batch/batch_service.py, layered with
+    that module's own length floor) and extract_contact_details below
+    (a page this flags contributes no ContactFindings at all -- same
+    "silently skip, don't guess" discipline, signature-only, no length
+    floor)."""
+    haystack = (page_text or "").lower()
+    for signature in _PARKING_PAGE_TEXT_SIGNATURES:
+        if signature in haystack:
+            return f"page text matches a known server-default/parking-page signature ('{signature}')"
+    return None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -289,9 +354,18 @@ def extract_contact_details(
     output for that supplier would be "no contact info," when the
     accurate answer is "no email, but here's exactly where to reach
     them."
+
+    A page that `parking_page_reason` flags as a server-default/
+    parking/holding page contributes NOTHING -- skipped before any
+    regex runs, same "nothing on a junk page is trusted" discipline
+    name/address extraction already apply. Found via a real
+    calibration run: a bare nginx default page's own boilerplate text
+    produced a syntactically-valid-looking fake email.
     """
     findings = []
     for page in pages:
+        if parking_page_reason(page.text):
+            continue
         emails = extract_emails(page.text)
         phones = extract_phone_numbers(page.text, default_region=default_region)
         typed_phones = extract_typed_phone_numbers(page.text, default_region=default_region)
