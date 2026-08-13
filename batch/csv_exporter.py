@@ -27,6 +27,7 @@ from storage.repository import SupplierRepository
 _RESULT_COLUMNS = (
     "status", "company_name", "name_source", "resolved_domain",
     "primary_email", "primary_phone", "contact_form_url", "country",
+    "address", "address_candidate",
     "error_message", "name_extraction_note",
 )
 
@@ -56,6 +57,13 @@ def flatten_batch_results(rows: List[Dict[str, Any]], repo: Optional[SupplierRep
     writer.writerow([*original_columns, *_RESULT_COLUMNS])
 
     supplier_cache: Dict[int, Optional[Dict[str, Any]]] = {}
+    # Latest address_candidate value per supplier -- populated only when
+    # the trusted-address guard blocked an extraction from being applied
+    # (see batch_service.py's _attempt_address_extraction). Without this,
+    # a supplier that already had an address (e.g. from a bulk import)
+    # would show no evidence at all of whether extraction worked, since
+    # the applied `address` column just echoes the pre-existing value.
+    address_candidate_cache: Dict[int, str] = {}
 
     for row in rows:
         original = row.get("original_columns") or {}
@@ -63,10 +71,16 @@ def flatten_batch_results(rows: List[Dict[str, Any]], repo: Optional[SupplierRep
 
         supplier_id = row.get("supplier_id")
         supplier: Optional[Dict[str, Any]] = None
+        address_candidate = ""
         if supplier_id is not None:
             if supplier_id not in supplier_cache:
                 supplier_cache[supplier_id] = repo.get_supplier(supplier_id)
             supplier = supplier_cache[supplier_id]
+
+            if supplier_id not in address_candidate_cache:
+                entries = repo.get_field_provenance(supplier_id, field_name="address_candidate")
+                address_candidate_cache[supplier_id] = (entries[-1].get("value") or "") if entries else ""
+            address_candidate = address_candidate_cache[supplier_id]
 
         # Prefer the live supplier record's canonical_name over the
         # batch row's own snapshot -- it's the authoritative, current
@@ -84,6 +98,8 @@ def flatten_batch_results(rows: List[Dict[str, Any]], repo: Optional[SupplierRep
             (supplier or {}).get("primary_phone") or "",
             (supplier or {}).get("contact_form_url") or "",
             (supplier or {}).get("country") or "",
+            (supplier or {}).get("address") or "",
+            address_candidate,
             row.get("error_message") or "",
             row.get("name_extraction_note") or "",
         ]

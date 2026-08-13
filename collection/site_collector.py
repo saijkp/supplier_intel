@@ -66,6 +66,9 @@ _RELEVANT_LINK_KEYWORDS: Tuple[str, ...] = (
     "about", "capabilit", "manufactur", "factory", "facilit", "production",
     "quality", "certificat", "workshop", "contact",
     "product", "catalog", "catalogue", "download", "cert",
+    "impressum", "imprint",  # legal-disclosure page (DE/AT/CH etc.) -- a
+                              # reliable address source batch_service.py's
+                              # address extraction looks for specifically.
 )
 
 # Same non-facility-image filter own_website_scraper._find_image_urls uses.
@@ -180,6 +183,22 @@ def _find_relevant_links(base_url: str, html: str) -> List[str]:
             seen.add(normalised)
             found.append(normalised)
     return found
+
+
+def _extract_footer_text(html: str) -> str:
+    """Text content of the page's <footer> element, if any -- company
+    address/registration details are disproportionately likely to live
+    here. Empty string if no <footer> tag is present, matching
+    _html_to_text's own "nothing found" convention -- a natural fit for
+    batch_service.py's address-extraction candidate-building, which
+    treats an empty string as "this tier has no candidate."""
+    soup = BeautifulSoup(html, "html.parser")
+    footer = soup.find("footer")
+    if footer is None:
+        return ""
+    text = footer.get_text(separator="\n")
+    lines = [line.strip() for line in text.splitlines()]
+    return "\n".join(line for line in lines if line)
 
 
 def _find_image_urls(base_url: str, html: str) -> List[str]:
@@ -437,5 +456,6 @@ class SiteCollector:
             html_path=str(html_path.relative_to(run_dir)),
             social_links=_find_social_links(html),
             download_links=_find_download_links(url, html),
+            footer_text=_extract_footer_text(html),
         )
         return collected, html

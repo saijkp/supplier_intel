@@ -16,13 +16,22 @@ from batch.csv_exporter import flatten_batch_results
 
 
 class FakeRepo:
-    def __init__(self, suppliers=None):
+    def __init__(self, suppliers=None, field_provenance=None):
         self._suppliers = suppliers or {}
+        # supplier_id -> list of {"field_name": ..., "value": ...} dicts,
+        # oldest first -- matches the real repository's ORDER BY created_at.
+        self._field_provenance = field_provenance or {}
         self.get_supplier_calls = []
 
     def get_supplier(self, supplier_id):
         self.get_supplier_calls.append(supplier_id)
         return self._suppliers.get(supplier_id)
+
+    def get_field_provenance(self, supplier_id, field_name=None):
+        entries = self._field_provenance.get(supplier_id, [])
+        if field_name is None:
+            return entries
+        return [e for e in entries if e.get("field_name") == field_name]
 
 
 def _read_csv(text):
@@ -207,6 +216,73 @@ class TestNameExtractionNote:
         csv_text = flatten_batch_results(rows, repo=FakeRepo())
         parsed = _read_csv(csv_text)
         assert parsed[0]["name_extraction_note"] == ""
+
+
+class TestAddressColumns:
+
+    def test_address_pulled_from_live_supplier_record(self):
+        repo = FakeRepo(suppliers={
+            5: {"id": 5, "canonical_name": "Acme Co", "address": "1 Main St, Springfield, IL"},
+        })
+        rows = [{
+            "row_index": 0, "original_columns": {"Company Name": "Acme Co"},
+            "status": "success", "company_name": "Acme Co", "name_source": "csv",
+            "supplier_id": 5, "error_message": None,
+        }]
+        csv_text = flatten_batch_results(rows, repo=repo)
+        parsed = _read_csv(csv_text)
+        assert parsed[0]["address"] == "1 Main St, Springfield, IL"
+
+    def test_address_candidate_shown_when_guard_blocked_the_write(self):
+        """The whole point of this column: a supplier that already had
+        a trusted address (e.g. from a bulk import) still needs to show
+        what extraction found, even though `address` itself is
+        unchanged -- otherwise there's no way to tell whether
+        extraction worked at all."""
+        repo = FakeRepo(
+            suppliers={402: {"id": 402, "canonical_name": "CGP (Wuhu) Sealing Co., Ltd.",
+                              "address": "Trusted bulk-import address, China"}},
+            field_provenance={402: [
+                {"field_name": "address_candidate", "value": "Extracted candidate address, China"},
+            ]},
+        )
+        rows = [{
+            "row_index": 0, "original_columns": {"Website": "cgpsealing.com"},
+            "status": "success", "company_name": "CGP (Wuhu) Sealing Co., Ltd.", "name_source": "inferred_from_domain",
+            "supplier_id": 402, "error_message": None,
+        }]
+        csv_text = flatten_batch_results(rows, repo=repo)
+        parsed = _read_csv(csv_text)
+        assert parsed[0]["address"] == "Trusted bulk-import address, China"
+        assert parsed[0]["address_candidate"] == "Extracted candidate address, China"
+
+    def test_address_candidate_blank_when_no_conflict_occurred(self):
+        repo = FakeRepo(suppliers={5: {"id": 5, "canonical_name": "Acme Co", "address": "1 Main St"}})
+        rows = [{
+            "row_index": 0, "original_columns": {"Company Name": "Acme Co"},
+            "status": "success", "company_name": "Acme Co", "name_source": "csv",
+            "supplier_id": 5, "error_message": None,
+        }]
+        csv_text = flatten_batch_results(rows, repo=repo)
+        parsed = _read_csv(csv_text)
+        assert parsed[0]["address_candidate"] == ""
+
+    def test_address_candidate_takes_the_most_recent_entry(self):
+        repo = FakeRepo(
+            suppliers={5: {"id": 5, "canonical_name": "Acme Co", "address": "Trusted address"}},
+            field_provenance={5: [
+                {"field_name": "address_candidate", "value": "older candidate"},
+                {"field_name": "address_candidate", "value": "newer candidate"},
+            ]},
+        )
+        rows = [{
+            "row_index": 0, "original_columns": {"Company Name": "Acme Co"},
+            "status": "success", "company_name": "Acme Co", "name_source": "csv",
+            "supplier_id": 5, "error_message": None,
+        }]
+        csv_text = flatten_batch_results(rows, repo=repo)
+        parsed = _read_csv(csv_text)
+        assert parsed[0]["address_candidate"] == "newer candidate"
 
 
 class TestSpecialCharactersEscaped:

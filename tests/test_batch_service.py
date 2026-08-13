@@ -16,6 +16,7 @@ import pytest
 
 from batch.batch_service import (
     BatchService,
+    _address_candidate_sources,
     _placeholder_name_from_domain,
     _reject_reason_for_extracted_name,
 )
@@ -124,9 +125,10 @@ class FakeMatcher:
 
 
 class FakePage:
-    def __init__(self, url, text):
+    def __init__(self, url, text, footer_text=""):
         self.url = url
         self.text = text
+        self.footer_text = footer_text
 
 
 class FakeCollectionService:
@@ -148,14 +150,20 @@ class FakeCollectionService:
 
 class FakeLLMClient:
     """Stand-in for llm.client.LLMClient -- only complete_json is used,
-    only for placeholder-name extraction."""
+    for placeholder-name and address extraction. `response` is returned
+    for every call unless `responses` (a list) is given, in which case
+    each call consumes the next entry in order -- for tests exercising
+    address extraction's multi-tier fallback (one LLM call per tier)."""
 
-    def __init__(self, response: Any = None):
+    def __init__(self, response: Any = None, responses: Optional[List[Any]] = None):
         self.response = response
+        self._responses = iter(responses) if responses is not None else None
         self.calls: List[Dict[str, Any]] = []
 
     def complete_json(self, system_prompt, user_prompt, **kwargs):
         self.calls.append({"system_prompt": system_prompt, "user_prompt": user_prompt})
+        if self._responses is not None:
+            return next(self._responses)
         return self.response
 
 
@@ -531,6 +539,239 @@ class TestRejectReasonForExtractedName:
     def test_page_text_over_the_length_floor_with_no_signature_is_not_rejected(self):
         long_text = "This is a perfectly ordinary company homepage with real content. " * 2
         assert _reject_reason_for_extracted_name("Acme Trading Co", long_text) is None
+
+
+class TestAddressCandidateSources:
+
+    def test_prefers_contact_page_over_footer_and_impressum(self):
+        pages = [
+            FakePage("https://x.com/", "homepage text", footer_text="Acme Co, 1 Main St"),
+            FakePage("https://x.com/impressum", "Acme Co GmbH, Impressum, 1 Main St, Berlin"),
+            FakePage("https://x.com/contact", "Contact us: Acme Co, 1 Main St, Berlin"),
+        ]
+        candidates = _address_candidate_sources(pages)
+        assert candidates[0][0] == "contact page"
+        assert candidates[0][1] == "https://x.com/contact"
+
+    def test_falls_back_to_footer_when_no_contact_page(self):
+        pages = [
+            FakePage("https://x.com/", "homepage text", footer_text="Acme Co, 1 Main St"),
+            FakePage("https://x.com/impressum", "Acme Co GmbH, Impressum, 1 Main St, Berlin"),
+        ]
+        candidates = _address_candidate_sources(pages)
+        assert candidates[0][0] == "footer"
+        assert candidates[0][1] == "https://x.com/"
+
+    def test_falls_back_to_impressum_when_no_contact_or_footer(self):
+        pages = [
+            FakePage("https://x.com/", "homepage text with no address"),
+            FakePage("https://x.com/imprint", "Acme Co GmbH, 1 Main St, Berlin"),
+        ]
+        candidates = _address_candidate_sources(pages)
+        assert candidates[0][0] == "impressum page"
+        assert candidates[0][1] == "https://x.com/imprint"
+
+    def test_only_the_first_matching_page_per_tier_is_used(self):
+        pages = [
+            FakePage("https://x.com/contact", "first contact page"),
+            FakePage("https://x.com/contact-us", "second contact-shaped page"),
+        ]
+        candidates = _address_candidate_sources(pages)
+        contact_candidates = [c for c in candidates if c[0] == "contact page"]
+        assert len(contact_candidates) == 1
+        assert contact_candidates[0][1] == "https://x.com/contact"
+
+    def test_empty_footer_text_is_not_treated_as_a_candidate(self):
+        pages = [FakePage("https://x.com/", "homepage text", footer_text="")]
+        candidates = _address_candidate_sources(pages)
+        assert candidates == []
+
+    def test_no_matching_pages_returns_empty_list(self):
+        pages = [FakePage("https://x.com/products", "our products page")]
+        assert _address_candidate_sources(pages) == []
+
+
+class TestAddressExtraction:
+
+    def test_applied_when_supplier_has_no_existing_address(self):
+        repo = FakeRepo()
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class ContactPageCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                self.calls.append({"supplier_id": supplier_id})
+                return {
+                    "status": "success", "pages_visited": 1, "error": None,
+                    "pages": [FakePage(
+                        "https://acme.com/contact",
+                        "Contact us at Acme Co, 1 Main St, Springfield, IL 62704, USA. "
+                        "We'd love to hear about your project.",
+                    )],
+                }
+
+        llm = FakeLLMClient(response={"address": "1 Main St, Springfield, IL 62704, USA"})
+        service, _ = _make_service(repo=repo, collection_service=ContactPageCollection(), llm_client=llm)
+
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.addresses_found == 1
+        assert outcome.addresses_conflicting == 0
+        assert repo.suppliers[supplier_id]["address"] == "1 Main St, Springfield, IL 62704, USA"
+
+        prov = [p for p in repo.provenance if p["field_name"] == "address"]
+        assert len(prov) == 1
+        assert prov[0]["value"] == "1 Main St, Springfield, IL 62704, USA"
+        assert prov[0]["source_url"] == "https://acme.com/contact"
+        assert prov[0]["source_tier"] == "own_domain"
+        assert prov[0]["claim_type"] == "verifiable_fact"
+
+    def test_partial_address_is_stored_exactly_as_extracted_not_completed(self):
+        """Explicit requirement: a city-only extraction must be stored
+        as-is, never padded out with an invented street/postcode."""
+        repo = FakeRepo()
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class ContactPageCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage(
+                            "https://acme.com/contact",
+                            "Get in touch with our sales team for a quote. We are based in "
+                            "Foshan, China, and ship worldwide. Reach out any time.",
+                        )]}
+
+        llm = FakeLLMClient(response={"address": "Foshan, China"})
+        service, _ = _make_service(repo=repo, collection_service=ContactPageCollection(), llm_client=llm)
+
+        service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert repo.suppliers[supplier_id]["address"] == "Foshan, China"
+
+    def test_conflicting_when_supplier_already_has_an_address(self):
+        repo = FakeRepo()
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Acme Co", "domain": "acme.com",
+            "address": "Existing Trusted Address, Springfield, IL",
+        })
+
+        class ContactPageCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage(
+                            "https://acme.com/contact",
+                            "Get in touch with our team. Contact: 99 Other St, Nowhere, USA. "
+                            "We respond to all enquiries within one business day.",
+                        )]}
+
+        llm = FakeLLMClient(response={"address": "99 Other St, Nowhere, USA"})
+        service, _ = _make_service(repo=repo, collection_service=ContactPageCollection(), llm_client=llm)
+
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.addresses_found == 0
+        assert outcome.addresses_conflicting == 1
+        assert repo.suppliers[supplier_id]["address"] == "Existing Trusted Address, Springfield, IL"  # untouched
+
+        prov = [p for p in repo.provenance if p["field_name"] == "address_candidate"]
+        assert len(prov) == 1
+        assert prov[0]["value"] == "99 Other St, Nowhere, USA"
+
+    def test_falls_through_tiers_when_contact_page_has_no_address(self):
+        repo = FakeRepo()
+        repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class MultiTierCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {
+                    "status": "success", "pages_visited": 2, "error": None,
+                    "pages": [
+                        FakePage(
+                            "https://acme.com/contact",
+                            "Send us a message using the form below and a member of our team "
+                            "will get back to you as soon as possible.",
+                        ),
+                        FakePage(
+                            "https://acme.com/imprint",
+                            "Impressum: Acme Co GmbH, 5 Impressum Str, Berlin, Germany. "
+                            "Registered at the local court, VAT ID as shown on invoices.",
+                        ),
+                    ],
+                }
+
+        # The LLM is asked twice (once per tier); no address on the
+        # contact page, a real one on the impressum page.
+        llm = FakeLLMClient(responses=[{"address": None}, {"address": "5 Impressum Str, Berlin, Germany"}])
+
+        service, _ = _make_service(repo=repo, collection_service=MultiTierCollection(), llm_client=llm)
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.addresses_found == 1
+        assert len(llm.calls) == 2
+        supplier_id = next(iter(repo.suppliers.keys()))
+        assert repo.suppliers[supplier_id]["address"] == "5 Impressum Str, Berlin, Germany"
+
+    def test_parking_page_candidate_is_skipped_not_extracted_from(self):
+        repo = FakeRepo()
+        repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class ParkingPageCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage("https://acme.com/contact",
+                                            "This domain is parked. Buy this domain from GoDaddy.com.")]}
+
+        llm = FakeLLMClient(response={"address": "Should Not Be Used 123"})
+        service, _ = _make_service(repo=repo, collection_service=ParkingPageCollection(), llm_client=llm)
+
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.addresses_found == 0
+        assert llm.calls == []  # never even asked -- filtered before the LLM call
+
+    def test_no_candidate_pages_at_all_is_skipped(self):
+        repo = FakeRepo()
+        repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class NoRelevantPagesCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage("https://acme.com/products", "our great products")]}
+
+        llm = FakeLLMClient(response={"address": "Should Not Be Used"})
+        service, _ = _make_service(repo=repo, collection_service=NoRelevantPagesCollection(), llm_client=llm)
+
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.addresses_found == 0
+        assert llm.calls == []
+
+    def test_address_extraction_runs_for_placeholder_rows_too(self):
+        """Not gated by name_source -- a URL-only row needs an address
+        extracted just as much as a named one."""
+        repo = FakeRepo()
+
+        class ContactPageCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {
+                    "status": "success", "pages_visited": 1, "error": None,
+                    "pages": [
+                        FakePage("https://acmetrailer.com/", "not much on the homepage, just a hero banner"),
+                        FakePage(
+                            "https://acmetrailer.com/contact",
+                            "Give us a call or stop by our facility. Acme Trailer, 1 Depot Rd, "
+                            "Ohio, USA. Open Monday through Friday.",
+                        ),
+                    ],
+                }
+
+        llm = FakeLLMClient(response={"address": "1 Depot Rd, Ohio, USA"})
+        service, _ = _make_service(repo=repo, collection_service=ContactPageCollection(), llm_client=llm)
+
+        outcome = service.run_batch([_row(website="https://acmetrailer.com")], "job-1")
+
+        assert outcome.addresses_found == 1
+        supplier_id = next(iter(repo.suppliers.keys()))
+        assert repo.suppliers[supplier_id]["address"] == "1 Depot Rd, Ohio, USA"
 
 
 class TestWithinBatchDedup:

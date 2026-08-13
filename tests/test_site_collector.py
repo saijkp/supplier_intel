@@ -22,6 +22,7 @@ from collection.artifact_store import ArtifactStore
 from collection.site_collector import (
     SiteCollector,
     _build_candidate_urls,
+    _extract_footer_text,
     _find_certificate_candidates,
     _find_download_links,
     _find_relevant_links,
@@ -39,6 +40,7 @@ _SITE_FILES = {
                 <a href="/about.html">About Us</a>
                 <a href="/contact.html">Contact</a>
                 <a href="/products.html">Our Products</a>
+                <a href="/impressum.html">Impressum</a>
                 <a href="/catalogue.pdf">Download Catalogue (PDF)</a>
                 <a href="/iso-9001-certificate.pdf">ISO 9001 Certificate</a>
                 <a href="/rohs-certificate-missing.pdf">RoHS Certificate (broken link)</a>
@@ -47,6 +49,17 @@ _SITE_FILES = {
             </nav>
             <img src="/images/factory-floor.jpg" alt="factory">
             <img src="/images/logo.png" alt="logo">
+            <footer>
+                <p>Acme Trailer Co, 123 Industrial Way, Springfield, IL 62704, USA</p>
+                <p>&copy; 2026 Acme Trailer Co. All rights reserved.</p>
+            </footer>
+        </body></html>
+    """,
+    "impressum.html": """
+        <html><body>
+            <h1>Impressum</h1>
+            <p>Acme Trailer Co GmbH, 5 Impressum Str, 10115 Berlin, Germany.</p>
+            <p>Registered at the local court, VAT ID DE123456789.</p>
         </body></html>
     """,
     "about.html": """
@@ -195,6 +208,26 @@ class TestSiteCollectorRealBrowser:
         result = collector.collect(supplier_id=1, domain=local_site)
         assert result.proxy_provider == "NoProxyProvider"
 
+    def test_homepage_footer_text_is_captured(self, local_site, artifact_store):
+        collector = SiteCollector(artifact_store=artifact_store)
+        result = collector.collect(supplier_id=1, domain=local_site)
+        homepage = result.pages[0]
+        assert "Acme Trailer Co, 123 Industrial Way, Springfield, IL 62704, USA" in homepage.footer_text
+
+    def test_page_with_no_footer_has_empty_footer_text(self, local_site, artifact_store):
+        collector = SiteCollector(artifact_store=artifact_store)
+        result = collector.collect(supplier_id=1, domain=local_site)
+        contact_page = next(p for p in result.pages if "contact.html" in p.url)
+        assert contact_page.footer_text == ""
+
+    def test_impressum_page_is_followed_and_collected(self, local_site, artifact_store):
+        collector = SiteCollector(artifact_store=artifact_store, max_pages=6)
+        result = collector.collect(supplier_id=1, domain=local_site)
+        urls = {p.url for p in result.pages}
+        assert any("impressum.html" in u for u in urls)
+        impressum_page = next(p for p in result.pages if "impressum.html" in p.url)
+        assert "5 Impressum Str, 10115 Berlin, Germany" in impressum_page.text
+
 
 class TestCertificateDownload:
     """Real Playwright APIRequestContext against the same local HTTP
@@ -246,6 +279,20 @@ class TestCertificateDownload:
 
 class TestExtractionHelpers:
     """Pure-function tests, no browser/server needed."""
+
+    def test_extract_footer_text_returns_footer_content(self):
+        html = "<html><body><h1>Home</h1><footer><p>Acme Co, 1 Main St, Springfield</p></footer></body></html>"
+        assert "Acme Co, 1 Main St, Springfield" in _extract_footer_text(html)
+
+    def test_extract_footer_text_excludes_content_outside_footer(self):
+        html = "<html><body><h1>Home page heading</h1><footer><p>Footer only text</p></footer></body></html>"
+        text = _extract_footer_text(html)
+        assert "Footer only text" in text
+        assert "Home page heading" not in text
+
+    def test_extract_footer_text_empty_when_no_footer_tag(self):
+        html = "<html><body><h1>Home</h1><p>No footer here</p></body></html>"
+        assert _extract_footer_text(html) == ""
 
     def test_find_relevant_links_excludes_downloads(self):
         html = '<a href="/catalogue.pdf">Catalog PDF</a><a href="/about.html">About</a>'

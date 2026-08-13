@@ -30,6 +30,7 @@ class CollectedPage:
     html_path: Optional[str] = None
     social_links: List[str] = field(default_factory=list)
     download_links: List[str] = field(default_factory=list)
+    footer_text: str = ""  # text of the page's <footer> element, if any -- see site_collector.py's _extract_footer_text
 
 
 @dataclass
