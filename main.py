@@ -541,6 +541,8 @@ def batch_upload(csv_path: str, output: Optional[str]) -> None:
     table.add_row("failed", str(outcome.failed))
     table.add_row("placeholder names used", str(outcome.placeholder_names_used))
     table.add_row("placeholder names replaced", str(outcome.placeholder_names_replaced))
+    table.add_row("placeholder names rejected (junk/parking page)", str(outcome.placeholder_names_rejected))
+    table.add_row("placeholder names conflicting (not applied)", str(outcome.placeholder_names_conflicting))
     console.print(table)
 
     rows = repo.get_batch_upload_rows(job_id)

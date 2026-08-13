@@ -79,7 +79,7 @@ class TestSchemaCreation:
         assert counts["shipment_records"] == 0
         assert counts["dedup_candidates"] == 0
         assert counts["search_log"] == 0
-        assert counts["schema_migrations"] == 18  # v1-v10 as noted previously + v11 AI discovery/collection/verification platform + v12 Sourcing Agent + v13 Apollo contacts + v14 Procurement Decision Engine foundation + v15 Procurement Decision Engine Phase 3 + v16 scoring engine rewrite + v17 self_asserted_score + v18 CSV batch upload (batch_upload_rows/field_provenance)
+        assert counts["schema_migrations"] == 19  # v1-v10 as noted previously + v11 AI discovery/collection/verification platform + v12 Sourcing Agent + v13 Apollo contacts + v14 Procurement Decision Engine foundation + v15 Procurement Decision Engine Phase 3 + v16 scoring engine rewrite + v17 self_asserted_score + v18 CSV batch upload (batch_upload_rows/field_provenance) + v19 batch_upload_rows.name_extraction_note
 
     def test_v11_columns_and_tables_exist_on_fresh_db(self, db_path):
         with connection_scope(db_path) as conn:

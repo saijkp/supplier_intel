@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 
 # ═══════════════════════════════════════════════════════════
@@ -568,6 +568,7 @@ CREATE TABLE IF NOT EXISTS batch_upload_rows (
                           CHECK (status IN ('pending', 'needs_url', 'needs_name', 'processing', 'success', 'failed')),
     supplier_id            INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
     error_message          TEXT,
+    name_extraction_note   TEXT,               -- v19: why a placeholder-name extraction was rejected or not applied (see batch_service.py's _reject_reason_for_extracted_name / trusted-name guard) -- NULL when extraction was applied normally or never attempted
     created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -1168,6 +1169,32 @@ MIGRATIONS: dict[int, dict] = {
             """,
             "CREATE INDEX IF NOT EXISTS idx_field_provenance_supplier ON field_provenance(supplier_id)",
             "CREATE INDEX IF NOT EXISTS idx_field_provenance_field ON field_provenance(supplier_id, field_name)",
+        ],
+    },
+    19: {
+        "description": (
+            "batch_upload_rows.name_extraction_note -- found via a real "
+            "calibration run: a URL-only batch row's placeholder-name "
+            "extraction had no floor test at all, so a server-default/"
+            "parking page (e.g. a bare nginx landing page) produced a "
+            "confident wrong 'company name' and wrote it straight to the "
+            "golden record's canonical_name -- one real case (a bulk-"
+            "imported supplier's trusted name silently overwritten with "
+            "'nginx') found and left uncorrected pending this fix. "
+            "batch_service.py now rejects junk/parking-page extractions "
+            "outright, and separately refuses to overwrite a supplier "
+            "whose canonical_name is no longer the domain-derived "
+            "placeholder (some trusted source already named it) -- in "
+            "that case the extracted value is still recorded via "
+            "field_provenance (field_name='canonical_name_candidate', "
+            "never 'canonical_name') as a disagreement signal, just never "
+            "applied. This column carries the human-readable reason for "
+            "either case so it's visible on the row, not just buried in "
+            "field_provenance; NULL when extraction was applied normally "
+            "or never attempted."
+        ),
+        "columns": [
+            ("batch_upload_rows", "name_extraction_note", "TEXT"),
         ],
     },
 }

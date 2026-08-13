@@ -14,7 +14,11 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from batch.batch_service import BatchService, _placeholder_name_from_domain
+from batch.batch_service import (
+    BatchService,
+    _placeholder_name_from_domain,
+    _reject_reason_for_extracted_name,
+)
 from batch.csv_parser import ParsedRow
 
 
@@ -66,6 +70,10 @@ class FakeRepo:
                 and (field_name is None or p["field_name"] == field_name)]
 
     # -- suppliers ------------------------------------------------------
+    def get_supplier(self, supplier_id):
+        supplier = self.suppliers.get(supplier_id)
+        return dict(supplier) if supplier is not None else None
+
     def find_by_domain(self, domain):
         for s in self.suppliers.values():
             if s.get("domain") == domain:
@@ -73,7 +81,16 @@ class FakeRepo:
         return None
 
     def merge_into_golden(self, supplier_id, supplier_data):
-        self.suppliers[supplier_id].update(supplier_data)
+        """Mirrors storage.repository.SupplierRepository's real merge
+        semantics for scalar fields: only fill in if the existing value
+        is empty -- never let a lower-confidence source clobber an
+        already-known fact. This distinction is load-bearing for the
+        conflicting-name tests below, which depend on a pre-existing
+        trusted name surviving _resolve_placeholder_row's merge call."""
+        existing = self.suppliers[supplier_id]
+        for field, new_value in supplier_data.items():
+            if existing.get(field) in (None, "", 0) and new_value not in (None, ""):
+                existing[field] = new_value
 
     def create_golden_record(self, supplier_data):
         supplier_id = self._next_supplier_id
@@ -286,8 +303,12 @@ class TestNameExtraction:
                 self.calls.append({"supplier_id": supplier_id, "return_pages": return_pages, "source_url": source_url})
                 return {
                     "status": "success", "pages_visited": 1, "error": None,
-                    "pages": [FakePage("https://acmetrailer.com/about",
-                                        "Acme Trailer Manufacturing Ltd is a factory in Ohio.")],
+                    "pages": [FakePage(
+                        "https://acmetrailer.com/about",
+                        "Acme Trailer Manufacturing Ltd is a factory in Ohio, manufacturing "
+                        "trailer axles and chassis components since 1998 for customers across "
+                        "North America.",
+                    )],
                 }
 
         llm = FakeLLMClient(response={"company_name": "Acme Trailer Manufacturing Ltd"})
@@ -349,6 +370,167 @@ class TestNameExtraction:
         service, _ = _make_service(repo=repo, collection_service=CollectionWithPages(), llm_client=llm)
         service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
         assert llm.calls == []
+
+    def test_junk_extracted_name_is_rejected_not_stored(self):
+        """The exact bug found via a real calibration run: a bare nginx
+        default page confidently 'extracts' the company name 'nginx'."""
+        repo = FakeRepo()
+
+        class NginxDefaultPage(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                self.calls.append({"supplier_id": supplier_id, "return_pages": return_pages, "source_url": source_url})
+                return {
+                    "status": "success", "pages_visited": 1, "error": None,
+                    "pages": [FakePage(
+                        "http://www.cgpsealing.com",
+                        "Welcome to nginx!\nWelcome to nginx!\nIf you see this page, the nginx "
+                        "web server is successfully installed and\nworking. Further "
+                        "configuration is required.\nFor online documentation and support "
+                        "please refer to\nnginx.org\n.\nCommercial support is available at\n"
+                        "nginx.com\n.\nThank you for using nginx.",
+                    )],
+                }
+
+        llm = FakeLLMClient(response={"company_name": "nginx"})
+        service, _ = _make_service(repo=repo, collection_service=NginxDefaultPage(), llm_client=llm)
+
+        outcome = service.run_batch([_row(website="http://www.cgpsealing.com")], "job-1")
+
+        assert outcome.placeholder_names_replaced == 0
+        assert outcome.placeholder_names_rejected == 1
+        row = next(iter(repo.rows.values()))
+        supplier = repo.suppliers[row["supplier_id"]]
+        assert supplier["canonical_name"] != "nginx"  # placeholder untouched
+        assert row["company_name"] is None  # batch row's own snapshot untouched
+        assert "rejected" in row["name_extraction_note"]
+        assert "nginx" in row["name_extraction_note"]
+        assert repo.provenance == []  # nothing recorded for a rejected name
+
+    def test_short_page_text_is_rejected_regardless_of_name(self):
+        """A real name-shaped string extracted from an almost-blank page
+        is still suspicious -- the page-shape check catches what the
+        exact-name blocklist can't enumerate in advance."""
+        repo = FakeRepo()
+
+        class AlmostBlankPage(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                self.calls.append({"supplier_id": supplier_id, "return_pages": return_pages, "source_url": source_url})
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage("https://x.com", "Site Under Maintenance")]}
+
+        llm = FakeLLMClient(response={"company_name": "Acme Trading"})
+        service, _ = _make_service(repo=repo, collection_service=AlmostBlankPage(), llm_client=llm)
+
+        outcome = service.run_batch([_row(website="https://x.com")], "job-1")
+
+        assert outcome.placeholder_names_rejected == 1
+        row = next(iter(repo.rows.values()))
+        supplier = repo.suppliers[row["supplier_id"]]
+        assert supplier["canonical_name"] != "Acme Trading"
+
+    def test_extraction_conflicting_with_a_trusted_existing_name_is_not_applied(self):
+        """cgpsealing.com's real failure mode: the domain already had a
+        trusted name (e.g. from a bulk import) before this batch row
+        touched it -- extraction must never overwrite it, but the
+        disagreement is still worth recording."""
+        repo = FakeRepo()
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "CGP (Wuhu) Sealing Co., Ltd.", "domain": "cgpsealing.com",
+        })
+
+        class CollectionWithPages(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                self.calls.append({"supplier_id": supplier_id, "return_pages": return_pages, "source_url": source_url})
+                return {
+                    "status": "success", "pages_visited": 1, "error": None,
+                    "pages": [FakePage(
+                        "http://www.cgpsealing.com",
+                        "Some other confusingly-worded page content about sealing products "
+                        "and industrial gaskets manufactured for automotive customers.",
+                    )],
+                }
+
+        llm = FakeLLMClient(response={"company_name": "Wuhu Sealing Group"})
+        service, _ = _make_service(repo=repo, collection_service=CollectionWithPages(), llm_client=llm)
+
+        outcome = service.run_batch([_row(website="http://www.cgpsealing.com")], "job-1")
+
+        assert outcome.placeholder_names_replaced == 0
+        assert outcome.placeholder_names_conflicting == 1
+        assert repo.suppliers[supplier_id]["canonical_name"] == "CGP (Wuhu) Sealing Co., Ltd."  # never overwritten
+
+        row = next(iter(repo.rows.values()))
+        assert row["company_name"] is None  # batch row's own snapshot untouched
+        assert "CGP (Wuhu) Sealing Co., Ltd." in row["name_extraction_note"]
+        assert "Wuhu Sealing Group" in row["name_extraction_note"]
+
+        assert len(repo.provenance) == 1
+        prov = repo.provenance[0]
+        assert prov["field_name"] == "canonical_name_candidate"  # never "canonical_name"
+        assert prov["value"] == "Wuhu Sealing Group"
+        assert prov["source_tier"] == "own_domain"
+        assert prov["claim_type"] == "verifiable_fact"
+
+    def test_conflicting_name_that_is_also_junk_is_rejected_first(self):
+        """Rejection is checked before the trusted-name comparison --
+        a junk extraction should never even reach field_provenance as a
+        'candidate', trusted-name or not."""
+        repo = FakeRepo()
+        repo.create_golden_record({"canonical_name": "CGP (Wuhu) Sealing Co., Ltd.", "domain": "cgpsealing.com"})
+
+        class NginxDefaultPage(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                self.calls.append({"supplier_id": supplier_id, "return_pages": return_pages, "source_url": source_url})
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage("http://www.cgpsealing.com", "Welcome to nginx! " * 5)]}
+
+        llm = FakeLLMClient(response={"company_name": "nginx"})
+        service, _ = _make_service(repo=repo, collection_service=NginxDefaultPage(), llm_client=llm)
+
+        outcome = service.run_batch([_row(website="http://www.cgpsealing.com")], "job-1")
+
+        assert outcome.placeholder_names_rejected == 1
+        assert outcome.placeholder_names_conflicting == 0
+        assert repo.provenance == []
+
+
+class TestRejectReasonForExtractedName:
+
+    def test_exact_blocklist_match_is_rejected(self):
+        assert _reject_reason_for_extracted_name("nginx", "some long page text here " * 5) is not None
+
+    def test_blocklist_match_is_case_and_punctuation_insensitive(self):
+        assert _reject_reason_for_extracted_name("Nginx!", "some long page text here " * 5) is not None
+        assert _reject_reason_for_extracted_name("  NGINX  ", "some long page text here " * 5) is not None
+
+    def test_name_containing_a_blocklist_phrase_is_not_rejected_on_that_basis(self):
+        """The exact bug the user flagged: whole-name match only, never
+        substring -- a real company shouldn't be rejected just because
+        its name happens to contain 'welcome to'."""
+        long_text = "Chiming Auto Lighting is a manufacturer based in Foshan, China. " * 3
+        assert _reject_reason_for_extracted_name("Welcome to Chiming", long_text) is None
+
+    def test_real_names_are_never_falsely_rejected(self):
+        long_text = "A real company page with plenty of descriptive marketing text. " * 3
+        for real_name in (
+            "JOST", "BPW Bergische Achsen KG", "Cartek International Co.,Ltd",
+            "CGP (Wuhu) Sealing Co., Ltd.", "3G Winnard Ltd.", "Adriauto S.r.l.",
+        ):
+            assert _reject_reason_for_extracted_name(real_name, long_text) is None, real_name
+
+    def test_parking_page_text_signature_is_rejected_even_with_a_plausible_name(self):
+        page_text = (
+            "Acme Trading Co\nThis domain is parked free, courtesy of GoDaddy.com. "
+            "Would you like to buy this domain?"
+        )
+        assert _reject_reason_for_extracted_name("Acme Trading Co", page_text) is not None
+
+    def test_short_page_text_is_rejected(self):
+        assert _reject_reason_for_extracted_name("Acme Trading Co", "Hello world") is not None
+
+    def test_page_text_over_the_length_floor_with_no_signature_is_not_rejected(self):
+        long_text = "This is a perfectly ordinary company homepage with real content. " * 2
+        assert _reject_reason_for_extracted_name("Acme Trading Co", long_text) is None
 
 
 class TestWithinBatchDedup:

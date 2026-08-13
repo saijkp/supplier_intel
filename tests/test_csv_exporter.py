@@ -183,6 +183,32 @@ class TestFailedRows:
         assert parsed[0]["error_message"] == "could not fetch homepage"
 
 
+class TestNameExtractionNote:
+
+    def test_rejection_reason_is_included(self):
+        rows = [{
+            "row_index": 0, "original_columns": {"Website": "cgpsealing.com"},
+            "status": "success", "company_name": None, "name_source": "inferred_from_domain",
+            "supplier_id": 402, "error_message": None,
+            "name_extraction_note": "rejected: extracted name 'nginx' matches a known "
+                                     "server-default/placeholder page name",
+        }]
+        csv_text = flatten_batch_results(rows, repo=FakeRepo(suppliers={402: {"id": 402, "canonical_name": "Cgpsealing"}}))
+        parsed = _read_csv(csv_text)
+        assert "rejected" in parsed[0]["name_extraction_note"]
+        assert "nginx" in parsed[0]["name_extraction_note"]
+
+    def test_absent_when_extraction_was_not_attempted_or_applied_cleanly(self):
+        rows = [{
+            "row_index": 0, "original_columns": {"Company Name": "Acme Co"},
+            "status": "success", "company_name": "Acme Co", "name_source": "csv",
+            "supplier_id": None, "error_message": None,
+        }]
+        csv_text = flatten_batch_results(rows, repo=FakeRepo())
+        parsed = _read_csv(csv_text)
+        assert parsed[0]["name_extraction_note"] == ""
+
+
 class TestSpecialCharactersEscaped:
 
     def test_commas_and_quotes_in_original_data_round_trip_correctly(self):

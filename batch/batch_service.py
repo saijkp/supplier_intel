@@ -27,11 +27,16 @@ Row handling:
   all. After collect(), a grounded name-extraction pass -- literally
   the same SYSTEM_PROMPT discovery.candidate_validator.py already uses
   ("only report a name if explicitly stated in the text, never guess")
-  -- attempts to replace the placeholder with a real one; if found, the
-  value AND its provenance (source_url, raw_snippet, extraction_method,
-  source_tier='own_domain', claim_type='verifiable_fact') are recorded
-  via field_provenance, since it's an extracted value like any other
-  and belongs in the calibration loop the same way.
+  -- attempts to replace the placeholder with a real one. Three
+  outcomes (see _attempt_name_extraction's own docstring for the
+  exact logic): applied (name passed a junk/parking-page floor test
+  and the supplier still had the placeholder -- written to
+  canonical_name + field_provenance), rejected (extraction found a
+  server-default/parking-page name like "nginx" -- nothing written,
+  reason recorded on the batch row), or conflicting (the supplier
+  already has a trusted name from elsewhere -- never overwritten, but
+  the disagreement is still recorded via field_provenance under
+  field_name="canonical_name_candidate" as a signal, not applied).
 - neither name nor website: needs_url (a row telling us nothing about
   the company is, at minimum, still missing a URL).
 
@@ -49,6 +54,7 @@ supplier_id in the export is itself the visible signal.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -62,6 +68,66 @@ from storage.repository import SupplierRepository
 
 logger = logging.getLogger(__name__)
 
+# Whole-name (not substring) match -- a real company whose extracted
+# name happens to CONTAIN "welcome to" (e.g. "Welcome to Chiming") must
+# never be rejected on that basis; only an exact match against a known
+# server-default/parking-page name is high-confidence enough to reject
+# outright. Ambiguous cases are caught by _PARKING_PAGE_TEXT_SIGNATURES
+# below instead of by growing this list.
+_JUNK_NAME_EXACT_BLOCKLIST: frozenset = frozenset({
+    "nginx", "welcome to nginx", "welcome to nginx!",
+    "apache2 ubuntu default page", "apache2 debian default page",
+    "apache http server test page", "it works", "it works!",
+    "iis windows server", "welcome to iis", "internet information services",
+    "index of", "index of /", "untitled", "untitled document", "untitled page",
+    "coming soon", "under construction", "this site is under construction",
+    "parked domain", "domain parked", "this domain is parked",
+    "domain for sale", "this domain is for sale", "buy this domain",
+    "default web site page", "test page", "cloudflare",
+})
+
+# Checked as a substring against the fetched PAGE TEXT, not the
+# extracted name -- these are real server-default/parking-page
+# boilerplate phrases, so substring matching here doesn't carry the
+# same false-positive risk a name blocklist substring match would.
+_PARKING_PAGE_TEXT_SIGNATURES: tuple = (
+    "the nginx web server is successfully installed",
+    "apache2 ubuntu default page",
+    "apache2 debian default page",
+    "this is the default welcome page",
+    "the web server software is running but no content has been added",
+    "this domain is parked",
+    "domain is parked",
+    "buy this domain",
+    "this domain is for sale",
+    "godaddy.com",
+    "namecheap parking",
+    "further configuration is required",
+)
+
+# A page with less real content than this (after stripping whitespace)
+# isn't a real company page regardless of what name was extracted from it.
+_MIN_MEANINGFUL_PAGE_TEXT_LENGTH = 60
+
+
+def _reject_reason_for_extracted_name(name: str, page_text: str) -> Optional[str]:
+    """None if `name` passes the floor test; otherwise a human-readable
+    rejection reason. See the two constants above for what's checked
+    and why the name check is whole-string, not substring."""
+    normalised_name = " ".join(name.strip().lower().rstrip("!.").split())
+    if normalised_name in _JUNK_NAME_EXACT_BLOCKLIST:
+        return f"extracted name '{name}' matches a known server-default/placeholder page name"
+
+    haystack = (page_text or "").lower()
+    for signature in _PARKING_PAGE_TEXT_SIGNATURES:
+        if signature in haystack:
+            return f"page text matches a known server-default/parking-page signature ('{signature}')"
+
+    if len(re.sub(r"\s+", "", page_text or "")) < _MIN_MEANINGFUL_PAGE_TEXT_LENGTH:
+        return "page text is too short to be a real company page"
+
+    return None
+
 
 @dataclass
 class BatchOutcome:
@@ -72,6 +138,8 @@ class BatchOutcome:
     failed: int = 0
     placeholder_names_used: int = 0
     placeholder_names_replaced: int = 0
+    placeholder_names_rejected: int = 0
+    placeholder_names_conflicting: int = 0
 
 
 def _placeholder_name_from_domain(domain: str) -> str:
@@ -188,8 +256,13 @@ class BatchService:
                 continue
 
             if name_source == "inferred_from_domain":
-                if self._attempt_name_extraction(supplier_id, collect_result, batch_row_id):
+                extraction_outcome = self._attempt_name_extraction(supplier_id, collect_result, batch_row_id)
+                if extraction_outcome == "applied":
                     outcome.placeholder_names_replaced += 1
+                elif extraction_outcome == "rejected":
+                    outcome.placeholder_names_rejected += 1
+                elif extraction_outcome == "conflicting":
+                    outcome.placeholder_names_conflicting += 1
 
             if collect_result.get("status") == "success":
                 outcome.succeeded += 1
@@ -239,27 +312,50 @@ class BatchService:
         resolved_domains[domain] = supplier_id
         return supplier_id
 
-    def _attempt_name_extraction(self, supplier_id: int, collect_result: Dict[str, Any], batch_row_id: int) -> bool:
+    def _attempt_name_extraction(self, supplier_id: int, collect_result: Dict[str, Any], batch_row_id: int) -> str:
         """Reuses discovery.candidate_validator.SYSTEM_PROMPT verbatim --
         same grounded-only extraction discipline, applied here to a
         page already fetched for collection rather than a fresh one.
-        Returns True only if a real name was found and stored.
 
-        Updates BOTH the supplier record (canonical_name, the
-        authoritative value) AND this batch row's own company_name --
-        the row-level copy exists so a row that's later re-queried in
-        isolation (e.g. by the export or a review view) doesn't have to
-        join back to suppliers just to see what was actually found;
-        csv_exporter.py still prefers the live supplier value as the
-        ultimate source of truth, this is a consistency nicety, not the
-        only place the real value lives."""
+        Returns one of:
+        - "skipped"     -- no pages / no text / LLM call failed / no name found
+        - "rejected"    -- a name WAS extracted but failed the junk/parking-page
+                           floor test (_reject_reason_for_extracted_name) --
+                           found via a real calibration run: a bare nginx
+                           landing page confidently "extracted" the company
+                           name "nginx" and it was written straight to the
+                           golden record. Nothing is written; the reason is
+                           recorded on the batch row.
+        - "conflicting" -- the name passed the floor test, but the supplier's
+                           canonical_name is no longer the domain-derived
+                           placeholder (some trusted source -- e.g. a bulk
+                           import -- already named it) -- never overwritten
+                           by a lower-confidence guess. The extracted value
+                           is still recorded via field_provenance, under
+                           field_name="canonical_name_candidate" (never
+                           "canonical_name", so it's never mistaken for the
+                           applied value) -- a disagreement between the
+                           trusted name and the site's own content is a real
+                           signal about the supplier, not noise to discard.
+        - "applied"     -- the name passed every check and was written to
+                           BOTH the supplier record (canonical_name, the
+                           authoritative value) AND this batch row's own
+                           company_name -- the row-level copy exists so a
+                           row that's later re-queried in isolation (e.g. by
+                           the export or a review view) doesn't have to join
+                           back to suppliers just to see what was actually
+                           found; csv_exporter.py still prefers the live
+                           supplier value as the ultimate source of truth,
+                           this is a consistency nicety, not the only place
+                           the real value lives.
+        """
         pages = collect_result.get("pages") or []
         if not pages:
-            return False
+            return "skipped"
         page = pages[0]
         page_text = getattr(page, "text", "") or ""
         if not page_text.strip():
-            return False
+            return "skipped"
 
         try:
             extracted = self.llm_client.complete_json(
@@ -267,14 +363,51 @@ class BatchService:
             )
         except Exception as e:  # noqa: BLE001 -- an extraction failure must never fail an otherwise-successful collection
             logger.warning("batch: name extraction failed for supplier #%s: %s", supplier_id, e)
-            return False
+            return "skipped"
         if not isinstance(extracted, dict):
-            return False
+            return "skipped"
 
         name = extracted.get("company_name")
         if not isinstance(name, str) or not name.strip():
-            return False
+            return "skipped"
         name = name.strip()
+        page_url = getattr(page, "url", None)
+
+        reject_reason = _reject_reason_for_extracted_name(name, page_text)
+        if reject_reason:
+            logger.info(
+                "batch: rejected extracted name '%s' for supplier #%s (%s)", name, supplier_id, reject_reason,
+            )
+            self.repo.update_batch_upload_row(batch_row_id, {
+                "name_extraction_note": f"rejected: {reject_reason}",
+            })
+            return "rejected"
+
+        supplier = self.repo.get_supplier(supplier_id)
+        current_name = (supplier or {}).get("canonical_name")
+        expected_placeholder = _placeholder_name_from_domain((supplier or {}).get("domain") or "")
+
+        if current_name is not None and current_name != expected_placeholder:
+            # A trusted source already named this supplier -- never let a
+            # lower-confidence guess overwrite it, but still surface the
+            # disagreement (see this method's own docstring).
+            logger.info(
+                "batch: extracted name '%s' conflicts with existing trusted name '%s' for "
+                "supplier #%s -- not applied", name, current_name, supplier_id,
+            )
+            self.repo.save_field_provenance(
+                supplier_id=supplier_id, field_name="canonical_name_candidate", value=name,
+                source_url=page_url, raw_snippet=page_text[:500],
+                extraction_method="llm_grounded_extraction",
+                source_tier="own_domain", claim_type="verifiable_fact",
+            )
+            self.repo.update_batch_upload_row(batch_row_id, {
+                "name_extraction_note": (
+                    f"skipped: supplier already named '{current_name}'; "
+                    f"site extraction found '{name}' instead -- see field_provenance"
+                ),
+            })
+            return "conflicting"
 
         self.repo.update_supplier_fields_with_history(
             supplier_id, {"canonical_name": name},
@@ -283,9 +416,9 @@ class BatchService:
         )
         self.repo.save_field_provenance(
             supplier_id=supplier_id, field_name="canonical_name", value=name,
-            source_url=getattr(page, "url", None), raw_snippet=page_text[:500],
+            source_url=page_url, raw_snippet=page_text[:500],
             extraction_method="llm_grounded_extraction",
             source_tier="own_domain", claim_type="verifiable_fact",
         )
         self.repo.update_batch_upload_row(batch_row_id, {"company_name": name})
-        return True
+        return "applied"

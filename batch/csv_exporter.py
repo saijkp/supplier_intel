@@ -27,7 +27,7 @@ from storage.repository import SupplierRepository
 _RESULT_COLUMNS = (
     "status", "company_name", "name_source", "resolved_domain",
     "primary_email", "primary_phone", "contact_form_url", "country",
-    "error_message",
+    "error_message", "name_extraction_note",
 )
 
 
@@ -85,6 +85,7 @@ def flatten_batch_results(rows: List[Dict[str, Any]], repo: Optional[SupplierRep
             (supplier or {}).get("contact_form_url") or "",
             (supplier or {}).get("country") or "",
             row.get("error_message") or "",
+            row.get("name_extraction_note") or "",
         ]
 
         writer.writerow([*original_values, *result_values])
