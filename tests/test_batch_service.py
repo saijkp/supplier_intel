@@ -121,8 +121,8 @@ class FakeCollectionService:
         self.results = results or {}
         self.calls: List[Dict[str, Any]] = []
 
-    def collect(self, supplier_id, return_pages=False):
-        self.calls.append({"supplier_id": supplier_id, "return_pages": return_pages})
+    def collect(self, supplier_id, return_pages=False, source_url=None):
+        self.calls.append({"supplier_id": supplier_id, "return_pages": return_pages, "source_url": source_url})
         outcome = dict(self.results.get(supplier_id, {"supplier_id": supplier_id, "status": "success", "pages_visited": 1, "error": None}))
         if return_pages and "pages" not in outcome:
             outcome["pages"] = []
@@ -282,8 +282,8 @@ class TestNameExtraction:
         repo = FakeRepo()
 
         class CollectionWithPages(FakeCollectionService):
-            def collect(self, supplier_id, return_pages=False):
-                self.calls.append({"supplier_id": supplier_id, "return_pages": return_pages})
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                self.calls.append({"supplier_id": supplier_id, "return_pages": return_pages, "source_url": source_url})
                 return {
                     "status": "success", "pages_visited": 1, "error": None,
                     "pages": [FakePage("https://acmetrailer.com/about",
@@ -325,8 +325,8 @@ class TestNameExtraction:
         repo = FakeRepo()
 
         class CollectionWithPages(FakeCollectionService):
-            def collect(self, supplier_id, return_pages=False):
-                self.calls.append({"supplier_id": supplier_id, "return_pages": return_pages})
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                self.calls.append({"supplier_id": supplier_id, "return_pages": return_pages, "source_url": source_url})
                 return {"status": "success", "pages_visited": 1, "error": None,
                         "pages": [FakePage("https://x.com", "not much here")]}
 
@@ -341,8 +341,8 @@ class TestNameExtraction:
         repo = FakeRepo()
 
         class CollectionWithPages(FakeCollectionService):
-            def collect(self, supplier_id, return_pages=False):
-                self.calls.append({"supplier_id": supplier_id, "return_pages": return_pages})
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                self.calls.append({"supplier_id": supplier_id, "return_pages": return_pages, "source_url": source_url})
                 return {"status": "success", "pages_visited": 1, "error": None, "pages": [FakePage("https://x.com", "text")]}
 
         llm = FakeLLMClient(response={"company_name": "Irrelevant"})

@@ -97,6 +97,39 @@ _CERTIFICATE_KEYWORDS: Tuple[str, ...] = (
 )
 
 
+def _build_candidate_urls(domain: str, source_url: Optional[str]) -> List[str]:
+    """Ordered, deduplicated base-URL candidates to try for a bare
+    hostname. Many hosts (a lot of Chinese-hosted sites in particular)
+    only resolve on www -- blindly upgrading a discovered
+    "http://www.X" to "https://X" (dropping www AND forcing https in
+    one step) breaks those. So: the URL exactly as it was originally
+    given (if any -- e.g. a CSV row's raw website column), then
+    https://www.X, then https://X, then http://www.X, cheapest/most
+    likely first. www is never stripped unless a bare-host candidate
+    actually loads.
+
+    Only called for a bare hostname -- see collect()'s scheme check;
+    a caller-supplied `domain` that's already a full URL (e.g. a test
+    server, or an explicit override) is used exactly as given instead,
+    with nothing to guess."""
+    candidates: List[str] = []
+    if source_url:
+        candidates.append(
+            source_url if source_url.startswith(("http://", "https://")) else f"https://{source_url}"
+        )
+    bare = domain[4:] if domain.lower().startswith("www.") else domain
+    candidates += [f"https://www.{bare}", f"https://{bare}", f"http://www.{bare}"]
+
+    seen: set = set()
+    ordered: List[str] = []
+    for candidate in candidates:
+        key = candidate.rstrip("/").lower()
+        if key not in seen:
+            seen.add(key)
+            ordered.append(candidate)
+    return ordered
+
+
 def _find_certificate_candidates(download_links: List[str]) -> List[Tuple[str, str]]:
     """Returns (url, matched_keyword) pairs, first-match-wins per URL,
     in encounter order, deduplicated."""
@@ -236,25 +269,38 @@ class SiteCollector:
         context.set_default_timeout(self.page_timeout_ms)
         return browser, context
 
-    def collect(self, supplier_id: int, domain: str) -> CollectionResult:
+    def collect(self, supplier_id: int, domain: str, source_url: Optional[str] = None) -> CollectionResult:
         """Never raises -- a single supplier's collection failure must
         never abort a batch run (same discipline as every other
-        pipeline stage in this codebase)."""
+        pipeline stage in this codebase).
+
+        `source_url`: the raw website string as originally given (e.g.
+        a CSV row's website column), tried first among the homepage
+        candidates -- see _build_candidate_urls. Optional: callers that
+        only have a bare `domain` on file (collect_pending(), a direct
+        `main.py collect <id>`) simply omit it and fall back to the
+        generated www/scheme permutations."""
         if not domain:
             return CollectionResult(domain=domain, success=False, error="no domain provided")
 
-        base_url = domain if domain.startswith(("http://", "https://")) else f"https://{domain}"
+        if domain.startswith(("http://", "https://")):
+            # Caller already gave a full URL (e.g. a test server) --
+            # nothing to disambiguate, use it exactly as given.
+            candidates = [domain]
+        else:
+            candidates = _build_candidate_urls(domain, source_url)
+
         run_dir = self.artifact_store.new_run_dir(supplier_id)
         relative_dir = self.artifact_store.relative_path(run_dir)
         provider_name = type(self.proxy_provider).__name__
 
         try:
             if self._playwright_factory is not None:
-                return self._collect_with(self._playwright_factory(), base_url, domain, run_dir, relative_dir, provider_name)
+                return self._collect_with(self._playwright_factory(), candidates, domain, run_dir, relative_dir, provider_name)
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as p:
-                return self._collect_with(p, base_url, domain, run_dir, relative_dir, provider_name)
+                return self._collect_with(p, candidates, domain, run_dir, relative_dir, provider_name)
         except Exception as e:  # noqa: BLE001 -- one supplier's collection must never abort a batch
             logger.error("collection: unexpected error collecting %s: %s", domain, e)
             return CollectionResult(
@@ -263,19 +309,29 @@ class SiteCollector:
             )
 
     def _collect_with(
-        self, playwright: Any, base_url: str, domain: str, run_dir: Path, relative_dir: str, provider_name: str,
+        self, playwright: Any, candidates: List[str], domain: str, run_dir: Path, relative_dir: str, provider_name: str,
     ) -> CollectionResult:
         browser, context = self._launch(playwright)
         try:
             pages: List[CollectedPage] = []
             page = context.new_page()
 
-            homepage = self._visit_and_collect(page, base_url, 0, run_dir)
+            homepage = None
+            base_url = None
+            for candidate in candidates:
+                homepage = self._visit_and_collect(page, candidate, 0, run_dir)
+                if homepage is not None:
+                    base_url = candidate
+                    break
+
             if homepage is None:
                 return CollectionResult(
-                    domain=domain, success=False, error=f"could not load homepage: {base_url}",
+                    domain=domain, success=False,
+                    error=f"could not load homepage -- tried {', '.join(candidates)}",
                     artifacts_dir=relative_dir, proxy_provider=provider_name,
                 )
+            if len(candidates) > 1:
+                logger.info("collection: %s resolved via %s", domain, base_url)
             homepage_page, homepage_html = homepage
             pages.append(homepage_page)
 
@@ -292,6 +348,7 @@ class SiteCollector:
                 domain=domain, pages=pages, success=True,
                 artifacts_dir=relative_dir, proxy_provider=provider_name,
                 certificate_documents=certificate_documents,
+                resolved_url=base_url,
             )
         finally:
             browser.close()

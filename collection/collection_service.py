@@ -103,7 +103,7 @@ class CollectionService:
         self.job_max_seconds = job_max_seconds
         self.parallel_workers = parallel_workers
 
-    def collect(self, supplier_id: int, return_pages: bool = False) -> Dict[str, Any]:
+    def collect(self, supplier_id: int, return_pages: bool = False, source_url: Optional[str] = None) -> Dict[str, Any]:
         """Collect against one supplier by id -- always runs, not
         gated by collection_status/force (a caller who names a specific
         supplier clearly wants it collected).
@@ -114,13 +114,23 @@ class CollectionService:
         expects it). Exists for batch/batch_service.py's placeholder-
         name-extraction step, which needs the actual page text
         SiteCollector already fetched -- exposing what this method
-        already computed internally, not a second fetch/pipeline."""
+        already computed internally, not a second fetch/pipeline.
+
+        `source_url`: the raw website string exactly as originally
+        given (e.g. a CSV row's website column, before
+        deduplication.domain_utils.extract_domain stripped it to a
+        bare domain for storage) -- passed straight through to
+        SiteCollector, which tries it before any guessed www/scheme
+        variant. Omit when nothing but the stored bare domain is
+        available (matches prior behaviour exactly)."""
         supplier = self.repo.get_supplier(supplier_id)
         if supplier is None:
             raise ValueError(f"No supplier with id={supplier_id}")
-        return self._collect_one(supplier, return_pages=return_pages)
+        return self._collect_one(supplier, return_pages=return_pages, source_url=source_url)
 
-    def _collect_one(self, supplier: Dict[str, Any], return_pages: bool = False) -> Dict[str, Any]:
+    def _collect_one(
+        self, supplier: Dict[str, Any], return_pages: bool = False, source_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
         supplier_id = supplier["id"]
         domain = supplier.get("domain")
         started_at = datetime.now(timezone.utc).isoformat()
@@ -138,7 +148,7 @@ class CollectionService:
             return outcome
 
         try:
-            result = self.site_collector.collect(supplier_id, domain)
+            result = self.site_collector.collect(supplier_id, domain, source_url=source_url)
         except Exception as e:  # noqa: BLE001 -- SiteCollector already never raises; this is defence in depth,
             # matching every other pipeline stage's per-supplier fault isolation in this codebase.
             logger.error("collection: unexpected error for supplier #%s: %s", supplier_id, e)
@@ -171,7 +181,7 @@ class CollectionService:
         outcome = {
             "supplier_id": supplier_id, "status": status,
             "pages_visited": len(result.pages), "error": result.error,
-            "certificates_saved": certificates_saved,
+            "certificates_saved": certificates_saved, "resolved_url": result.resolved_url,
             **contact_stats,
         }
         if return_pages:

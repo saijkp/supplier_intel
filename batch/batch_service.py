@@ -176,6 +176,7 @@ class BatchService:
             try:
                 collect_result = self.collection_service.collect(
                     supplier_id, return_pages=(name_source == "inferred_from_domain"),
+                    source_url=row.website,
                 )
             except Exception as e:  # noqa: BLE001 -- CollectionService.collect() already never raises;
                 # this is defence in depth, matching every other stage's per-row fault isolation.

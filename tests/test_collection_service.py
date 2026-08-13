@@ -55,9 +55,9 @@ class FakeSiteCollector:
         self.active = 0
         self.max_concurrent = 0
 
-    def collect(self, supplier_id, domain):
+    def collect(self, supplier_id, domain, source_url=None):
         with self._lock:
-            self.calls.append((supplier_id, domain))
+            self.calls.append((supplier_id, domain, source_url))
             self.active += 1
             self.max_concurrent = max(self.max_concurrent, self.active)
         try:

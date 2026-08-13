@@ -54,3 +54,9 @@ class CollectionResult:
     artifacts_dir: Optional[str] = None  # path relative to config.settings.COLLECTION_ARTIFACTS_DIR
     proxy_provider: Optional[str] = None
     certificate_documents: List[CertificateDocument] = field(default_factory=list)
+    # Which candidate base URL actually loaded -- see site_collector.py's
+    # _build_candidate_urls (many hosts only resolve on www, or only on
+    # http, so the homepage fetch tries several variants in order).
+    # None when success is False (nothing loaded) or when `domain` was
+    # already a full URL (single-candidate path, nothing to disambiguate).
+    resolved_url: Optional[str] = None
