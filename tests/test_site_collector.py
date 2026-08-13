@@ -343,13 +343,18 @@ class _FakePage:
         self._working_urls = set(working_urls)
         self._html = html
         self.goto_calls: List[str] = []
+        self.goto_wait_until_values: List[Any] = []
         self._current_url = None
 
-    def goto(self, url, timeout=None):
+    def goto(self, url, timeout=None, wait_until=None):
         self.goto_calls.append(url)
+        self.goto_wait_until_values.append(wait_until)
         if url not in self._working_urls:
             raise RuntimeError(f"net::ERR_NAME_NOT_RESOLVED for {url}")
         self._current_url = url
+
+    def wait_for_selector(self, selector, timeout=None):
+        pass
 
     def content(self):
         return self._html
@@ -459,3 +464,28 @@ class TestCandidateUrlFallback:
 
         assert result.success is True
         assert fake.page.goto_calls == ["http://127.0.0.1:9999"]
+
+
+class TestWaitUntilDomContentLoaded:
+    """"load" (the Playwright default) waits for every image/tracker on
+    the page to finish -- the wrong default for image-heavy factory
+    sites, which is why _visit_and_collect passes
+    wait_until="domcontentloaded" explicitly. See site_collector.py's
+    own comment for the calibration-run failure this was fixing."""
+
+    def test_every_navigation_uses_domcontentloaded_not_load(self, local_site, artifact_store):
+        collector = SiteCollector(artifact_store=artifact_store, max_pages=6)
+        result = collector.collect(supplier_id=1, domain=local_site)
+
+        assert result.success is True
+        # homepage plus at least one followed link -- confirms this
+        # isn't just true for the first navigation
+        assert len(result.pages) > 1
+
+    def test_domcontentloaded_is_passed_on_every_goto_call(self, artifact_store):
+        fake = _FakePlaywright(working_urls={"https://www.daroaxle.com"})
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+        collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert fake.page.goto_wait_until_values
+        assert all(v == "domcontentloaded" for v in fake.page.goto_wait_until_values)

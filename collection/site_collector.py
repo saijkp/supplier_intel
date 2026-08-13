@@ -88,6 +88,13 @@ _DOWNLOAD_EXTENSIONS: Tuple[str, ...] = (".pdf", ".doc", ".docx", ".xls", ".xlsx
 
 _MAX_PAGES_DEFAULT = 6
 
+# How long to wait for <body> after "domcontentloaded" -- see
+# _visit_and_collect's own comment for why "load" (waiting for every
+# image/tracker to finish) is the wrong default for image-heavy
+# factory sites; this is a cheap best-effort sanity check that the DOM
+# actually rendered something, not a substitute for it.
+_BODY_SELECTOR_WAIT_MS = 3000
+
 # Certificate/quality-standard document detection (Procurement Decision
 # Engine Phase 3) -- matched against download_links' URL/filename text
 # alone, not page content (these are links to separate files, not pages
@@ -385,10 +392,30 @@ class SiteCollector:
         self, page: Any, url: str, index: int, run_dir: Path,
     ) -> Optional[Tuple[CollectedPage, str]]:
         try:
-            page.goto(url, timeout=self.page_timeout_ms)
+            # "domcontentloaded", not the default "load" -- "load" waits
+            # for every image/tracker/analytics request on the page to
+            # finish, and a lot of the real target sites here (Chinese
+            # factory sites especially) are image-heavy enough that this
+            # alone was eating the whole page_timeout_ms budget and
+            # reporting a false failure on an otherwise-reachable site
+            # (an ordinary GET returns the document in well under a
+            # second). We only need the HTML document itself.
+            page.goto(url, timeout=self.page_timeout_ms, wait_until="domcontentloaded")
         except Exception as e:
             logger.warning("collection: failed to load %s: %s", url, e)
             return None
+
+        try:
+            # Best-effort: domcontentloaded can in rare cases fire
+            # before <body> is actually parsed/rendered (e.g. a
+            # heavily-scripted redirect or streamed response). Not a
+            # substitute for "load" -- doesn't wait for JS frameworks
+            # to finish mounting -- just cheap insurance that what we're
+            # about to read isn't an empty shell. Failure here is never
+            # fatal: we still extract whatever page.content() gives us.
+            page.wait_for_selector("body", timeout=_BODY_SELECTOR_WAIT_MS)
+        except Exception:
+            pass
 
         html = page.content()
         html_path = self.artifact_store.save_html(run_dir, index, url, html)
