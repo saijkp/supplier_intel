@@ -59,7 +59,10 @@ class TestPasteRangeShape:
         header = csv_text.splitlines()[0].split(",")
         assert header[len(PASTE_RANGE_COLUMNS):] == list(EVIDENCE_COLUMNS)
 
-    def test_a_through_qualified_and_notes_and_date_reviewed_are_always_blank(self, repo):
+    def test_a_through_qualified_are_always_pending_never_a_verdict(self, repo):
+        """"Pending" is an explicit not-yet-reviewed placeholder, never
+        a real verdict -- distinguishes "not yet reviewed" from "forgot
+        to check" for the buyer auditing the file."""
         supplier_id = repo.create_golden_record({
             "canonical_name": "Acme Co", "domain": "acme.com",
             "address": "1 Main St", "primary_phone": "+123", "primary_email": "a@acme.com",
@@ -68,8 +71,18 @@ class TestPasteRangeShape:
         row = _rows(build_tracker_export([supplier_id], repo))[0]
         for col in (
             "A - Website Deep-Dive", "B - Certifications", "C - Factory Authenticity",
-            "D - Reviews & Ratings", "Qualified", "Notes / Difficulties", "Date Reviewed",
+            "D - Reviews & Ratings", "Qualified",
         ):
+            assert row[col] == "Pending"
+
+    def test_notes_and_date_reviewed_are_always_blank(self, repo):
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Acme Co", "domain": "acme.com",
+            "address": "1 Main St", "primary_phone": "+123", "primary_email": "a@acme.com",
+            "factory_location": "Foshan, China",
+        })
+        row = _rows(build_tracker_export([supplier_id], repo))[0]
+        for col in ("Notes / Difficulties", "Date Reviewed"):
             assert row[col] == ""
 
     def test_no_column_is_1_indexed_sequential(self, repo):

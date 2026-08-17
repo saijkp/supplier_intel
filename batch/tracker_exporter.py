@@ -7,10 +7,12 @@ format -- exact column order/names matching their real "Injection
 Moulding" tab (No. through Date Reviewed) so rows paste in without
 reformatting or shifting any of the tracker's own columns.
 
-Columns A-D and Qualified are headers only, always blank -- 100%
-manual, filled in by the buyer. Nothing in this module (or anywhere
-upstream of it) ever writes Pass/Fail/Clean/Flagged/Y into them; see
-PASTE_RANGE_COLUMNS's own comment.
+Columns A-D and Qualified are always the literal text "Pending" --
+100% manual, filled in by the buyer. "Pending" is an explicit
+placeholder, not a verdict: it exists so a blank cell is never
+ambiguous between "not yet reviewed" and "forgot to check." Nothing in
+this module (or anywhere upstream of it) ever writes Pass/Fail/Clean/
+Flagged/Y into them; see PASTE_RANGE_COLUMNS's own comment.
 
 Evidence/helper columns (per-field source URLs, candidate facility
 photos, a Street View link, certification evidence, D-search
@@ -39,7 +41,8 @@ from storage.repository import SupplierRepository
 
 # Exact column order/names of the buyer's real tracker "Injection
 # Moulding" tab, confirmed against their own exported CSV. A-D/
-# Qualified/Notes/Date Reviewed are ALWAYS blank headers here -- see
+# Qualified are ALWAYS the literal text "Pending" here (see
+# _PENDING_PLACEHOLDER); Notes/Date Reviewed are ALWAYS blank -- see
 # module docstring.
 PASTE_RANGE_COLUMNS: Tuple[str, ...] = (
     "No.", "Supplier Name", "Website", "Country", "Address", "Phone", "Email",
@@ -47,6 +50,11 @@ PASTE_RANGE_COLUMNS: Tuple[str, ...] = (
     "A - Website Deep-Dive", "B - Certifications", "C - Factory Authenticity",
     "D - Reviews & Ratings", "Qualified", "Notes / Difficulties", "Date Reviewed",
 )
+
+# The literal placeholder written into A-D/Qualified on every export --
+# an explicit "not yet reviewed" marker, never a verdict (see module
+# docstring for why a blank cell alone is ambiguous here).
+_PENDING_PLACEHOLDER = "Pending"
 
 # Appended after the paste range -- never part of what gets pasted
 # into the tracker itself. Phone/Email only have row-level
@@ -170,7 +178,9 @@ def build_tracker_export(supplier_ids: List[int], repo: Optional[SupplierReposit
         paste_row = [
             i, supplier.get("canonical_name") or "", supplier.get("domain") or "",
             supplier.get("country") or "", address, phone, email, factory_location,
-            "", "", "", "", "",  # A, B, C, D, Qualified -- always blank, see module docstring
+            # A, B, C, D, Qualified -- always "Pending", never a verdict, see module docstring
+            _PENDING_PLACEHOLDER, _PENDING_PLACEHOLDER, _PENDING_PLACEHOLDER,
+            _PENDING_PLACEHOLDER, _PENDING_PLACEHOLDER,
             "", "",  # Notes / Difficulties, Date Reviewed -- always blank
         ]
 
