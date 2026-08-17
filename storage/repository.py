@@ -319,16 +319,24 @@ class SupplierRepository:
 
     def search_suppliers(self, keyword: str, limit: int = 100) -> List[Dict[str, Any]]:
         """Simple LIKE-based search across name, keywords, and categories.
-        Fine for Phase 1 volumes; swap for FTS5 once the table grows large."""
+        Fine for Phase 1 volumes; swap for FTS5 once the table grows large.
+
+        Excludes flagged=1 suppliers -- a human-only "not a valid
+        candidate" marker (see update_supplier_fields_with_history's
+        flagged/flag_reason usage), so a record someone has explicitly
+        ruled out (e.g. a broker/network, not a single factory) can't
+        silently resurface here just because a later search term
+        happens to match it again."""
         pattern = f"%{keyword}%"
         with connection_scope(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM suppliers
-                WHERE canonical_name LIKE ?
+                WHERE (canonical_name LIKE ?
                    OR product_keywords LIKE ?
                    OR primary_categories LIKE ?
-                   OR trailer_components LIKE ?
+                   OR trailer_components LIKE ?)
+                   AND flagged = 0
                 ORDER BY composite_score DESC
                 LIMIT ?
                 """,
@@ -386,6 +394,12 @@ class SupplierRepository:
         did -- the evidence is exactly why this whole capability
         layer was built, and it should never be thrown away between
         the query and the display.
+
+        Always excludes flagged=1 suppliers (unconditionally, not one
+        of the optional filters above) -- same human-only "not a valid
+        candidate" marker search_suppliers excludes, so a record
+        someone has explicitly ruled out can't silently resurface as a
+        procurement search result later.
         """
         from verification.capability_vocabulary import map_to_canonical
 
@@ -400,7 +414,7 @@ class SupplierRepository:
                 )
             canonical_terms.append(mapped.canonical)
 
-        clauses: List[str] = []
+        clauses: List[str] = ["flagged = 0"]
         params: List[Any] = []
 
         if product_query:
@@ -2132,11 +2146,21 @@ class SupplierRepository:
         term (the same discipline search_suppliers_full's own
         product_query LIKE already uses, just precise to the exact
         string _process_candidate wrote rather than a loose substring).
+
+        Excludes flagged=1 suppliers -- same human-only "not a valid
+        candidate" marker search_suppliers/search_suppliers_full
+        exclude. Without this, a company someone has already ruled out
+        for one product category (e.g. a broker/network, not a single
+        factory) could silently resurface as an export-ready candidate
+        the next time a DIFFERENT product search's keywords happen to
+        also match its product_keywords -- exactly the scenario this
+        exclusion exists to prevent.
         """
         pattern = f'%"{product}"%'
         with connection_scope(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT * FROM suppliers WHERE discovery_source = ? AND product_keywords LIKE ? ORDER BY id",
+                "SELECT * FROM suppliers WHERE discovery_source = ? AND product_keywords LIKE ? "
+                "AND flagged = 0 ORDER BY id",
                 (discovery_source, pattern),
             ).fetchall()
             return _rows_to_dicts(rows, SUPPLIER_JSON_FIELDS)

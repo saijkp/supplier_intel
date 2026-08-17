@@ -243,3 +243,36 @@ class TestCountryFilter:
         _make_supplier(repo, canonical_name="UK Co", country="United Kingdom")
         _make_supplier(repo, canonical_name="China Co", country="China")
         assert len(repo.search_suppliers_full()) == 2
+
+
+class TestExcludesFlaggedSuppliers:
+    """A human-flagged supplier (flagged=1, e.g. ruled out as a
+    broker/network rather than a single factory) must never resurface
+    in a procurement search result, regardless of which other filters
+    are used -- see storage/repository.py's SUPPLIER_WRITABLE_FIELDS
+    flagged/flag_reason and verification/scorer.py's _recommend(),
+    which already treats flagged=1 as an automatic 'avoid'."""
+
+    def test_flagged_supplier_is_excluded_from_plain_product_search(self, repo):
+        good = _make_supplier(repo, canonical_name="Good Co")
+        flagged = _make_supplier(repo, canonical_name="Flagged Co")
+        repo.update_supplier_fields(flagged, {"flagged": True, "flag_reason": "broker, not a single factory"})
+
+        results = repo.search_suppliers_full(product_query="wheel bearings")
+
+        assert [r["id"] for r in results] == [good]
+
+    def test_flagged_supplier_is_excluded_even_with_no_other_filters(self, repo):
+        good = _make_supplier(repo, canonical_name="Good Co")
+        flagged = _make_supplier(repo, canonical_name="Flagged Co")
+        repo.update_supplier_fields(flagged, {"flagged": True, "flag_reason": "equipment maker, not a parts manufacturer"})
+
+        results = repo.search_suppliers_full()
+
+        assert [r["id"] for r in results] == [good]
+
+    def test_unflagged_suppliers_are_unaffected(self, repo):
+        a = _make_supplier(repo, canonical_name="Co A")
+        b = _make_supplier(repo, canonical_name="Co B")
+        results = repo.search_suppliers_full()
+        assert {r["id"] for r in results} == {a, b}

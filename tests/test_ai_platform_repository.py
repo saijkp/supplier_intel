@@ -438,6 +438,28 @@ class TestFindDiscoveredSuppliers:
 
         assert repo.find_discovered_suppliers("injection moulding manufacturer") == []
 
+    def test_excludes_flagged_suppliers(self, tmp_path):
+        """A human-flagged supplier (e.g. ruled out as a broker/network,
+        not a single factory) must never resurface as an export-ready
+        candidate just because a LATER, different product category's
+        discovery run happens to also match its product_keywords."""
+        repo = _make_repo(tmp_path)
+        matching = repo.create_golden_record({
+            "canonical_name": "Acme Moulding Co", "domain": "acme-moulding.com",
+            "discovery_source": "discovery_service",
+            "product_keywords": ["injection moulding manufacturer"],
+        })
+        flagged = repo.create_golden_record({
+            "canonical_name": "Flagged Moulding Co", "domain": "flagged-moulding.com",
+            "discovery_source": "discovery_service",
+            "product_keywords": ["injection moulding manufacturer"],
+        })
+        repo.update_supplier_fields(flagged, {"flagged": True, "flag_reason": "broker, not a single factory"})
+
+        results = repo.find_discovered_suppliers("injection moulding manufacturer")
+
+        assert [r["id"] for r in results] == [matching]
+
     def test_excludes_suppliers_with_no_discovery_source_at_all(self, tmp_path):
         """A bulk-imported supplier (e.g. from the Automechanika list)
         might independently have a matching product_keywords entry --

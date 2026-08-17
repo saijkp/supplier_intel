@@ -421,6 +421,24 @@ class TestSupplierGoldenRecords:
         assert "Guangzhou LED Masters Co" in names
         assert "Shenzhen Fastener Works" not in names
 
+    def test_search_suppliers_excludes_flagged_records(self, repo):
+        """A human-flagged supplier (e.g. ruled out as a broker/network,
+        not a single factory) must never resurface here just because a
+        later keyword search happens to match it again."""
+        matching = repo.create_golden_record({
+            "canonical_name": "Guangzhou LED Masters Co",
+            "product_keywords": ["LED marker light"],
+        })
+        flagged = repo.create_golden_record({
+            "canonical_name": "Flagged LED Co",
+            "product_keywords": ["LED marker light"],
+        })
+        repo.update_supplier_fields(flagged, {"flagged": True, "flag_reason": "broker, not a single factory"})
+
+        results = repo.search_suppliers("LED")
+
+        assert [r["id"] for r in results] == [matching]
+
 
 # ─────────────────────────────────────────────────────────────
 # Repository: verification

@@ -61,8 +61,8 @@ def init_db() -> None:
     """Create the SQLite database and all tables/indexes if missing."""
     initialise_schema()
     version = get_schema_version()
-    console.print(f"[green]✓[/green] Database initialised at [bold]{DB_PATH}[/bold]")
-    console.print(f"[green]✓[/green] Schema version: [bold]{version}[/bold]")
+    console.print(f"[green]OK[/green] Database initialised at [bold]{DB_PATH}[/bold]")
+    console.print(f"[green]OK[/green] Schema version: [bold]{version}[/bold]")
 
 
 @cli.command("status")
@@ -102,19 +102,19 @@ def doctor(live: bool) -> None:
 
     missing = missing_api_keys()
     if missing:
-        console.print(f"[yellow]⚠ Missing API keys (needed for live scraping): {', '.join(missing)}[/yellow]")
+        console.print(f"[yellow]! Missing API keys (needed for live scraping): {', '.join(missing)}[/yellow]")
         console.print("  Set these in a .env file at the project root.\n")
     else:
-        console.print("[green]✓[/green] All required API keys are set.\n")
+        console.print("[green]OK[/green] All required API keys are set.\n")
 
     weight_sum = round(sum(SCORING_WEIGHTS.values()), 6)
-    console.print(f"[green]✓[/green] Scoring weights sum to {weight_sum} ({SCORING_WEIGHTS})")
-    console.print(f"[green]✓[/green] Tracking {len(TRAILER_HS_CODES)} HS codes for trailer components")
+    console.print(f"[green]OK[/green] Scoring weights sum to {weight_sum} ({SCORING_WEIGHTS})")
+    console.print(f"[green]OK[/green] Tracking {len(TRAILER_HS_CODES)} HS codes for trailer components")
 
     if DB_PATH.exists():
-        console.print(f"[green]✓[/green] Database exists at {DB_PATH} (schema v{get_schema_version()})")
+        console.print(f"[green]OK[/green] Database exists at {DB_PATH} (schema v{get_schema_version()})")
     else:
-        console.print(f"[yellow]⚠ Database not yet created. Run `python main.py init-db`.[/yellow]")
+        console.print(f"[yellow]! Database not yet created. Run `python main.py init-db`.[/yellow]")
 
     if not live:
         console.print("\n[dim]Run with --live to make a real call to every configured "
@@ -223,7 +223,7 @@ def verify() -> None:
 
     pipeline = SupplierIntelligencePipeline()
     stats = pipeline.run_verification_only()
-    console.print(f"[green]✓[/green] Verified {stats['verified']} supplier(s).")
+    console.print(f"[green]OK[/green] Verified {stats['verified']} supplier(s).")
 
 
 @cli.command("rescore")
@@ -236,7 +236,7 @@ def rescore(rescore_all: bool) -> None:
 
     pipeline = SupplierIntelligencePipeline()
     stats = pipeline.run_full_rescore() if rescore_all else pipeline.run_scoring_only()
-    console.print(f"[green]✓[/green] Scored {stats['scored']} supplier(s).")
+    console.print(f"[green]OK[/green] Scored {stats['scored']} supplier(s).")
 
 
 @cli.command("assess-manufacturers")
@@ -248,7 +248,7 @@ def assess_manufacturers(force: bool) -> None:
 
     pipeline = SupplierIntelligencePipeline()
     stats = pipeline.run_manufacturer_assessment_only(force=force)
-    console.print(f"[green]✓[/green] Assessed {stats['manufacturer_assessed']} supplier(s).")
+    console.print(f"[green]OK[/green] Assessed {stats['manufacturer_assessed']} supplier(s).")
 
 
 @cli.command("import-automechanika")
@@ -312,7 +312,7 @@ def find_websites(force: bool, limit: int) -> None:
 
     pipeline = SupplierIntelligencePipeline()
     stats = pipeline.run_website_discovery_only(force=force, limit=limit)
-    console.print(f"[green]✓[/green] Found and validated {stats['website_discovered']} new website(s).")
+    console.print(f"[green]OK[/green] Found and validated {stats['website_discovered']} new website(s).")
 
 
 @cli.command("verify-facilities")
@@ -331,7 +331,7 @@ def verify_facilities(force: bool, limit: int) -> None:
 
     pipeline = SupplierIntelligencePipeline()
     stats = pipeline.run_facility_verification_only(force=force, limit=limit)
-    console.print(f"[green]✓[/green] Verified {stats['facility_address_verified']} address(es) as real places.")
+    console.print(f"[green]OK[/green] Verified {stats['facility_address_verified']} address(es) as real places.")
 
 
 @cli.command("discover")
@@ -465,7 +465,7 @@ def export_discovered(product: str, output: Optional[str], discovery_source: str
     service = DiscoveryService()
     path, count = service.export_for_batch_upload(product, output_path=output, discovery_source=discovery_source)
     if count:
-        console.print(f"[green]✓[/green] Exported {count} supplier(s) to [bold]{path}[/bold]")
+        console.print(f"[green]OK[/green] Exported {count} supplier(s) to [bold]{path}[/bold]")
     else:
         console.print(
             f"[yellow]No suppliers found for product={product!r}, discovery_source={discovery_source!r}.[/yellow] "
@@ -494,13 +494,13 @@ def collect(supplier_id: Optional[int], pending: bool, limit: int, force: bool) 
     from collection.collection_service import CollectionService
 
     if not supplier_id and not pending:
-        console.print("[red]✗[/red] Specify either --supplier-id or --pending.")
+        console.print("[red]X[/red] Specify either --supplier-id or --pending.")
         return
 
     service = CollectionService()
     if supplier_id:
         outcome = service.collect(supplier_id)
-        console.print(f"[green]✓[/green] Supplier #{supplier_id}: {outcome['status']} "
+        console.print(f"[green]OK[/green] Supplier #{supplier_id}: {outcome['status']} "
                        f"({outcome['pages_visited']} page(s) visited)"
                        + (f" -- {outcome['error']}" if outcome.get("error") else ""))
     else:
@@ -602,7 +602,7 @@ def batch_upload(csv_path: str, output: Optional[str], plain: bool, search_reput
     output_path = output or f"{Path(csv_path).with_suffix('')}_results.csv"
     with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
         f.write(csv_text)
-    console.print(f"[green]✓[/green] Results written to [bold]{output_path}[/bold]")
+    console.print(f"[green]OK[/green] Results written to [bold]{output_path}[/bold]")
 
 
 @cli.command("verify-ai")
@@ -625,13 +625,13 @@ def verify_ai(supplier_id: Optional[int], pending: bool, limit: int, force: bool
     from verification_ai.verification_service import VerificationService
 
     if not supplier_id and not pending:
-        console.print("[red]✗[/red] Specify either --supplier-id or --pending.")
+        console.print("[red]X[/red] Specify either --supplier-id or --pending.")
         return
 
     service = VerificationService()
     if supplier_id:
         outcome = service.verify(supplier_id)
-        console.print(f"[green]✓[/green] Supplier #{supplier_id}: confidence {outcome['confidence_score']}/100 "
+        console.print(f"[green]OK[/green] Supplier #{supplier_id}: confidence {outcome['confidence_score']}/100 "
                        f"({outcome['verdict']}), narrative_generated={outcome['narrative_generated']}")
         if outcome["inconsistencies"]:
             console.print("[yellow]Inconsistencies found:[/yellow]")
@@ -663,13 +663,13 @@ def reverify(supplier_id: Optional[int], older_than_days: Optional[int], limit: 
     from verification_ai.verification_service import VerificationService
 
     if not supplier_id and older_than_days is None:
-        console.print("[red]✗[/red] Specify either --supplier-id or --older-than-days.")
+        console.print("[red]X[/red] Specify either --supplier-id or --older-than-days.")
         return
 
     service = VerificationService()
     if supplier_id:
         outcome = service.reverify(supplier_id)
-        console.print(f"[green]✓[/green] Supplier #{supplier_id}: collection={outcome['collection']['status']}, "
+        console.print(f"[green]OK[/green] Supplier #{supplier_id}: collection={outcome['collection']['status']}, "
                        f"confidence={outcome['verification']['confidence_score']}/100")
         return
 
@@ -683,8 +683,8 @@ def reverify(supplier_id: Optional[int], older_than_days: Optional[int], limit: 
             service.reverify(supplier["id"])
             succeeded += 1
         except Exception as e:
-            console.print(f"[red]✗[/red] Supplier #{supplier['id']}: {e}")
-    console.print(f"[green]✓[/green] Reverified {succeeded}/{len(candidates)} supplier(s).")
+            console.print(f"[red]X[/red] Supplier #{supplier['id']}: {e}")
+    console.print(f"[green]OK[/green] Reverified {succeeded}/{len(candidates)} supplier(s).")
 
 
 @cli.command("history")
@@ -721,7 +721,7 @@ def check_linkedin(force: bool) -> None:
 
     pipeline = SupplierIntelligencePipeline()
     stats = pipeline.run_linkedin_check_only(force=force)
-    console.print(f"[green]✓[/green] Found a LinkedIn page for {stats['linkedin_checked']} supplier(s).")
+    console.print(f"[green]OK[/green] Found a LinkedIn page for {stats['linkedin_checked']} supplier(s).")
 
 
 @cli.command("extract-capabilities")
@@ -808,7 +808,7 @@ def search(product: str, required_capabilities: tuple, manufacturers_only: bool,
             limit=limit,
         )
     except ValueError as e:
-        console.print(f"[red]✗[/red] {e}")
+        console.print(f"[red]X[/red] {e}")
         return
 
     if not suppliers:
@@ -820,7 +820,7 @@ def search(product: str, required_capabilities: tuple, manufacturers_only: bool,
 
     for s in suppliers:
         categories = s.get("primary_categories") or []
-        flagged = "  [red]⚠ safety-critical part — verify certification evidence[/red]" if (
+        flagged = "  [red]! safety-critical part — verify certification evidence[/red]" if (
             set(categories) & SAFETY_CRITICAL_CATEGORIES
         ) else ""
 
@@ -844,9 +844,9 @@ def search(product: str, required_capabilities: tuple, manufacturers_only: bool,
         if s.get("facility_address_verified_at"):
             if s.get("facility_address_verified"):
                 source = s.get("facility_address_verification_source") or "unknown source"
-                console.print(f"  [green]✓[/green] Address verified as a real place ({source})")
+                console.print(f"  [green]OK[/green] Address verified as a real place ({source})")
             else:
-                console.print("  [red]⚠[/red] Address could not be verified — worth a closer look")
+                console.print("  [red]![/red] Address could not be verified — worth a closer look")
 
         contact_bits = []
         if s.get("primary_email"):
@@ -869,7 +869,7 @@ def search(product: str, required_capabilities: tuple, manufacturers_only: bool,
 
         if s.get("factory_photo_verdict"):
             verdict = s["factory_photo_verdict"]
-            icon = {"plausible_factory": "[green]✓[/green]", "implausible": "[red]⚠[/red]"}.get(
+            icon = {"plausible_factory": "[green]OK[/green]", "implausible": "[red]![/red]"}.get(
                 verdict, "[yellow]?[/yellow]"
             )
             console.print(f"  {icon} Factory photos: {verdict.replace('_', ' ')}")
@@ -893,13 +893,13 @@ def search(product: str, required_capabilities: tuple, manufacturers_only: bool,
             else:
                 tag = "asserted"
             console.print(
-                f"  [cyan]✓[/cyan] {cap['canonical_term']} ({tag}, confidence {cap['confidence']:.2f}) "
+                f"  [cyan]OK[/cyan] {cap['canonical_term']} ({tag}, confidence {cap['confidence']:.2f}) "
                 f"— \"{cap['evidence']}\""
             )
 
         for emark_number in (s.get("e_mark_numbers") or []):
             check = check_emark_format(emark_number)
-            icon = "[cyan]✓[/cyan]" if check.format_plausible else "[red]⚠[/red]"
+            icon = "[cyan]OK[/cyan]" if check.format_plausible else "[red]![/red]"
             console.print(f"  {icon} E-mark {emark_number} — {check.reason}")
 
     console.print(f"\n[dim]{len(suppliers)} supplier(s) matched.[/dim]")
@@ -1019,7 +1019,7 @@ def report(recommendation: str, min_score: int, limit: int, output: str) -> None
     repo = SupplierRepository()
     if output:
         path = save_markdown_report(repo, output, recommendation=recommendation, min_score=min_score, limit=limit)
-        console.print(f"[green]✓[/green] Report written to [bold]{path}[/bold]")
+        console.print(f"[green]OK[/green] Report written to [bold]{path}[/bold]")
     else:
         console.print(generate_markdown_report(repo, recommendation=recommendation, min_score=min_score, limit=limit))
 
@@ -1035,7 +1035,7 @@ def export_csv(recommendation: str, min_score: int, limit: int, output: str) -> 
 
     repo = SupplierRepository()
     path = export_suppliers_csv(repo, output, recommendation=recommendation, min_score=min_score, limit=limit)
-    console.print(f"[green]✓[/green] Exported to [bold]{path}[/bold]")
+    console.print(f"[green]OK[/green] Exported to [bold]{path}[/bold]")
 
 
 @cli.command("export-excel")
@@ -1051,7 +1051,7 @@ def export_excel(recommendation: str, min_score: int, limit: int, output: str) -
 
     repo = SupplierRepository()
     path = export_suppliers_excel(repo, output, recommendation=recommendation, min_score=min_score, limit=limit)
-    console.print(f"[green]✓[/green] Exported to [bold]{path}[/bold]")
+    console.print(f"[green]OK[/green] Exported to [bold]{path}[/bold]")
 
 
 @cli.group("review")
@@ -1093,9 +1093,9 @@ def review_merge(candidate_id: int, keep: str) -> None:
     try:
         kept_id = repo.resolve_review_candidate_as_merge(candidate_id, keep=keep)
     except Exception as e:
-        console.print(f"[red]✗ Could not merge: {e}[/red]")
+        console.print(f"[red]X Could not merge: {e}[/red]")
         return
-    console.print(f"[green]✓[/green] Merged. Surviving supplier: #{kept_id}")
+    console.print(f"[green]OK[/green] Merged. Surviving supplier: #{kept_id}")
 
 
 @review.command("reject")
@@ -1106,9 +1106,9 @@ def review_reject(candidate_id: int) -> None:
     try:
         repo.resolve_review_candidate_as_reject(candidate_id)
     except ValueError as e:
-        console.print(f"[red]✗ {e}[/red]")
+        console.print(f"[red]X {e}[/red]")
         return
-    console.print(f"[green]✓[/green] Candidate #{candidate_id} marked rejected — both records kept as-is.")
+    console.print(f"[green]OK[/green] Candidate #{candidate_id} marked rejected — both records kept as-is.")
 
 
 @cli.command("sweep")
@@ -1170,7 +1170,7 @@ def search_web(query: str, site_filter: str, limit: int) -> None:
     results = scraper.scrape(query, max_results=limit, site_filter=site_filter)
 
     if len(results) == 1 and not results[0].success:
-        console.print(f"[red]✗ {results[0].error}[/red]")
+        console.print(f"[red]X {results[0].error}[/red]")
         return
 
     table = Table(title=f"Web search: \"{query}\"" + (f" (site:{site_filter})" if site_filter else ""))
