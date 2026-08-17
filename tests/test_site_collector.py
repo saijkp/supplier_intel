@@ -121,6 +121,7 @@ def artifact_store(tmp_path):
     return ArtifactStore(base_dir=tmp_path / "artifacts")
 
 
+@pytest.mark.slow
 class TestSiteCollectorRealBrowser:
     """Real Playwright, real (local) HTTP server -- no mocking of the
     extraction pipeline itself."""
@@ -239,6 +240,7 @@ class TestSiteCollectorRealBrowser:
         assert "5 Impressum Str, 10115 Berlin, Germany" in impressum_page.text
 
 
+@pytest.mark.slow
 class TestCertificateDownload:
     """Real Playwright APIRequestContext against the same local HTTP
     server -- certificate-keyword-matching download_links actually get
@@ -656,6 +658,7 @@ class TestWaitUntilDomContentLoaded:
     wait_until="domcontentloaded" explicitly. See site_collector.py's
     own comment for the calibration-run failure this was fixing."""
 
+    @pytest.mark.slow
     def test_every_navigation_uses_domcontentloaded_not_load(self, local_site, artifact_store):
         collector = SiteCollector(artifact_store=artifact_store, max_pages=6)
         result = collector.collect(supplier_id=1, domain=local_site)

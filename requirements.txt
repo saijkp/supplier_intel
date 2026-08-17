@@ -18,5 +18,6 @@ rich
 click
 pydantic
 pytest
+pytest-xdist
 jinja2
 playwright
