@@ -188,6 +188,21 @@ class TestFacilityPhotosAndStreetView:
         row = _rows(build_tracker_export([supplier_id], repo))[0]
         assert row["Street View Link"] == ""
 
+    def test_linkedin_search_link_is_generated_from_company_name(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Injection Moulding Co", "domain": "acme.com"})
+        row = _rows(build_tracker_export([supplier_id], repo))[0]
+        link = row["LinkedIn Search Link"]
+        assert link.startswith("https://www.google.com/search?q=")
+        assert "linkedin.com" in link
+        assert "Acme" in link
+
+    def test_no_name_means_no_linkedin_search_link(self, repo):
+        """Defensive only -- create_golden_record itself requires a
+        canonical_name, so this exercises the empty-string branch
+        directly rather than via a real gap in practice."""
+        from batch.tracker_exporter import _linkedin_search_link
+        assert _linkedin_search_link("") == ""
+
 
 class TestCertificationsAndReputationSnippets:
 

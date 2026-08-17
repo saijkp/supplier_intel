@@ -15,11 +15,16 @@ this module (or anywhere upstream of it) ever writes Pass/Fail/Clean/
 Flagged/Y into them; see PASTE_RANGE_COLUMNS's own comment.
 
 Evidence/helper columns (per-field source URLs, candidate facility
-photos, a Street View link, certification evidence, D-search
-snippets, Checks Remaining, Sort Key) are appended AFTER Date
-Reviewed -- outside the paste range, so the main block still pastes in
-clean while the evidence needed to audit each value stays in the same
-file, one click away.
+photos, a Street View link, a LinkedIn search link, certification
+evidence, D-search snippets, Checks Remaining, Sort Key) are appended
+AFTER Date Reviewed -- outside the paste range, so the main block
+still pastes in clean while the evidence needed to audit each value
+stays in the same file, one click away. Street View/LinkedIn links are
+both free Google search-links, never an automated match judgment --
+deliberately no proxy infrastructure and no reverse image search here
+(out of scope given the deadline: most dead fetches are DNS failures a
+proxy wouldn't fix, and neither of us has a working reverse-image-
+search tool right now).
 
 A second export, the removed-candidates list, mirrors the tracker's
 own "Removed Candidates" tab (Company Name, Website, Reason) -- every
@@ -66,7 +71,7 @@ _PENDING_PLACEHOLDER = "Pending"
 EVIDENCE_COLUMNS: Tuple[str, ...] = (
     "Address Source URL", "Phone Source Page(s)", "Email Source Page(s)",
     "Factory Location Source URL",
-    "Candidate Facility Photo URLs", "Street View Link",
+    "Candidate Facility Photo URLs", "Street View Link", "LinkedIn Search Link",
     "Certifications Claimed (source + evidence)",
     "D-Search: Scam", "D-Search: Review", "D-Search: Factory Tour",
     "Checks Remaining", "Sort Key (helper)",
@@ -112,6 +117,21 @@ def _street_view_link(address: str) -> str:
     if not address:
         return ""
     return f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(address)}"
+
+
+def _linkedin_search_link(company_name: str) -> str:
+    """Same free-search-link pattern as _street_view_link, no LinkedIn
+    API/scraping involved -- a site:linkedin.com Google search for the
+    company name, one click for the buyer to manually check for a real
+    company page. Deliberately not an automated match/verdict, and
+    deliberately not proxy infrastructure or reverse image search (out
+    of scope for now -- most dead fetches are DNS failures a proxy
+    wouldn't fix, and neither of us has a working reverse-image-search
+    tool). Empty when there's no name to search for."""
+    if not company_name:
+        return ""
+    query = f'site:linkedin.com "{company_name}"'
+    return f"https://www.google.com/search?q={urllib.parse.quote(query)}"
 
 
 def _certifications_claimed(repo: SupplierRepository, supplier_id: int) -> str:
@@ -191,6 +211,7 @@ def build_tracker_export(supplier_ids: List[int], repo: Optional[SupplierReposit
             _latest_provenance_source_url(repo, supplier_id, "factory_location"),
             "; ".join(supplier.get("candidate_facility_photo_urls") or []),
             _street_view_link(address),
+            _linkedin_search_link(supplier.get("canonical_name") or ""),
             _certifications_claimed(repo, supplier_id),
             _reputation_snippets(repo, supplier_id, "scam"),
             _reputation_snippets(repo, supplier_id, "review"),
