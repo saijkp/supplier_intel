@@ -665,6 +665,68 @@ def export_tracker(confirmed_csv: str, universe_csv: Optional[str], output: Opti
     console.print(f"[green]OK[/green] Removed-candidates list written to [bold]{removed_output_path}[/bold]")
 
 
+@cli.command("verify-uk-company")
+@click.argument("csv_path", type=click.Path(exists=True), required=False)
+@click.option("--supplier-id", type=int, default=None, help="Verify one specific supplier by id instead of a CSV.")
+@click.option("--force", is_flag=True, default=False,
+              help="Re-check suppliers already checked (default: skip anyone with "
+                   "companies_house_checked_at already set).")
+def verify_uk_company(csv_path: Optional[str], supplier_id: Optional[int], force: bool) -> None:
+    """UK Companies House verification -- the UK-office validation gate
+    for categories that require it (e.g. Material Handling). CLI-only,
+    opt-in, and deliberately has NO category awareness of its own (see
+    verification/uk_company_verification_service.py's own docstring):
+    run this manually against whatever candidate list or supplier id
+    needs checking, same as batch-upload and the discovery pipeline.
+
+    Pass either CSV_PATH (Company Name/Website columns, resolved to
+    suppliers by domain -- same shape as batch-upload/export-tracker)
+    or --supplier-id, not both. Every row must already have a matching
+    supplier in the database.
+
+    A name that doesn't cleanly match anything in Companies House is
+    NEVER auto-rejected -- it's recorded as "no_clear_match" (check
+    manually), since a trading name differing from the registered
+    legal name is common and not itself suspicious."""
+    from batch.csv_parser import parse_csv
+    from deduplication.domain_utils import extract_domain
+    from verification.uk_company_verification_service import UKCompanyVerificationService
+
+    if bool(csv_path) == bool(supplier_id):
+        console.print("[red]X[/red] Specify exactly one of CSV_PATH or --supplier-id.")
+        return
+
+    repo = SupplierRepository()
+    service = UKCompanyVerificationService(repo=repo)
+
+    if supplier_id:
+        outcome = service.verify_uk_company(supplier_id)
+        confidence_note = f" (confidence={outcome['confidence']})" if outcome.get("confidence") is not None else ""
+        console.print(f"[green]OK[/green] Supplier #{supplier_id}: {outcome['match_status']}{confidence_note}")
+        return
+
+    with open(csv_path, "rb") as f:
+        parsed = parse_csv(f.read())
+    ids: List[int] = []
+    for row in parsed.rows:
+        domain = extract_domain(row.website or "")
+        supplier = repo.find_by_domain(domain) if domain else None
+        if supplier is None:
+            console.print(f"[yellow]! No supplier found for {row.website!r} -- skipped (run batch-upload first?).[/yellow]")
+            continue
+        ids.append(supplier["id"])
+
+    console.print(f"[bold]{len(ids)}[/bold] supplier(s) resolved from {csv_path}.")
+    outcome = service.verify_uk_company_batch(ids, force=force)
+
+    table = Table(show_header=False)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Count", justify="right", style="magenta")
+    for key in ("attempted", "verified", "inactive", "no_clear_match", "total_given", "status"):
+        table.add_row(key.replace("_", " "), str(outcome.get(key, "")))
+    console.print(table)
+
+
 @cli.command("verify-ai")
 @click.option("--supplier-id", type=int, default=None,
               help="Verify one specific supplier (ignores --pending/--limit/--force).")

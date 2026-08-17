@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 
 # ═══════════════════════════════════════════════════════════
@@ -103,6 +103,14 @@ CREATE TABLE IF NOT EXISTS suppliers (
     facility_address_verified_at TIMESTAMP,     -- set on every attempt, matched or not -- same never-attempted-vs-attempted-and-failed discipline as capability_extracted_at (v7)
     linkedin_checked_at TIMESTAMP,              -- when verification.linkedin_presence last checked for a company page; linkedin_url (already existed since Phase 1) is set only if one was found (v7)
     contact_form_url TEXT,                      -- set when a supplier's own site has a contact form but no email/phone was ever found -- see verification.website_contact_extractor.best_contact_method (v7)
+    companies_house_number         TEXT,        -- matched UK Companies House company number (v23) -- see verification/uk_company_verification_service.py
+    companies_house_status         TEXT,        -- 'active' | 'dissolved' | 'liquidation' | ... as returned by Companies House, verbatim (v23)
+    companies_house_registered_office TEXT,     -- formatted registered_office_address from Companies House (v23)
+    companies_house_incorporated_at TEXT,       -- date_of_creation from Companies House (v23)
+    companies_house_sic_codes      TEXT,        -- JSON array of SIC codes from Companies House (v23)
+    companies_house_match_status   TEXT,        -- 'verified' | 'inactive' | 'no_clear_match' -- the deterministic gate verdict itself, NOT LLM-judged (v23). A trading name differing from the registered legal name is common and NOT itself suspicious -- 'no_clear_match' is a "check manually" signal, never an auto-rejection.
+    companies_house_match_confidence INTEGER,   -- the fuzzy name-match score (0-100) that produced companies_house_match_status (v23)
+    companies_house_checked_at     TIMESTAMP,   -- set on every attempt, matched or not -- same never-attempted-vs-attempted-and-failed discipline as capability_extracted_at (v23)
     registered_capital_rmb  REAL,               -- from Qichacha; red-flag signal, not a revenue figure (v2)
     business_scope          TEXT,               -- raw registered business-scope text from Qichacha (v2)
     factory_photo_urls      TEXT,               -- JSON array: captured photo URLs awaiting visual assessment (v2)
@@ -1337,6 +1345,34 @@ MIGRATIONS: dict[int, dict] = {
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_supplier_reputation_snippets_supplier ON supplier_reputation_snippets(supplier_id)",
+        ],
+    },
+    23: {
+        "description": (
+            "UK Companies House verification (opt-in, manually invoked -- "
+            "see verification/uk_company_verification_service.py, never "
+            "run automatically for any category): suppliers."
+            "companies_house_number/status/registered_office/"
+            "incorporated_at/sic_codes (verifiable facts, also written to "
+            "field_provenance with source_tier='other' since Companies "
+            "House is a third-party registry, not the supplier's own "
+            "site) plus companies_house_match_status (the deterministic "
+            "'verified' | 'inactive' | 'no_clear_match' gate verdict -- "
+            "'no_clear_match' is a check-manually signal, never an "
+            "auto-rejection, since a trading name differing from the "
+            "registered legal name is common and not itself suspicious) "
+            "and companies_house_checked_at (idempotency marker, set on "
+            "every attempt)."
+        ),
+        "columns": [
+            ("suppliers", "companies_house_number", "TEXT"),
+            ("suppliers", "companies_house_status", "TEXT"),
+            ("suppliers", "companies_house_registered_office", "TEXT"),
+            ("suppliers", "companies_house_incorporated_at", "TEXT"),
+            ("suppliers", "companies_house_sic_codes", "TEXT"),
+            ("suppliers", "companies_house_match_status", "TEXT"),
+            ("suppliers", "companies_house_match_confidence", "INTEGER"),
+            ("suppliers", "companies_house_checked_at", "TIMESTAMP"),
         ],
     },
 }

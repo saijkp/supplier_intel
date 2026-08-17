@@ -79,12 +79,23 @@ AMAP_API_KEY: str | None = os.getenv("AMAP_API_KEY")
 # "master" API key specifically -- confirm the configured key has that
 # permission level if search calls come back empty/rejected.
 APOLLO_API_KEY: str | None = os.getenv("APOLLO_API_KEY")
+# UK Companies House -- verification/companies_house_client.py. Used as
+# HTTP Basic Auth username with a blank password (Companies House's own
+# scheme, not a bug) -- see that module's own docstring.
+COMPANIES_HOUSE_API_KEY: str | None = os.getenv("COMPANIES_HOUSE_API_KEY")
 
 # --- Contact Finder Service (verification/contact_finder_service.py) ----
 # Same wall-clock-budget / process-wide-semaphore safeguards as
 # Collection Service below, applied to Apollo contact lookup batches.
 CONTACTS_JOB_MAX_SECONDS: int = int(os.getenv("CONTACTS_JOB_MAX_SECONDS") or 600)
 CONTACTS_MAX_CONCURRENT_JOBS: int = int(os.getenv("CONTACTS_MAX_CONCURRENT_JOBS") or 1)
+
+# --- UK Company Verification Service (verification/uk_company_verification_service.py) ---
+# Same wall-clock-budget / process-wide-semaphore safeguards, applied to
+# Companies House lookup batches -- CLI-only for now, no async job/API
+# endpoint (see that module's own docstring).
+UK_VERIFICATION_JOB_MAX_SECONDS: int = int(os.getenv("UK_VERIFICATION_JOB_MAX_SECONDS") or 600)
+UK_VERIFICATION_MAX_CONCURRENT_JOBS: int = int(os.getenv("UK_VERIFICATION_MAX_CONCURRENT_JOBS") or 1)
 
 # --- Collection Service (collection/) -- Playwright + rotating proxies ---
 # Webshare is the first (and, for now, only implemented) rotating-proxy

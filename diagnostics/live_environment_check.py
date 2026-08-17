@@ -220,6 +220,25 @@ def check_qichacha() -> CheckResult:
         return CheckResult("qichacha", "fail", f"request failed: {e}")
 
 
+def check_companies_house() -> CheckResult:
+    from config.settings import COMPANIES_HOUSE_API_KEY
+    from verification.companies_house_client import CompaniesHouseClient
+
+    if not COMPANIES_HOUSE_API_KEY:
+        return CheckResult("companies_house", "skipped", "COMPANIES_HOUSE_API_KEY not configured")
+    try:
+        client = CompaniesHouseClient(api_key=COMPANIES_HOUSE_API_KEY)
+        # A real, extremely well-known UK company -- proves auth and
+        # response parsing work without depending on any specific
+        # supplier's data being present yet.
+        matches = client.search_companies("Tesco", max_results=1)
+        if not matches:
+            return CheckResult("companies_house", "fail", "search returned no results at all for 'Tesco'")
+        return CheckResult("companies_house", "pass", f"search returned a real result: {matches[0].title!r}")
+    except Exception as e:
+        return CheckResult("companies_house", "fail", f"request failed: {e}")
+
+
 def check_webshare_proxy() -> CheckResult:
     """Confirms Webshare credentials actually route real traffic, not
     just that they're present -- makes one minimal request through the
@@ -335,6 +354,7 @@ def run_all_checks() -> List[CheckResult]:
         ("google_places", check_google_places),
         ("amap", check_amap),
         ("qichacha", check_qichacha),
+        ("companies_house", check_companies_house),
         ("webshare_proxy", check_webshare_proxy),
         ("playwright_chromium", check_playwright_chromium),
         ("hktdc", lambda: check_site_reachable("hktdc", "https://www.hktdc.com")),

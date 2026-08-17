@@ -63,6 +63,7 @@ SUPPLIER_JSON_FIELDS: Sequence[str] = (
     "key_contacts",
     "ai_confidence_breakdown",
     "certificate_document_urls",
+    "companies_house_sic_codes",
 )
 
 # All columns on `suppliers` that may be set directly via
@@ -104,6 +105,9 @@ SUPPLIER_WRITABLE_FIELDS: Sequence[str] = (
     "ai_confidence_breakdown", "procurement_recommendation", "procurement_recommendation_reason",
     "certificate_document_urls", "production_lines_notes", "machinery_notes",
     "factory_ownership", "factory_facts_extracted_at",
+    "companies_house_number", "companies_house_status", "companies_house_registered_office",
+    "companies_house_incorporated_at", "companies_house_sic_codes",
+    "companies_house_match_status", "companies_house_match_confidence", "companies_house_checked_at",
 )
 
 SCORE_FIELDS: Sequence[str] = (
