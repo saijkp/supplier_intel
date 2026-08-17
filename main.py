@@ -443,6 +443,36 @@ def backfill_discovery_keywords() -> None:
         console.print(f"Backfilled supplier ids: {result['updated_supplier_ids']}")
 
 
+@cli.command("export-discovered")
+@click.argument("product")
+@click.option("--output", "-o", default=None,
+              help="Write the CSV here (default: discovered_<product-slug>.csv in the current directory).")
+@click.option("--discovery-source", default="discovery_service", show_default=True,
+              help="Only export suppliers whose discovery_source matches this -- the default is "
+                   "what discover() always sets, regardless of --source serpapi/llm.")
+def export_discovered(product: str, output: Optional[str], discovery_source: str) -> None:
+    """Export every supplier `discover PRODUCT` has ever created -- across
+    however many separate runs it took -- as a minimal Company Name /
+    Website CSV, ready to feed straight into `batch-upload`. discover()
+    itself only ever sets name/domain/country, never address or contact
+    details -- this is the bridge to batch-upload's fuller enrichment
+    pipeline (see discovery/discovery_service.py's
+    export_for_batch_upload() docstring for why the bridge is needed at
+    all, and why this re-queries persistent supplier state rather than
+    a single run's transient output)."""
+    from discovery.discovery_service import DiscoveryService
+
+    service = DiscoveryService()
+    path, count = service.export_for_batch_upload(product, output_path=output, discovery_source=discovery_source)
+    if count:
+        console.print(f"[green]✓[/green] Exported {count} supplier(s) to [bold]{path}[/bold]")
+    else:
+        console.print(
+            f"[yellow]No suppliers found for product={product!r}, discovery_source={discovery_source!r}.[/yellow] "
+            f"Wrote a header-only CSV to [bold]{path}[/bold] anyway."
+        )
+
+
 @cli.command("collect")
 @click.option("--supplier-id", type=int, default=None,
               help="Collect against one specific supplier (ignores --pending/--limit/--force).")

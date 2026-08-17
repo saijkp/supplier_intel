@@ -724,3 +724,125 @@ class TestBackfillProductKeywords:
 
         log = repo.get_supplier_change_log(supplier_id)
         assert any(entry["field_name"] == "product_keywords" for entry in log)
+
+
+class TestExportForBatchUpload:
+    """discovery.discovery_service.DiscoveryService.export_for_batch_upload
+    -- the CSV bridge from discover() to batch-upload's fuller
+    enrichment pipeline. No fakes needed here beyond the repo itself --
+    this reads already-stored supplier rows, it doesn't run discovery."""
+
+    def _service(self, repo):
+        return DiscoveryService(repo=repo, google_scraper=SimpleNamespace(), website_fetcher=SimpleNamespace())
+
+    def _discovered(self, repo, name, domain, product="injection moulding manufacturer"):
+        return repo.create_golden_record({
+            "canonical_name": name, "domain": domain,
+            "discovery_source": "discovery_service", "product_keywords": [product],
+        })
+
+    def test_exports_company_name_and_website_headers(self, repo, tmp_path):
+        self._discovered(repo, "Acme Moulding Co", "acme-moulding.com")
+        output = tmp_path / "out.csv"
+
+        path, count = self._service(repo).export_for_batch_upload(
+            "injection moulding manufacturer", output_path=str(output),
+        )
+
+        assert count == 1
+        text = path.read_text(encoding="utf-8-sig")
+        lines = text.splitlines()
+        assert lines[0] == "Company Name,Website"
+        assert lines[1] == "Acme Moulding Co,acme-moulding.com"
+
+    def test_multiple_discovered_suppliers_all_appear(self, repo, tmp_path):
+        self._discovered(repo, "First Co", "first.com")
+        self._discovered(repo, "Second Co", "second.com")
+        output = tmp_path / "out.csv"
+
+        path, count = self._service(repo).export_for_batch_upload(
+            "injection moulding manufacturer", output_path=str(output),
+        )
+
+        assert count == 2
+        text = path.read_text(encoding="utf-8-sig")
+        assert "First Co,first.com" in text
+        assert "Second Co,second.com" in text
+
+    def test_domain_is_written_bare_without_a_scheme(self, repo, tmp_path):
+        """SiteCollector already handles a bare domain via its own
+        www/scheme candidate fallback -- no need to format a URL here."""
+        self._discovered(repo, "Acme Co", "acme.com")
+        output = tmp_path / "out.csv"
+
+        self._service(repo).export_for_batch_upload("injection moulding manufacturer", output_path=str(output))
+
+        text = output.read_text(encoding="utf-8-sig")
+        assert "https://" not in text
+        assert "acme.com" in text
+
+    def test_suppliers_from_a_different_product_are_excluded(self, repo, tmp_path):
+        self._discovered(repo, "Acme Moulding Co", "acme-moulding.com", product="injection moulding manufacturer")
+        self._discovered(repo, "Bearing Co", "bearing.com", product="wheel bearings")
+        output = tmp_path / "out.csv"
+
+        path, count = self._service(repo).export_for_batch_upload(
+            "injection moulding manufacturer", output_path=str(output),
+        )
+
+        assert count == 1
+        text = path.read_text(encoding="utf-8-sig")
+        assert "Bearing Co" not in text
+
+    def test_non_discovered_suppliers_are_never_included(self, repo, tmp_path):
+        """A bulk-imported supplier whose product_keywords happens to
+        match must never leak into a discovery export."""
+        repo.create_golden_record({
+            "canonical_name": "Bulk Import Co", "domain": "bulkimport.com",
+            "product_keywords": ["injection moulding manufacturer"],
+        })
+        output = tmp_path / "out.csv"
+
+        path, count = self._service(repo).export_for_batch_upload(
+            "injection moulding manufacturer", output_path=str(output),
+        )
+
+        assert count == 0
+        text = path.read_text(encoding="utf-8-sig")
+        assert "Bulk Import Co" not in text
+
+    def test_no_matches_still_writes_a_header_only_csv(self, repo, tmp_path):
+        output = tmp_path / "out.csv"
+
+        path, count = self._service(repo).export_for_batch_upload(
+            "nonexistent product", output_path=str(output),
+        )
+
+        assert count == 0
+        assert path.read_text(encoding="utf-8-sig").strip() == "Company Name,Website"
+
+    def test_default_output_path_is_a_slug_of_the_product(self, repo, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        self._discovered(repo, "Acme Moulding Co", "acme-moulding.com")
+
+        path, count = self._service(repo).export_for_batch_upload("injection moulding manufacturer")
+
+        assert count == 1
+        assert path.name == "discovered_injection_moulding_manufacturer.csv"
+        assert path.exists()
+
+    def test_missing_domain_exports_as_empty_not_none(self, repo, tmp_path):
+        """domain isn't required to create a golden record (unlike
+        canonical_name) -- must export as an empty cell, not the
+        literal string "None"."""
+        repo.create_golden_record({
+            "canonical_name": "No Domain Co", "discovery_source": "discovery_service",
+            "product_keywords": ["injection moulding manufacturer"],
+        })
+        output = tmp_path / "out.csv"
+
+        self._service(repo).export_for_batch_upload("injection moulding manufacturer", output_path=str(output))
+
+        text = output.read_text(encoding="utf-8-sig")
+        assert "No Domain Co," in text
+        assert "None" not in text

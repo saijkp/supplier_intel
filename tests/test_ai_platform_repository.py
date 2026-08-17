@@ -406,3 +406,108 @@ class TestPipelineJobProgress:
 
         jobs = repo.list_pipeline_jobs()
         assert jobs[0]["progress"] == {"examined": 2}
+
+
+class TestFindDiscoveredSuppliers:
+    """discovery.discovery_service.DiscoveryService.export_for_batch_upload's
+    data source -- deliberately reads persistent discovery_source/
+    product_keywords fields on the supplier row itself, not
+    pipeline_jobs/discovery_runs (neither reliably tracks which
+    supplier ids a given run created, especially for a CLI-invoked
+    `main.py discover`, which writes to neither table)."""
+
+    def test_finds_a_supplier_matching_source_and_product(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Acme Moulding Co", "domain": "acme-moulding.com",
+            "discovery_source": "discovery_service",
+            "product_keywords": ["injection moulding manufacturer"],
+        })
+
+        results = repo.find_discovered_suppliers("injection moulding manufacturer")
+
+        assert [r["id"] for r in results] == [supplier_id]
+
+    def test_excludes_suppliers_with_a_different_discovery_source(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_golden_record({
+            "canonical_name": "Some Other Co", "domain": "someother.com",
+            "discovery_source": "manual_import",
+            "product_keywords": ["injection moulding manufacturer"],
+        })
+
+        assert repo.find_discovered_suppliers("injection moulding manufacturer") == []
+
+    def test_excludes_suppliers_with_no_discovery_source_at_all(self, tmp_path):
+        """A bulk-imported supplier (e.g. from the Automechanika list)
+        might independently have a matching product_keywords entry --
+        must never be swept into a discovery export just because the
+        text happens to match."""
+        repo = _make_repo(tmp_path)
+        repo.create_golden_record({
+            "canonical_name": "Automechanika Exhibitor Co", "domain": "exhibitor.com",
+            "product_keywords": ["injection moulding manufacturer"],
+        })
+
+        assert repo.find_discovered_suppliers("injection moulding manufacturer") == []
+
+    def test_excludes_a_different_product_even_with_the_same_discovery_source(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_golden_record({
+            "canonical_name": "Wheel Bearing Co", "domain": "wheelbearing.com",
+            "discovery_source": "discovery_service",
+            "product_keywords": ["wheel bearings"],
+        })
+
+        assert repo.find_discovered_suppliers("injection moulding manufacturer") == []
+
+    def test_does_not_cross_match_a_textually_overlapping_product(self, tmp_path):
+        """Exact quoted match, not a bare substring -- "injection
+        moulding" must not match a supplier only ever discovered for
+        the longer, distinct term "injection moulding manufacturer"."""
+        repo = _make_repo(tmp_path)
+        repo.create_golden_record({
+            "canonical_name": "Acme Moulding Co", "domain": "acme-moulding.com",
+            "discovery_source": "discovery_service",
+            "product_keywords": ["injection moulding manufacturer"],
+        })
+
+        assert repo.find_discovered_suppliers("injection moulding") == []
+
+    def test_aggregates_across_multiple_discover_calls(self, tmp_path):
+        """Two separate discover() invocations for the same product --
+        both must show up, proving this doesn't depend on a single
+        run's transient output."""
+        repo = _make_repo(tmp_path)
+        first_id = repo.create_golden_record({
+            "canonical_name": "First Co", "domain": "first.com",
+            "discovery_source": "discovery_service",
+            "product_keywords": ["injection moulding manufacturer"],
+        })
+        second_id = repo.create_golden_record({
+            "canonical_name": "Second Co", "domain": "second.com",
+            "discovery_source": "discovery_service",
+            "product_keywords": ["injection moulding manufacturer"],
+        })
+
+        results = repo.find_discovered_suppliers("injection moulding manufacturer")
+
+        assert {r["id"] for r in results} == {first_id, second_id}
+
+    def test_no_matches_returns_empty_list_not_none(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        assert repo.find_discovered_suppliers("nonexistent product") == []
+
+    def test_custom_discovery_source_is_respected(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Manually Tagged Co", "domain": "manuallytagged.com",
+            "discovery_source": "manual_import",
+            "product_keywords": ["injection moulding manufacturer"],
+        })
+
+        results = repo.find_discovered_suppliers(
+            "injection moulding manufacturer", discovery_source="manual_import",
+        )
+
+        assert [r["id"] for r in results] == [supplier_id]

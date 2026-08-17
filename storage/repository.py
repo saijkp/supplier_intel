@@ -2061,6 +2061,43 @@ class SupplierRepository:
             )
             return cur.lastrowid
 
+    def find_discovered_suppliers(
+        self, product: str, discovery_source: str = "discovery_service",
+    ) -> List[Dict[str, Any]]:
+        """Every supplier discover() ever created for `product`, however
+        many separate calls it took to find them (CLI or API, --source
+        serpapi or llm) -- the bridge discovery.discovery_service.
+        DiscoveryService.export_for_batch_upload() reads from.
+
+        Deliberately NOT based on pipeline_jobs or discovery_runs:
+        neither reliably tracks which supplier rows a given run created.
+        discovery_runs (record_discovery_run above) only ever stores
+        summary counts, never the actual created ids. pipeline_jobs only
+        gets a row at all for an API-triggered run (POST /discovery/jobs
+        -> api.jobs.run_discovery_job) -- a plain `main.py discover`
+        CLI invocation writes neither. What IS reliable: discovery.
+        discovery_service.DiscoveryService._process_candidate sets
+        discovery_source='discovery_service' and product_keywords=
+        [product] directly on the supplier row itself, unconditionally,
+        regardless of caller -- persistent state, not run bookkeeping,
+        so this stays correct across however many discover() calls it
+        took to reach a target count.
+
+        product_keywords is matched as the exact quoted JSON-array
+        element (`%"{product}"%`), not a bare substring -- avoids
+        cross-matching a different-but-textually-overlapping product
+        term (the same discipline search_suppliers_full's own
+        product_query LIKE already uses, just precise to the exact
+        string _process_candidate wrote rather than a loose substring).
+        """
+        pattern = f'%"{product}"%'
+        with connection_scope(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM suppliers WHERE discovery_source = ? AND product_keywords LIKE ? ORDER BY id",
+                (discovery_source, pattern),
+            ).fetchall()
+            return _rows_to_dicts(rows, SUPPLIER_JSON_FIELDS)
+
     # ═════════════════════════════════════════════════════
     # Sourcing Agent runs (v12) -- one row per chat brief, scoping its
     # qualified results + CSV download to exactly that request. See

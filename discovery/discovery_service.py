@@ -42,8 +42,12 @@ design rationale.
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from deduplication.matcher import SupplierMatcher
@@ -395,3 +399,55 @@ class DiscoveryService:
             "already_had_keywords_supplier_ids": already_had_keywords,
             "missing_supplier_ids": missing_supplier,
         }
+
+    def export_for_batch_upload(
+        self, product: str, output_path: Optional[str] = None, discovery_source: str = "discovery_service",
+    ) -> tuple[Path, int]:
+        """CSV bridge from discover() to batch/: every supplier
+        discover() has ever created for `product` (via
+        self.repo.find_discovered_suppliers -- see that method's own
+        docstring for why it reads persistent supplier-row state rather
+        than pipeline_jobs/discovery_runs, neither of which reliably
+        tracks a CLI-invoked run's created ids), written as a minimal
+        "Company Name" / "Website" CSV -- exactly the two headers
+        batch.csv_parser's fuzzy header matching recognises, so the
+        output of this function is valid input to `main.py batch-upload`
+        unchanged.
+
+        Why this bridge exists at all: discover() only ever sets
+        canonical_name/domain/country/product_keywords on a new
+        supplier -- never address, phone, or email. Feeding the result
+        back through batch-upload's existing enrichment path (real
+        collection + grounded address extraction) is the smallest way
+        to get the rest, reusing the exact same pipeline an external
+        list (e.g. an exhibitor spreadsheet) already goes through,
+        rather than building a second enrichment path for
+        discovery-found suppliers specifically.
+
+        `domain` is written bare (no scheme, e.g. "acme.com") -- exactly
+        how discover() stored it -- rather than a full URL; batch's own
+        collection.site_collector.SiteCollector already tries the
+        https://www.X / https://X / http://www.X variants for a bare
+        domain, so this needs no extra formatting here.
+
+        Returns (path, count) -- count is 0 for an empty result (still
+        writes a header-only CSV, same "never raise on nothing found"
+        discipline every other export in this codebase follows).
+        """
+        suppliers = self.repo.find_discovered_suppliers(product, discovery_source=discovery_source)
+
+        if output_path:
+            path = Path(output_path)
+        else:
+            slug = re.sub(r"[^a-z0-9]+", "_", product.lower()).strip("_") or "suppliers"
+            path = Path(f"discovered_{slug}.csv")
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(["Company Name", "Website"])
+        for supplier in suppliers:
+            writer.writerow([supplier.get("canonical_name") or "", supplier.get("domain") or ""])
+
+        path.write_text(buffer.getvalue(), encoding="utf-8-sig", newline="")
+        return path, len(suppliers)
