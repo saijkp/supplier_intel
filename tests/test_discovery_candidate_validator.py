@@ -14,7 +14,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from discovery.candidate_extractor import Candidate
-from discovery.candidate_validator import CandidateValidator
+from discovery.candidate_validator import (
+    CandidateValidator,
+    _core_product_term,
+    _mentions_product_term,
+)
 
 
 class FakeLLMClient:
@@ -148,6 +152,113 @@ class TestCandidateValidator:
         validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
         result = validator.validate(_candidate(), "trailer axle")
         assert result.validated is False
+
+
+class TestCoreProductTerm:
+    """_core_product_term strips one trailing qualifier word --
+    query_builder.py's own templates always append one
+    ("{product} manufacturer", "{product} supplier", "{product}
+    factory"), but no real company writes its own homepage repeating
+    that exact tail."""
+
+    def test_strips_trailing_manufacturer(self):
+        assert _core_product_term("injection moulding manufacturer") == "injection moulding"
+
+    def test_strips_trailing_supplier(self):
+        assert _core_product_term("injection moulding supplier") == "injection moulding"
+
+    def test_strips_trailing_factory(self):
+        assert _core_product_term("injection moulding factory") == "injection moulding"
+
+    def test_unqualified_term_is_unchanged(self):
+        assert _core_product_term("injection moulding") == "injection moulding"
+
+    def test_single_word_term_is_unchanged(self):
+        """A bare qualifier word alone (e.g. someone searching for
+        literally "manufacturer") isn't a qualified multi-word term --
+        must not be stripped down to an empty string."""
+        assert _core_product_term("manufacturer") == "manufacturer"
+
+    def test_qualifier_only_stripped_from_the_end_not_the_middle(self):
+        assert _core_product_term("manufacturer of injection moulding") == "manufacturer of injection moulding"
+
+
+class TestMentionsProductTerm:
+    """_mentions_product_term -- the loosened gate 6 core: core-phrase-
+    only, spelling-insensitive for known British/American variants.
+    Found via a real "injection moulding manufacturer" discovery run:
+    71% of that run's rejections were genuine manufacturers
+    (accurateplastics.net, cadrex.com, usainjectionmolding.com, among
+    others) rejected purely because their own page said "molding", or
+    didn't repeat the word "manufacturer" verbatim."""
+
+    def test_exact_full_phrase_still_matches(self):
+        assert _mentions_product_term("We are an injection moulding manufacturer.", "injection moulding manufacturer")
+
+    def test_core_phrase_without_the_qualifier_now_matches(self):
+        """The exact real-world case: a real manufacturer's page says
+        "injection moulding" but never appends "manufacturer"."""
+        assert _mentions_product_term("Custom injection moulding services since 1998.", "injection moulding manufacturer")
+
+    def test_american_spelling_matches_a_british_search_term(self):
+        assert _mentions_product_term("Precision injection molding for OEM customers.", "injection moulding manufacturer")
+
+    def test_british_spelling_matches_an_american_search_term(self):
+        assert _mentions_product_term("Precision injection moulding for OEM customers.", "injection molding manufacturer")
+
+    def test_unrelated_page_does_not_match(self):
+        assert not _mentions_product_term("We manufacture trailer axles and chassis components.", "injection moulding manufacturer")
+
+    def test_still_case_insensitive(self):
+        assert _mentions_product_term("INJECTION MOLDING SPECIALISTS SINCE 1998.", "injection moulding manufacturer")
+
+    def test_unqualified_term_with_no_spelling_variant_is_unaffected(self):
+        assert _mentions_product_term("We manufacture trailer axle assemblies.", "trailer axle")
+        assert not _mentions_product_term("We manufacture wheel bearings.", "trailer axle")
+
+
+class TestValidateEndToEndWithLoosenedTermMatching:
+
+    def test_american_spelling_manufacturer_is_now_validated(self):
+        """The concrete real-world fix: a real US injection molder,
+        previously rejected outright, now validates."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Accurate Plastics Inc. is a precision injection molding company serving OEM customers.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Accurate Plastics Inc.", "country": "United States"})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(
+            _candidate(title="Accurate Plastics Inc.", snippet="injection molding manufacturer"),
+            "injection moulding manufacturer",
+        )
+
+        assert result.validated is True
+
+    def test_core_phrase_without_manufacturer_wording_is_now_validated(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Moulding Co offers custom injection moulding for a range of industries.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Moulding Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(title="Acme Moulding Co", snippet="injection moulding"), "injection moulding manufacturer")
+
+        assert result.validated is True
+
+    def test_genuinely_unrelated_page_is_still_rejected(self):
+        """Loosening gate 6 must not turn it into a rubber stamp --
+        an unrelated business still fails."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co manufactures trailer axles and chassis components.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "injection moulding manufacturer")
+
+        assert result.validated is False
+        assert "does not mention the searched term" in result.reason
 
 
 class TestSelfDeclaredTraderExclusion:

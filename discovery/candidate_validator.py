@@ -37,6 +37,13 @@ A candidate is "validated" only if every gate passes:
    surfaced, not an unrelated site that happens to share the domain).
 6. The fetched page text actually mentions the searched product term
    -- a second, DETERMINISTIC keyword check, not another LLM call.
+   Checks the CORE term only (a trailing "manufacturer"/"supplier"/
+   "factory" qualifier -- query_builder.py's own templates always add
+   one -- is stripped first, see _core_product_term), and is spelling-
+   insensitive for known British/American variants (_SPELLING_VARIANTS,
+   e.g. "moulding"/"molding") -- found via a real run that the strict
+   original check was rejecting genuine manufacturers on wording
+   alone, not a real signal they weren't manufacturers.
 """
 
 from __future__ import annotations
@@ -93,6 +100,55 @@ def _find_trader_self_declaration(page_text: str) -> str | None:
         if phrase in haystack:
             return phrase
     return None
+
+
+# query_builder.py's own templates append a trailing role word to every
+# product term it builds a query from ("{product} manufacturer",
+# "{product} supplier", "{product} factory") -- gate 6 originally
+# required that exact tail to appear verbatim on a candidate's own
+# page, but no real company writes its own homepage as "we are an
+# injection moulding manufacturer" -- it was rejecting genuine
+# manufacturers (accurateplastics.net, cadrex.com,
+# usainjectionmolding.com, among others found via a real "injection
+# moulding manufacturer" run) on that technicality alone, 71% of that
+# run's rejections. Gate 6 now checks only the core phrase, this
+# qualifier stripped.
+_TRAILING_QUALIFIERS: tuple = ("manufacturer", "supplier", "factory")
+
+# British/American spelling pairs confirmed to matter for a real
+# candidate -- checked in both directions on the core phrase, since
+# either the search term or the page could be written in either
+# spelling. Deliberately not a general British/American dictionary --
+# only pairs a real rejection has actually proven matter, added to as
+# that happens rather than guessed in advance.
+_SPELLING_VARIANTS: tuple = (("mould", "mold"),)
+
+
+def _core_product_term(product_term: str) -> str:
+    """Strips one trailing qualifier word (see _TRAILING_QUALIFIERS)
+    from `product_term` if present -- "injection moulding
+    manufacturer" -> "injection moulding". A term that doesn't end in
+    one of the known qualifiers (e.g. already just the core phrase) is
+    returned unchanged."""
+    words = product_term.strip().split()
+    if len(words) > 1 and words[-1].lower() in _TRAILING_QUALIFIERS:
+        return " ".join(words[:-1])
+    return product_term
+
+
+def _mentions_product_term(page_text: str, product_term: str) -> bool:
+    """True if `page_text` mentions the core product term (see
+    _core_product_term), spelling-insensitive for known British/
+    American variants (see _SPELLING_VARIANTS)."""
+    core = _core_product_term(product_term).lower()
+    haystack = (page_text or "").lower()
+
+    candidates = {core}
+    for british, american in _SPELLING_VARIANTS:
+        candidates.add(core.replace(british, american))
+        candidates.add(core.replace(american, british))
+
+    return any(candidate in haystack for candidate in candidates)
 
 
 # Named, not just inline f-strings, so discovery_service.py can classify
@@ -200,7 +256,7 @@ class CandidateValidator:
                 f"extracted name '{extracted_name}' does not match the original search result (score={score:.0f})",
             )
 
-        if product_term.lower() not in page_text.lower():
+        if not _mentions_product_term(page_text, product_term):
             return ValidationResult(
                 candidate, False, extracted_name, extracted_country, score,
                 f"{REASON_TERM_MISSING_PREFIX} '{product_term}'",
