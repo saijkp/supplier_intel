@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 
 # ═══════════════════════════════════════════════════════════
@@ -634,6 +634,31 @@ CREATE TABLE IF NOT EXISTS supplier_phone_numbers (
 );
 
 CREATE INDEX IF NOT EXISTS idx_supplier_phone_numbers_supplier ON supplier_phone_numbers(supplier_id);
+
+
+-- Criterion-D evidence surfacing (v22): three opt-in searches per
+-- supplier -- "[name] scam", "[name] review", "[name] factory tour" --
+-- via the same GoogleSearchScraper/SerpAPI integration discovery
+-- already uses. Stores exactly what the search engine returned
+-- (title/link/snippet); NO Clean/Flagged judgment is computed or
+-- stored anywhere -- that call stays the buyer's, made by reading the
+-- snippets themselves (batch.batch_service.py's
+-- _attempt_reputation_search never writes a verdict). UNIQUE on
+-- (supplier_id, query_type, link) so a repeat search doesn't duplicate
+-- rows, same pattern as supplier_phone_numbers.
+CREATE TABLE IF NOT EXISTS supplier_reputation_snippets (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id     INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    query_type      TEXT NOT NULL CHECK (query_type IN ('scam', 'review', 'factory_tour')),
+    query_text      TEXT NOT NULL,
+    title           TEXT,
+    link            TEXT,
+    snippet         TEXT,
+    searched_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (supplier_id, query_type, link)
+);
+
+CREATE INDEX IF NOT EXISTS idx_supplier_reputation_snippets_supplier ON supplier_reputation_snippets(supplier_id);
 
 
 -- ═══════════════════════════════════════
@@ -1283,6 +1308,35 @@ MIGRATIONS: dict[int, dict] = {
         "columns": [
             ("suppliers", "factory_location", "TEXT"),
             ("suppliers", "candidate_facility_photo_urls", "TEXT"),
+        ],
+    },
+    22: {
+        "description": (
+            "Criterion-D evidence surfacing: supplier_reputation_snippets "
+            "(one row per (supplier, query_type, link) triple) -- three "
+            "opt-in searches per supplier ('[name] scam', '[name] review', "
+            "'[name] factory tour') via GoogleSearchScraper/SerpAPI, "
+            "storing exactly the title/link/snippet the search engine "
+            "returned. No Clean/Flagged judgment of any kind is computed "
+            "or stored -- that stays the buyer's own call from reading "
+            "the snippets, same evidence-only discipline as "
+            "factory_location/candidate_facility_photo_urls (v21)."
+        ),
+        "statements": [
+            """
+            CREATE TABLE IF NOT EXISTS supplier_reputation_snippets (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_id     INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+                query_type      TEXT NOT NULL CHECK (query_type IN ('scam', 'review', 'factory_tour')),
+                query_text      TEXT NOT NULL,
+                title           TEXT,
+                link            TEXT,
+                snippet         TEXT,
+                searched_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (supplier_id, query_type, link)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_supplier_reputation_snippets_supplier ON supplier_reputation_snippets(supplier_id)",
         ],
     },
 }

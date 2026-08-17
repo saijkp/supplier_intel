@@ -1392,6 +1392,47 @@ class SupplierRepository:
             ).fetchall()
             return _rows_to_dicts(rows)
 
+    def save_reputation_snippets(self, supplier_id: int, snippets: List[Dict[str, Any]]) -> int:
+        """Insert-or-ignore per (supplier_id, query_type, link) -- see
+        supplier_reputation_snippets' own SCHEMA_SQL comment. `snippets`
+        is a list of {"query_type", "query_text", "title", "link",
+        "snippet"} dicts, straight from GoogleSearchScraper's raw_data --
+        no Clean/Flagged judgment of any kind is computed or stored
+        here, only what the search engine returned. Returns how many
+        rows were newly inserted (a repeat search re-finding the same
+        (query_type, link) pair is a no-op, not an error)."""
+        if not snippets:
+            return 0
+        inserted = 0
+        with connection_scope(self.db_path) as conn:
+            for s in snippets:
+                cur = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO supplier_reputation_snippets
+                        (supplier_id, query_type, query_text, title, link, snippet)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (supplier_id, s["query_type"], s["query_text"], s.get("title"), s.get("link"), s.get("snippet")),
+                )
+                if cur.rowcount:
+                    inserted += 1
+        return inserted
+
+    def get_reputation_snippets(self, supplier_id: int, query_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        with connection_scope(self.db_path) as conn:
+            if query_type:
+                rows = conn.execute(
+                    "SELECT * FROM supplier_reputation_snippets WHERE supplier_id = ? AND query_type = ? "
+                    "ORDER BY searched_at",
+                    (supplier_id, query_type),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM supplier_reputation_snippets WHERE supplier_id = ? ORDER BY searched_at",
+                    (supplier_id,),
+                ).fetchall()
+            return _rows_to_dicts(rows)
+
     def record_factory_photo_assessment(
         self, supplier_id: int, *, photo_urls: List[str], verdict: str
     ) -> None:

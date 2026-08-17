@@ -79,6 +79,19 @@ heuristic candidate photo list is evidence for the buyer's own manual
 reverse-image-search review, never a verdict, so there's no
 "conflict" to guard against -- more candidates found on a later run is
 strictly more useful, never a correction to a wrong prior answer.
+
+Reputation search (_attempt_reputation_search): OPT-IN (run_batch's
+search_reputation flag, off by default -- real per-row SerpAPI cost,
+3 searches/row). "[canonical_name] scam", "[canonical_name] review",
+"[canonical_name] factory tour" via the same GoogleSearchScraper/
+SerpAPI integration discovery already uses. Stores exactly the title/
+link/snippet each query returned into supplier_reputation_snippets --
+never a Clean/Flagged judgment of any kind; that call stays the
+buyer's, made by reading the snippets themselves. Uses the supplier's
+CURRENT canonical_name (i.e. after any name extraction earlier in this
+same row) as the query subject -- a still-placeholder domain-derived
+name would produce useless search results, so a supplier with no real
+name yet is skipped for this row (there will be a next run).
 """
 
 from __future__ import annotations
@@ -94,6 +107,7 @@ from deduplication.domain_utils import extract_domain
 from deduplication.matcher import SupplierMatcher
 from discovery.candidate_validator import SYSTEM_PROMPT as NAME_EXTRACTION_SYSTEM_PROMPT
 from llm.client import LLMClient
+from scrapers.google_search_scraper import GoogleSearchScraper
 from storage.repository import SupplierRepository
 from verification.website_contact_extractor import parking_page_reason
 
@@ -198,6 +212,16 @@ Return ONLY a JSON object with exactly this key, no other text:
 # reviewing 10 candidate photos by hand is reasonable, 200 is not.
 _MAX_FACILITY_PHOTOS_PER_SUPPLIER = 10
 
+# Criterion-D query subjects (query_type -> the literal suffix appended
+# to the company name) -- see _attempt_reputation_search. query_type
+# values match supplier_reputation_snippets' CHECK constraint exactly.
+_REPUTATION_QUERY_SUFFIXES: Dict[str, str] = {
+    "scam": "scam",
+    "review": "review",
+    "factory_tour": "factory tour",
+}
+_MAX_REPUTATION_SNIPPETS_PER_QUERY = 5
+
 
 @dataclass
 class BatchOutcome:
@@ -215,6 +239,7 @@ class BatchOutcome:
     factory_locations_found: int = 0
     factory_locations_conflicting: int = 0
     facility_photos_found: int = 0
+    reputation_snippets_found: int = 0
 
 
 def _address_candidate_sources(pages: List[Any]) -> List[tuple]:
@@ -271,15 +296,18 @@ class BatchService:
         matcher: Optional[SupplierMatcher] = None,
         collection_service: Optional[CollectionService] = None,
         llm_client: Optional[LLMClient] = None,
+        google_scraper: Optional[GoogleSearchScraper] = None,
     ):
         self.repo = repo or SupplierRepository()
         self.matcher = matcher or SupplierMatcher(self.repo)
         self.collection_service = collection_service or CollectionService(repo=self.repo)
         self.llm_client = llm_client or LLMClient()
+        self.google_scraper = google_scraper or GoogleSearchScraper()
 
     def run_batch(
         self, rows: List[ParsedRow], batch_job_id: str,
         progress_callback: Optional[Callable[[BatchOutcome], None]] = None,
+        search_reputation: bool = False,
     ) -> BatchOutcome:
         outcome = BatchOutcome(total_rows=len(rows))
         # domain -> already-resolved supplier_id within THIS batch call --
@@ -388,6 +416,11 @@ class BatchService:
 
             if self._attempt_facility_photo_aggregation(supplier_id, collect_result):
                 outcome.facility_photos_found += 1
+
+            if search_reputation:
+                snippets_saved = self._attempt_reputation_search(supplier_id)
+                if snippets_saved:
+                    outcome.reputation_snippets_found += 1
 
             if collect_result.get("status") == "success":
                 outcome.succeeded += 1
@@ -737,3 +770,54 @@ class BatchService:
             change_reason="candidate facility photo URLs found during collection",
         )
         return added
+
+    def _attempt_reputation_search(self, supplier_id: int) -> int:
+        """OPT-IN (see run_batch's search_reputation flag) criterion-D
+        evidence gathering: three real SerpAPI searches per call --
+        "[name] scam", "[name] review", "[name] factory tour" -- via the
+        same GoogleSearchScraper integration discovery already uses.
+        Stores exactly the title/link/snippet each query returned into
+        supplier_reputation_snippets; makes NO Clean/Flagged judgment of
+        any kind -- that call stays the buyer's, made by reading the
+        snippets themselves.
+
+        Uses the supplier's CURRENT canonical_name (i.e. after any name
+        extraction earlier in this same row) as the query subject -- a
+        still-placeholder domain-derived name (see
+        _placeholder_name_from_domain) would produce useless search
+        results, so a supplier with no real name yet is skipped (there
+        will be a next run once a name is found).
+
+        Returns how many NEW snippets were saved this call (0 if no
+        usable name, every query errored, or every query returned
+        nothing)."""
+        supplier = self.repo.get_supplier(supplier_id)
+        company_name = (supplier or {}).get("canonical_name")
+        if not company_name:
+            return 0
+        expected_placeholder = _placeholder_name_from_domain((supplier or {}).get("domain") or "")
+        if company_name == expected_placeholder:
+            return 0
+
+        snippets: List[Dict[str, Any]] = []
+        for query_type, suffix in _REPUTATION_QUERY_SUFFIXES.items():
+            query_text = f"{company_name} {suffix}"
+            try:
+                results = self.google_scraper.scrape(query_text, max_results=_MAX_REPUTATION_SNIPPETS_PER_QUERY)
+            except Exception as e:  # noqa: BLE001 -- one query failing must never abort the batch row
+                logger.warning(
+                    "batch: reputation search failed for supplier #%s (%s): %s", supplier_id, query_type, e,
+                )
+                continue
+            for result in results[:_MAX_REPUTATION_SNIPPETS_PER_QUERY]:
+                if not result.success:
+                    continue
+                raw = result.raw_data or {}
+                snippets.append({
+                    "query_type": query_type, "query_text": query_text,
+                    "title": raw.get("title"), "link": raw.get("link"), "snippet": raw.get("snippet"),
+                })
+
+        if not snippets:
+            return 0
+        return self.repo.save_reputation_snippets(supplier_id, snippets)

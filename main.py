@@ -522,7 +522,12 @@ def collect(supplier_id: Optional[int], pending: bool, limit: int, force: bool) 
               help="Write primary_phone as a plain value instead of an Excel-safe formula "
                    "string (default: Excel-safe, since phone numbers otherwise open as "
                    "scientific notation in Excel). Use --plain for a clean, machine-readable CSV.")
-def batch_upload(csv_path: str, output: Optional[str], plain: bool) -> None:
+@click.option("--search-reputation", is_flag=True, default=False,
+              help="Opt-in criterion-D evidence gathering: 3 real SerpAPI searches per row "
+                   "('[name] scam', '[name] review', '[name] factory tour'), snippets only -- "
+                   "never a Clean/Flagged judgment. Off by default: real per-row SerpAPI cost "
+                   "on top of the collection cost every row already incurs.")
+def batch_upload(csv_path: str, output: Optional[str], plain: bool, search_reputation: bool) -> None:
     """Enrich a spreadsheet of companies through the exact same
     single-company enrichment path collect/discover already use --
     SupplierMatcher.resolve_and_store() then CollectionService.collect()
@@ -561,8 +566,14 @@ def batch_upload(csv_path: str, output: Optional[str], plain: bool) -> None:
     repo.create_pipeline_job(job_id=job_id, query=f"[batch] {csv_path}", options={"filename": csv_path})
     repo.mark_pipeline_job_running(job_id)
 
+    if search_reputation:
+        console.print(
+            f"[yellow]--search-reputation enabled: 3 real SerpAPI searches per row "
+            f"({len(parsed.rows)} row(s) -> up to {len(parsed.rows) * 3} searches).[/yellow]"
+        )
+
     service = BatchService(repo=repo)
-    outcome = service.run_batch(parsed.rows, batch_job_id=job_id)
+    outcome = service.run_batch(parsed.rows, batch_job_id=job_id, search_reputation=search_reputation)
     repo.mark_pipeline_job_completed(job_id, stats=dataclasses.asdict(outcome))
 
     table = Table(show_header=False)
@@ -579,6 +590,11 @@ def batch_upload(csv_path: str, output: Optional[str], plain: bool) -> None:
     table.add_row("placeholder names conflicting (not applied)", str(outcome.placeholder_names_conflicting))
     table.add_row("addresses found", str(outcome.addresses_found))
     table.add_row("addresses conflicting (not applied)", str(outcome.addresses_conflicting))
+    table.add_row("factory locations found", str(outcome.factory_locations_found))
+    table.add_row("factory locations conflicting (not applied)", str(outcome.factory_locations_conflicting))
+    table.add_row("rows with new facility photo candidates", str(outcome.facility_photos_found))
+    if search_reputation:
+        table.add_row("rows with reputation snippets found", str(outcome.reputation_snippets_found))
     console.print(table)
 
     rows = repo.get_batch_upload_rows(job_id)

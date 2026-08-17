@@ -511,3 +511,90 @@ class TestFindDiscoveredSuppliers:
         )
 
         assert [r["id"] for r in results] == [supplier_id]
+
+
+class TestReputationSnippets:
+    """storage.repository.SupplierRepository.save_reputation_snippets/
+    get_reputation_snippets -- backs batch.batch_service.py's opt-in
+    criterion-D evidence gathering. Stores exactly what a search
+    returned (title/link/snippet); no verdict field exists on the
+    table at all, so there's nothing to assert isn't written."""
+
+    def test_saves_and_retrieves_snippets(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        inserted = repo.save_reputation_snippets(supplier_id, [
+            {"query_type": "scam", "query_text": "Acme Co scam", "title": "t1", "link": "https://x.example.com/1", "snippet": "s1"},
+            {"query_type": "review", "query_text": "Acme Co review", "title": "t2", "link": "https://x.example.com/2", "snippet": "s2"},
+        ])
+
+        assert inserted == 2
+        saved = repo.get_reputation_snippets(supplier_id)
+        assert len(saved) == 2
+        assert {s["query_type"] for s in saved} == {"scam", "review"}
+
+    def test_filters_by_query_type(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.save_reputation_snippets(supplier_id, [
+            {"query_type": "scam", "query_text": "Acme Co scam", "title": "t1", "link": "https://x.example.com/1", "snippet": "s1"},
+            {"query_type": "factory_tour", "query_text": "Acme Co factory tour", "title": "t2", "link": "https://x.example.com/2", "snippet": "s2"},
+        ])
+
+        results = repo.get_reputation_snippets(supplier_id, query_type="factory_tour")
+
+        assert len(results) == 1
+        assert results[0]["link"] == "https://x.example.com/2"
+
+    def test_repeat_insert_of_the_same_query_type_and_link_is_ignored_not_duplicated(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        snippet = {"query_type": "scam", "query_text": "Acme Co scam", "title": "t1", "link": "https://x.example.com/1", "snippet": "s1"}
+
+        first = repo.save_reputation_snippets(supplier_id, [snippet])
+        second = repo.save_reputation_snippets(supplier_id, [snippet])
+
+        assert first == 1
+        assert second == 0
+        assert len(repo.get_reputation_snippets(supplier_id)) == 1
+
+    def test_same_link_under_a_different_query_type_is_a_separate_row(self, tmp_path):
+        """A company's own homepage could plausibly show up as a result
+        for both 'review' and 'factory tour' -- that's two distinct,
+        legitimate findings, not a duplicate."""
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        repo.save_reputation_snippets(supplier_id, [
+            {"query_type": "review", "query_text": "Acme Co review", "title": "t", "link": "https://acme.com/", "snippet": "s"},
+        ])
+        second = repo.save_reputation_snippets(supplier_id, [
+            {"query_type": "factory_tour", "query_text": "Acme Co factory tour", "title": "t", "link": "https://acme.com/", "snippet": "s"},
+        ])
+
+        assert second == 1
+        assert len(repo.get_reputation_snippets(supplier_id)) == 2
+
+    def test_no_snippets_is_a_no_op(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        assert repo.save_reputation_snippets(supplier_id, []) == 0
+        assert repo.get_reputation_snippets(supplier_id) == []
+
+    def test_invalid_query_type_is_silently_dropped_by_the_check_constraint(self, tmp_path):
+        """INSERT OR IGNORE swallows every constraint violation it hits
+        (CHECK included, not just the UNIQUE it's there for) -- SQLite's
+        own documented conflict-resolution semantics, not something
+        save_reputation_snippets adds. In practice this only matters
+        for a caller bug, since batch_service.py only ever constructs
+        query_type from _REPUTATION_QUERY_SUFFIXES' own fixed keys."""
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        inserted = repo.save_reputation_snippets(supplier_id, [
+            {"query_type": "not_a_real_type", "query_text": "x", "title": "t", "link": "https://x.example.com/1", "snippet": "s"},
+        ])
+
+        assert inserted == 0
+        assert repo.get_reputation_snippets(supplier_id) == []

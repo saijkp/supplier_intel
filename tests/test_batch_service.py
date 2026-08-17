@@ -21,6 +21,7 @@ from batch.batch_service import (
     _reject_reason_for_extracted_name,
 )
 from batch.csv_parser import ParsedRow
+from scrapers.base_scraper import ScraperResult
 
 
 class FakeRepo:
@@ -34,6 +35,7 @@ class FakeRepo:
         self.rows: Dict[int, Dict[str, Any]] = {}          # id -> fields
         self.provenance: List[Dict[str, Any]] = []
         self.history_calls: List[Dict[str, Any]] = []
+        self.reputation_snippets: Dict[int, List[Dict[str, Any]]] = {}
 
     # -- batch_upload_rows --------------------------------------------
     def create_batch_upload_row(self, *, batch_job_id, row_index, original_columns,
@@ -103,6 +105,27 @@ class FakeRepo:
         self.history_calls.append({"supplier_id": supplier_id, "fields": fields, "changed_by": changed_by})
         self.suppliers.setdefault(supplier_id, {"id": supplier_id}).update(fields)
         return []
+
+    # -- supplier_reputation_snippets ------------------------------------
+    def save_reputation_snippets(self, supplier_id, snippets):
+        if not snippets:
+            return 0
+        self.reputation_snippets.setdefault(supplier_id, [])
+        inserted = 0
+        for s in snippets:
+            key = (s["query_type"], s.get("link"))
+            existing_keys = {(row["query_type"], row.get("link")) for row in self.reputation_snippets[supplier_id]}
+            if key in existing_keys:
+                continue
+            self.reputation_snippets[supplier_id].append(dict(s))
+            inserted += 1
+        return inserted
+
+    def get_reputation_snippets(self, supplier_id, query_type=None):
+        rows = self.reputation_snippets.get(supplier_id, [])
+        if query_type:
+            return [r for r in rows if r["query_type"] == query_type]
+        return list(rows)
 
 
 class FakeMatcher:
@@ -194,6 +217,31 @@ class FakeLLMClient:
         return self.response
 
 
+class FakeGoogleScraper:
+    """Stand-in for scrapers.google_search_scraper.GoogleSearchScraper --
+    only scrape() is used, for reputation search. `results_by_query`
+    maps the exact query text BatchService will construct (e.g.
+    "Acme Co scam") to a list of ScraperResult; a query with no entry
+    returns an empty list (mirrors a real zero-result search, not an
+    error)."""
+
+    def __init__(self, results_by_query: Optional[Dict[str, List[ScraperResult]]] = None):
+        self.results_by_query = results_by_query or {}
+        self.calls: List[Dict[str, Any]] = []
+
+    def scrape(self, query, max_results=20, site_filter=None, **kwargs):
+        self.calls.append({"query": query, "max_results": max_results})
+        return self.results_by_query.get(query, [])
+
+
+def _reputation_result(title, link, snippet):
+    return ScraperResult(
+        source="google", source_id=link,
+        raw_data={"title": title, "link": link, "snippet": snippet, "displayed_link": link},
+        success=True,
+    )
+
+
 def _row(row_index=0, company_name=None, website=None, original_columns=None):
     return ParsedRow(
         row_index=row_index, original_columns=original_columns or {},
@@ -201,13 +249,14 @@ def _row(row_index=0, company_name=None, website=None, original_columns=None):
     )
 
 
-def _make_service(repo=None, matcher=None, collection_service=None, llm_client=None):
+def _make_service(repo=None, matcher=None, collection_service=None, llm_client=None, google_scraper=None):
     repo = repo or FakeRepo()
     return BatchService(
         repo=repo,
         matcher=matcher or FakeMatcher(repo),
         collection_service=collection_service or FakeCollectionService(),
         llm_client=llm_client or FakeLLMClient(),
+        google_scraper=google_scraper or FakeGoogleScraper(),
     ), repo
 
 
@@ -1137,6 +1186,166 @@ class TestFacilityPhotoAggregation:
         service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
 
         assert len(repo.suppliers[supplier_id]["candidate_facility_photo_urls"]) == 10
+
+
+class TestReputationSearch:
+    """search_reputation is opt-in and off by default -- these tests
+    always pass search_reputation=True explicitly. No test here ever
+    asserts a Clean/Flagged/Pass/Fail value anywhere: the feature
+    stores raw snippets only."""
+
+    def test_disabled_by_default_no_searches_run(self):
+        repo = FakeRepo()
+        repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        scraper = FakeGoogleScraper()
+        service, _ = _make_service(repo=repo, google_scraper=scraper)
+
+        service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert scraper.calls == []
+
+    def test_three_searches_run_and_snippets_saved_when_enabled(self):
+        repo = FakeRepo()
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        scraper = FakeGoogleScraper(results_by_query={
+            "Acme Co scam": [_reputation_result("Is Acme Co a scam?", "https://forum.example.com/1", "No evidence found...")],
+            "Acme Co review": [_reputation_result("Acme Co reviews", "https://reviews.example.com/1", "4.5 stars...")],
+            "Acme Co factory tour": [_reputation_result("Acme Co factory tour video", "https://youtube.example.com/1", "Watch our tour...")],
+        })
+        service, _ = _make_service(repo=repo, google_scraper=scraper)
+
+        outcome = service.run_batch(
+            [_row(company_name="Acme Co", website="https://acme.com")], "job-1", search_reputation=True,
+        )
+
+        assert outcome.reputation_snippets_found == 1  # row-level counter, not snippet count
+        queries = {c["query"] for c in scraper.calls}
+        assert queries == {"Acme Co scam", "Acme Co review", "Acme Co factory tour"}
+
+        saved = repo.get_reputation_snippets(supplier_id)
+        assert len(saved) == 3
+        by_type = {s["query_type"]: s for s in saved}
+        assert by_type["scam"]["link"] == "https://forum.example.com/1"
+        assert by_type["scam"]["snippet"] == "No evidence found..."
+        assert by_type["review"]["link"] == "https://reviews.example.com/1"
+        assert by_type["factory_tour"]["link"] == "https://youtube.example.com/1"
+
+    def test_no_verdict_field_is_ever_written(self):
+        """Explicit requirement: nothing about this feature computes or
+        stores a Clean/Flagged judgment -- only raw search results."""
+        repo = FakeRepo()
+        repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        scraper = FakeGoogleScraper(results_by_query={
+            "Acme Co scam": [_reputation_result("Acme Co scam reports", "https://forum.example.com/1", "Multiple complaints...")],
+        })
+        service, _ = _make_service(repo=repo, google_scraper=scraper)
+
+        service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1", search_reputation=True)
+
+        supplier_id = next(iter(repo.suppliers.keys()))
+        saved = repo.get_reputation_snippets(supplier_id)
+        assert saved
+        for s in saved:
+            assert set(s.keys()) == {"query_type", "query_text", "title", "link", "snippet"}
+
+    def test_query_uses_current_canonical_name_after_name_extraction(self):
+        """Placeholder rows get a real name extracted earlier in the
+        same row (see _attempt_name_extraction) -- reputation search
+        must use THAT name, not the domain-derived placeholder."""
+        repo = FakeRepo()
+
+        class NamedPageCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage(
+                            "https://acmetrailer.com/",
+                            "Welcome to Acme Trailer Manufacturing Inc. We build custom trailers "
+                            "for the agriculture and construction industries nationwide.",
+                        )]}
+
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Manufacturing Inc."})
+        scraper = FakeGoogleScraper(results_by_query={
+            "Acme Trailer Manufacturing Inc. scam": [_reputation_result("t", "https://x.example.com/1", "s")],
+        })
+        service, repo = _make_service(repo=repo, collection_service=NamedPageCollection(), llm_client=llm, google_scraper=scraper)
+
+        service.run_batch([_row(website="https://acmetrailer.com")], "job-1", search_reputation=True)
+
+        queries = {c["query"] for c in scraper.calls}
+        assert "Acme Trailer Manufacturing Inc. scam" in queries
+        assert not any("Acmetrailer" in q for q in queries)
+
+    def test_skipped_when_name_is_still_the_domain_derived_placeholder(self):
+        """No real name found this row (e.g. LLM found nothing) -- a
+        search for the raw placeholder ('Acmetrailer scam') would be
+        useless, so it's skipped rather than wasting a paid search."""
+        repo = FakeRepo()
+
+        class NoNameCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage("https://acmetrailer.com/", "not much here")]}
+
+        llm = FakeLLMClient(response={"company_name": None})
+        scraper = FakeGoogleScraper()
+        service, _ = _make_service(repo=repo, collection_service=NoNameCollection(), llm_client=llm, google_scraper=scraper)
+
+        service.run_batch([_row(website="https://acmetrailer.com")], "job-1", search_reputation=True)
+
+        assert scraper.calls == []
+
+    def test_one_query_erroring_does_not_block_the_other_two(self):
+        repo = FakeRepo()
+        repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class ErroringScraper(FakeGoogleScraper):
+            def scrape(self, query, max_results=20, site_filter=None, **kwargs):
+                self.calls.append({"query": query, "max_results": max_results})
+                if "scam" in query:
+                    raise RuntimeError("SerpAPI timeout")
+                return self.results_by_query.get(query, [])
+
+        scraper = ErroringScraper(results_by_query={
+            "Acme Co review": [_reputation_result("t", "https://x.example.com/1", "s")],
+        })
+        service, _ = _make_service(repo=repo, google_scraper=scraper)
+
+        outcome = service.run_batch(
+            [_row(company_name="Acme Co", website="https://acme.com")], "job-1", search_reputation=True,
+        )
+
+        assert outcome.reputation_snippets_found == 1
+        assert len(scraper.calls) == 3  # all three still attempted despite one raising
+
+    def test_no_results_for_any_query_counts_as_not_found(self):
+        repo = FakeRepo()
+        repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        scraper = FakeGoogleScraper()  # no results_by_query entries -> every query returns []
+        service, _ = _make_service(repo=repo, google_scraper=scraper)
+
+        outcome = service.run_batch(
+            [_row(company_name="Acme Co", website="https://acme.com")], "job-1", search_reputation=True,
+        )
+
+        assert outcome.reputation_snippets_found == 0
+        assert len(scraper.calls) == 3
+
+    def test_repeat_search_does_not_duplicate_snippets(self):
+        """save_reputation_snippets is INSERT-OR-IGNORE keyed on
+        (supplier_id, query_type, link) -- a second batch run over the
+        same supplier must not double the stored evidence."""
+        repo = FakeRepo()
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        scraper = FakeGoogleScraper(results_by_query={
+            "Acme Co scam": [_reputation_result("t", "https://x.example.com/1", "s")],
+        })
+        service, _ = _make_service(repo=repo, google_scraper=scraper)
+
+        service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1", search_reputation=True)
+        service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-2", search_reputation=True)
+
+        saved = repo.get_reputation_snippets(supplier_id)
+        assert len([s for s in saved if s["query_type"] == "scam"]) == 1
 
 
 class TestWithinBatchDedup:
