@@ -100,3 +100,25 @@ A second, newer set of modules sits alongside the original scrape → dedup → 
 - When adding a new source: implement `BaseScraper.scrape()` (return `ScraperResult`s, never raise for ordinary failures) + a matching `BaseNormalizer.normalise()` (return partial data, never raise on malformed input), then wire both into `SupplierIntelligencePipeline`'s scraper/normalizer dicts in `pipeline/orchestrator.py`.
 - When adding a schema change: add a new `MIGRATIONS` entry in `storage/database.py`, bump `SCHEMA_VERSION`, and add the same columns to `SCHEMA_SQL` so a fresh database also gets them directly.
 - `verification/capability_vocabulary.py`'s vocabulary is a fixed, curated list (~36 terms) — an extracted capability outside it is stored as "unmapped," not discarded, and isn't searchable via `--require` until the vocabulary is extended.
+
+## Standing rules (established this week)
+
+Non-negotiable operating rules, learned from real incidents this week. They apply on top of everything above, not instead of it.
+
+1. **Always run the full test suite before committing.** Only the 2 known pre-existing `GoogleSearchScraper` failures (`test_scrape_returns_error_without_api_key`, `test_search_by_image_url_requires_api_key` in `tests/test_search_and_product_matching.py` — confirmed failing on a clean checkout, unrelated to this repo's code) are acceptable. Anything else blocks the commit. `scripts/git-hooks/pre-commit` automates this (install with `cp scripts/git-hooks/pre-commit .git/hooks/pre-commit` — `.git/hooks` isn't version-controlled, so reinstall after a fresh clone) — it runs the full suite with `pytest-xdist` and blocks the commit on any failure except those two.
+
+2. **Never write a Pass/Fail/Clean/Flagged verdict into tracker columns A-D or Qualified.** Those are always the buyer's own manual call — see `batch/tracker_exporter.py`'s own docstring. Anything built for procurement-tracker export only ever *surfaces evidence* (source URLs, search links, snippets) next to those columns, never a judgment inside them.
+
+3. **Grounded extraction only.** Never guess or infer a value that isn't explicitly stated on the page. If it's not there, leave the field blank — don't fill it in from a domain name, company name, or general knowledge. Every extraction system prompt in this codebase (`ADDRESS_EXTRACTION_SYSTEM_PROMPT`, `FACTORY_LOCATION_EXTRACTION_SYSTEM_PROMPT`, `discovery.candidate_validator.SYSTEM_PROMPT`, etc.) states this explicitly — match the same discipline in any new one.
+
+4. **The trusted-value guard: never overwrite an existing non-empty value with a new extraction.** Record disagreements via `field_provenance` as a `{field}_candidate` entry instead of applying them — see `batch_service.py`'s `_attempt_address_extraction`/`_attempt_factory_location_extraction` for the reference implementation.
+
+5. **Confirm before any run that costs real money** (SerpAPI, OpenAI at volume, any paid API) — show the expected cost/scope (row count, calls-per-row) before running, not after.
+
+6. **Small test first, then scale.** For any new extraction pattern or gate change, verify on 2-3 rows before running the full batch.
+
+7. **Reject junk/parking pages before trusting ANY field from them, not just the name.** See `verification/website_contact_extractor.py`'s `parking_page_reason()` — the shared, universal per-page filter every extraction stage should check before extracting anything.
+
+8. **Excluded suppliers get flagged in the DB (`suppliers.flagged`/`flag_reason`), never deleted** — so they can't silently resurface in a future search or export. See `storage/repository.py`'s `search_suppliers`/`search_suppliers_full`/`find_discovered_suppliers`, all of which filter on `flagged = 0`.
+
+9. **For the Material Handling category's "UK offices only" requirement, UK company status is verified via Companies House, not by scraping the site's own claimed address** — Companies House is authoritative, site text isn't. See `verification/companies_house_client.py` (the API client) and `verification/uk_company_verification_service.py` (the matching/gate logic, CLI-only via `main.py verify-uk-company`, deliberately no category awareness of its own — invoked manually against whatever candidate list needs it).

@@ -63,7 +63,13 @@ PROFILE_RESPONSE = {
 
 class TestSearchCompanies:
 
-    def test_no_api_key_returns_empty_list_without_a_call(self):
+    def test_no_api_key_returns_empty_list_without_a_call(self, monkeypatch):
+        # api_key=None falls back to config.settings.COMPANIES_HOUSE_API_KEY
+        # (same `param or DEFAULT` convention every other client in this
+        # codebase uses) -- monkeypatched here so this test asserts the
+        # genuinely-no-key path regardless of whatever's actually
+        # configured in the real environment's .env.
+        monkeypatch.setattr("verification.companies_house_client.COMPANIES_HOUSE_API_KEY", None)
         http_client = FakeHttpClient(json_data=SEARCH_RESPONSE)
         client = CompaniesHouseClient(api_key=None, http_client=http_client)
         assert client.search_companies("Acme Material Handling") == []
@@ -114,7 +120,8 @@ class TestSearchCompanies:
 
 class TestGetCompanyProfile:
 
-    def test_no_api_key_returns_none_without_a_call(self):
+    def test_no_api_key_returns_none_without_a_call(self, monkeypatch):
+        monkeypatch.setattr("verification.companies_house_client.COMPANIES_HOUSE_API_KEY", None)
         http_client = FakeHttpClient(json_data=PROFILE_RESPONSE)
         client = CompaniesHouseClient(api_key=None, http_client=http_client)
         assert client.get_company_profile("01234567") is None
