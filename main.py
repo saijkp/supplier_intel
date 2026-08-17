@@ -605,6 +605,66 @@ def batch_upload(csv_path: str, output: Optional[str], plain: bool, search_reput
     console.print(f"[green]OK[/green] Results written to [bold]{output_path}[/bold]")
 
 
+@cli.command("export-tracker")
+@click.argument("confirmed_csv", type=click.Path(exists=True))
+@click.option("--universe-csv", type=click.Path(exists=True), default=None,
+              help="Optional broader candidate list (Company Name/Website columns, same "
+                   "shape as CONFIRMED_CSV) to scope the Removed Candidates tab -- e.g. "
+                   "every candidate ever considered for this sourcing pass, not just the "
+                   "ones still confirmed. Defaults to CONFIRMED_CSV itself, which means "
+                   "Removed Candidates will come back empty unless a flagged supplier is "
+                   "somehow also still in the confirmed list (it shouldn't be).")
+@click.option("--output", "-o", default=None,
+              help="Main tracker CSV path (default: <confirmed_csv> with a _tracker suffix).")
+@click.option("--removed-output", default=None,
+              help="Removed-candidates CSV path (default: <confirmed_csv> with a "
+                   "_removed_candidates suffix).")
+def export_tracker(confirmed_csv: str, universe_csv: Optional[str], output: Optional[str], removed_output: Optional[str]) -> None:
+    """Group 3: export a confirmed candidate list (Company Name/Website
+    columns, e.g. the output of validating a candidate list through
+    the same gate discover() uses) into the buyer's own procurement-
+    tracker CSV format -- see batch/tracker_exporter.py's own
+    docstring for the exact column layout and why A-D/Qualified always
+    come back blank. Every row must already have a matching supplier
+    in the database (by domain) -- run `batch-upload` on the CSV first
+    if it hasn't been enriched yet."""
+    from pathlib import Path
+
+    from batch.csv_parser import parse_csv
+    from batch.tracker_exporter import build_removed_candidates_export, build_tracker_export
+    from deduplication.domain_utils import extract_domain
+
+    def _resolve_ids(csv_path: str) -> List[int]:
+        with open(csv_path, "rb") as f:
+            parsed = parse_csv(f.read())
+        ids: List[int] = []
+        for row in parsed.rows:
+            domain = extract_domain(row.website or "")
+            supplier = repo.find_by_domain(domain) if domain else None
+            if supplier is None:
+                console.print(f"[yellow]! No supplier found for {row.website!r} -- skipped (run batch-upload first?).[/yellow]")
+                continue
+            ids.append(supplier["id"])
+        return ids
+
+    repo = SupplierRepository()
+    confirmed_ids = _resolve_ids(confirmed_csv)
+    universe_ids = _resolve_ids(universe_csv) if universe_csv else confirmed_ids
+
+    tracker_csv = build_tracker_export(confirmed_ids, repo)
+    removed_csv = build_removed_candidates_export(universe_ids, repo)
+
+    output_path = output or f"{Path(confirmed_csv).with_suffix('')}_tracker.csv"
+    removed_output_path = removed_output or f"{Path(confirmed_csv).with_suffix('')}_removed_candidates.csv"
+    with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
+        f.write(tracker_csv)
+    with open(removed_output_path, "w", encoding="utf-8-sig", newline="") as f:
+        f.write(removed_csv)
+
+    console.print(f"[green]OK[/green] {len(confirmed_ids)} confirmed candidate(s) written to [bold]{output_path}[/bold]")
+    console.print(f"[green]OK[/green] Removed-candidates list written to [bold]{removed_output_path}[/bold]")
+
+
 @cli.command("verify-ai")
 @click.option("--supplier-id", type=int, default=None,
               help="Verify one specific supplier (ignores --pending/--limit/--force).")
