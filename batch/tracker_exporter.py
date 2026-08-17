@@ -14,17 +14,29 @@ ambiguous between "not yet reviewed" and "forgot to check." Nothing in
 this module (or anywhere upstream of it) ever writes Pass/Fail/Clean/
 Flagged/Y into them; see PASTE_RANGE_COLUMNS's own comment.
 
-Evidence/helper columns (per-field source URLs, candidate facility
-photos, a Street View link, a LinkedIn search link, certification
-evidence, D-search snippets, Checks Remaining, Sort Key) are appended
-AFTER Date Reviewed -- outside the paste range, so the main block
-still pastes in clean while the evidence needed to audit each value
-stays in the same file, one click away. Street View/LinkedIn links are
-both free Google search-links, never an automated match judgment --
-deliberately no proxy infrastructure and no reverse image search here
-(out of scope given the deadline: most dead fetches are DNS failures a
-proxy wouldn't fix, and neither of us has a working reverse-image-
-search tool right now).
+Evidence/helper columns (a Website Note, per-field source URLs,
+candidate facility photos, a Street View link, a LinkedIn search link,
+certification evidence, D-search snippets, Checks Remaining, Sort Key)
+are appended AFTER Date Reviewed -- outside the paste range, so the
+main block still pastes in clean while the evidence needed to audit
+each value stays in the same file, one click away. Street View/
+LinkedIn links are both free Google search-links, never an automated
+match judgment -- deliberately no proxy infrastructure and no reverse
+image search here (out of scope given the deadline: most dead fetches
+are DNS failures a proxy wouldn't fix, and neither of us has a working
+reverse-image-search tool right now).
+
+Website Note: flags the case where SupplierMatcher's fuzzy-name merge
+kept an old/dead stored domain on a supplier record while collection
+actually crawled a DIFFERENT, real, working domain (found via real
+gap-analysis recoveries -- a company's canonical_name matched an
+existing record closely enough to auto-merge, but merge_into_golden
+only fills EMPTY fields, so the stale domain was never overwritten
+even though the new site was what actually got scraped). Detected by
+comparing the domain embedded in the address/factory_location
+field_provenance source_url against suppliers.domain -- blank when
+they agree (the overwhelming majority of rows) or when there's no
+provenance to compare against at all.
 
 A second export, the removed-candidates list, mirrors the tracker's
 own "Removed Candidates" tab (Company Name, Website, Reason) -- every
@@ -42,6 +54,7 @@ import io
 import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 
+from deduplication.domain_utils import extract_domain
 from storage.repository import SupplierRepository
 
 # Exact column order/names of the buyer's real tracker "Injection
@@ -69,7 +82,7 @@ _PENDING_PLACEHOLDER = "Pending"
 # precise per-value link, unlike Address/Factory Location which do
 # have exact per-value provenance (field_provenance).
 EVIDENCE_COLUMNS: Tuple[str, ...] = (
-    "Address Source URL", "Phone Source Page(s)", "Email Source Page(s)",
+    "Website Note", "Address Source URL", "Phone Source Page(s)", "Email Source Page(s)",
     "Factory Location Source URL",
     "Candidate Facility Photo URLs", "Street View Link", "LinkedIn Search Link",
     "Certifications Claimed (source + evidence)",
@@ -99,6 +112,38 @@ def _evidence_score(supplier: Dict[str, Any]) -> int:
 def _latest_provenance_source_url(repo: SupplierRepository, supplier_id: int, field_name: str) -> str:
     entries = repo.get_field_provenance(supplier_id, field_name=field_name)
     return (entries[-1].get("source_url") or "") if entries else ""
+
+
+def _bare_domain(domain: str) -> str:
+    d = domain.lower()
+    return d[4:] if d.startswith("www.") else d
+
+
+def _website_note(repo: SupplierRepository, supplier_id: int, stored_domain: str) -> str:
+    """See module docstring's own "Website Note" section. Checks
+    address then factory_location provenance (the two fields most
+    likely to have been extracted from a real, freshly-crawled page)
+    for a source_url whose domain disagrees with what's actually
+    stored on the supplier record. Blank when they agree or when
+    there's nothing to compare against."""
+    if not stored_domain:
+        return ""
+    for field_name in ("address", "factory_location"):
+        entries = repo.get_field_provenance(supplier_id, field_name=field_name)
+        if not entries:
+            continue
+        crawled_domain = extract_domain(entries[-1].get("source_url") or "")
+        if not crawled_domain:
+            continue
+        if _bare_domain(crawled_domain) == _bare_domain(stored_domain):
+            return ""
+        return (
+            f"Resolved via {crawled_domain} during collection -- stored/registered domain "
+            f"({stored_domain}) may be dead or different. Evidence above (address/factory "
+            f"location source URLs) is from the working site; the Website column reflects "
+            f"the supplier record's own stored domain, not necessarily a live link."
+        )
+    return ""
 
 
 def _phone_source_pages(repo: SupplierRepository, supplier: Dict[str, Any]) -> str:
@@ -205,6 +250,7 @@ def build_tracker_export(supplier_ids: List[int], repo: Optional[SupplierReposit
         ]
 
         evidence_row = [
+            _website_note(repo, supplier_id, supplier.get("domain") or ""),
             _latest_provenance_source_url(repo, supplier_id, "address"),
             _phone_source_pages(repo, supplier),
             "; ".join(supplier.get("contact_source_pages") or []),

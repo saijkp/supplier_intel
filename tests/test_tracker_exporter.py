@@ -165,6 +165,66 @@ class TestSourceUrlColumns:
         assert row["Email Source Page(s)"] == "https://acme.com/contact"
 
 
+class TestWebsiteNote:
+    """Flags the case a fuzzy-name merge left a stale/dead domain
+    stored on a supplier record while collection actually crawled a
+    different, real, working one -- found via real recoveries this
+    session (Ensinger, OzMetal Plastik, Wirth Werkzeugbau, Formplast
+    all merged into a pre-existing record whose domain never got
+    updated since merge_into_golden only fills empty fields)."""
+
+    def test_flags_when_crawled_domain_disagrees_with_stored_domain(self, repo):
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "OzMetal Plastik", "domain": "ozmetalplastik.com.tr",
+            "address": "Nilufer/Bursa",
+        })
+        repo.save_field_provenance(
+            supplier_id=supplier_id, field_name="address", value="Nilufer/Bursa",
+            source_url="https://www.ozmetalplastik.com/", raw_snippet="...",
+            extraction_method="llm_grounded_extraction", source_tier="own_domain", claim_type="verifiable_fact",
+        )
+        row = _rows(build_tracker_export([supplier_id], repo))[0]
+        assert "ozmetalplastik.com" in row["Website Note"]
+        assert "ozmetalplastik.com.tr" in row["Website Note"]
+
+    def test_blank_when_crawled_domain_matches_stored_domain(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com", "address": "1 Main St"})
+        repo.save_field_provenance(
+            supplier_id=supplier_id, field_name="address", value="1 Main St",
+            source_url="https://acme.com/contact", raw_snippet="...",
+            extraction_method="llm_grounded_extraction", source_tier="own_domain", claim_type="verifiable_fact",
+        )
+        row = _rows(build_tracker_export([supplier_id], repo))[0]
+        assert row["Website Note"] == ""
+
+    def test_blank_when_stored_domain_only_differs_by_www(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com", "address": "1 Main St"})
+        repo.save_field_provenance(
+            supplier_id=supplier_id, field_name="address", value="1 Main St",
+            source_url="https://www.acme.com/contact", raw_snippet="...",
+            extraction_method="llm_grounded_extraction", source_tier="own_domain", claim_type="verifiable_fact",
+        )
+        row = _rows(build_tracker_export([supplier_id], repo))[0]
+        assert row["Website Note"] == ""
+
+    def test_blank_when_no_provenance_at_all(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        row = _rows(build_tracker_export([supplier_id], repo))[0]
+        assert row["Website Note"] == ""
+
+    def test_falls_back_to_factory_location_provenance_when_no_address_provenance(self, repo):
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Formplast", "domain": "formplast.com.tr", "factory_location": "Bystrec, Czech Republic",
+        })
+        repo.save_field_provenance(
+            supplier_id=supplier_id, field_name="factory_location", value="Bystrec, Czech Republic",
+            source_url="https://www.formplast.cz/", raw_snippet="...",
+            extraction_method="llm_grounded_extraction", source_tier="own_domain", claim_type="verifiable_fact",
+        )
+        row = _rows(build_tracker_export([supplier_id], repo))[0]
+        assert "formplast.cz" in row["Website Note"]
+
+
 class TestFacilityPhotosAndStreetView:
 
     def test_candidate_facility_photo_urls_are_semicolon_joined(self, repo):
