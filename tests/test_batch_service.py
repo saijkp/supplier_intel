@@ -125,10 +125,11 @@ class FakeMatcher:
 
 
 class FakePage:
-    def __init__(self, url, text, footer_text=""):
+    def __init__(self, url, text, footer_text="", facility_photo_urls=None):
         self.url = url
         self.text = text
         self.footer_text = footer_text
+        self.facility_photo_urls = facility_photo_urls or []
 
 
 class FakeCollectionService:
@@ -150,18 +151,44 @@ class FakeCollectionService:
 
 class FakeLLMClient:
     """Stand-in for llm.client.LLMClient -- only complete_json is used,
-    for placeholder-name and address extraction. `response` is returned
-    for every call unless `responses` (a list) is given, in which case
-    each call consumes the next entry in order -- for tests exercising
-    address extraction's multi-tier fallback (one LLM call per tier)."""
+    for placeholder-name, address, and factory-location extraction.
 
-    def __init__(self, response: Any = None, responses: Optional[List[Any]] = None):
+    Calls are routed by system_prompt: anything whose prompt asks for
+    "factory_location" (batch_service.FACTORY_LOCATION_EXTRACTION_SYSTEM_PROMPT
+    is the only such prompt) is answered from factory_location_response /
+    factory_location_responses; everything else (name + address
+    extraction) is answered from response / responses -- exactly
+    mirroring how run_batch fires both an address AND a factory-location
+    pass over the same candidate pages for every collected row, using
+    two independently-scripted response tracks so a test for one
+    extraction doesn't have to account for the other's calls.
+
+    `response` (or `factory_location_response`) is returned for every
+    call on its track unless the corresponding `responses`/
+    `factory_location_responses` list is given, in which case each call
+    on that track consumes the next entry in order -- for tests
+    exercising a track's multi-tier fallback (one LLM call per tier)."""
+
+    def __init__(
+        self, response: Any = None, responses: Optional[List[Any]] = None,
+        factory_location_response: Any = None, factory_location_responses: Optional[List[Any]] = None,
+    ):
         self.response = response
         self._responses = iter(responses) if responses is not None else None
+        self.factory_location_response = (
+            {"factory_location": None} if factory_location_response is None else factory_location_response
+        )
+        self._factory_location_responses = (
+            iter(factory_location_responses) if factory_location_responses is not None else None
+        )
         self.calls: List[Dict[str, Any]] = []
 
     def complete_json(self, system_prompt, user_prompt, **kwargs):
         self.calls.append({"system_prompt": system_prompt, "user_prompt": user_prompt})
+        if "factory_location" in system_prompt:
+            if self._factory_location_responses is not None:
+                return next(self._factory_location_responses)
+            return self.factory_location_response
         if self._responses is not None:
             return next(self._responses)
         return self.response
@@ -706,7 +733,8 @@ class TestAddressExtraction:
         outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
 
         assert outcome.addresses_found == 1
-        assert len(llm.calls) == 2
+        address_calls = [c for c in llm.calls if "factory_location" not in c["system_prompt"]]
+        assert len(address_calls) == 2
         supplier_id = next(iter(repo.suppliers.keys()))
         assert repo.suppliers[supplier_id]["address"] == "5 Impressum Str, Berlin, Germany"
 
@@ -772,6 +800,343 @@ class TestAddressExtraction:
         assert outcome.addresses_found == 1
         supplier_id = next(iter(repo.suppliers.keys()))
         assert repo.suppliers[supplier_id]["address"] == "1 Depot Rd, Ohio, USA"
+
+
+class TestFactoryLocationExtraction:
+    """Mirrors TestAddressExtraction's cases exactly -- same tiered
+    candidate sources, same trusted-value guard -- but on the
+    factory_location field, using FakeLLMClient's separate
+    factory_location_response track so these tests don't have to
+    script an address response too."""
+
+    def test_applied_when_supplier_has_no_existing_factory_location(self):
+        repo = FakeRepo()
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class ContactPageCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {
+                    "status": "success", "pages_visited": 1, "error": None,
+                    "pages": [FakePage(
+                        "https://acme.com/contact",
+                        "Our 50,000 sq ft manufacturing facility is located in Foshan, China. "
+                        "Contact us any time for a quote.",
+                    )],
+                }
+
+        llm = FakeLLMClient(factory_location_response={"factory_location": "Foshan, China"})
+        service, _ = _make_service(repo=repo, collection_service=ContactPageCollection(), llm_client=llm)
+
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.factory_locations_found == 1
+        assert outcome.factory_locations_conflicting == 0
+        assert repo.suppliers[supplier_id]["factory_location"] == "Foshan, China"
+
+        prov = [p for p in repo.provenance if p["field_name"] == "factory_location"]
+        assert len(prov) == 1
+        assert prov[0]["value"] == "Foshan, China"
+        assert prov[0]["source_url"] == "https://acme.com/contact"
+        assert prov[0]["source_tier"] == "own_domain"
+        assert prov[0]["claim_type"] == "verifiable_fact"
+
+    def test_partial_factory_location_is_stored_exactly_as_extracted_not_completed(self):
+        repo = FakeRepo()
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class ContactPageCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage(
+                            "https://acme.com/contact",
+                            "Production takes place at our plant in Shenzhen. Reach out any time "
+                            "for a quote on your project.",
+                        )]}
+
+        llm = FakeLLMClient(factory_location_response={"factory_location": "Shenzhen"})
+        service, _ = _make_service(repo=repo, collection_service=ContactPageCollection(), llm_client=llm)
+
+        service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert repo.suppliers[supplier_id]["factory_location"] == "Shenzhen"
+
+    def test_conflicting_when_supplier_already_has_a_factory_location(self):
+        repo = FakeRepo()
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Acme Co", "domain": "acme.com",
+            "factory_location": "Existing Trusted Factory Location, Springfield, IL",
+        })
+
+        class ContactPageCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage(
+                            "https://acme.com/contact",
+                            "Our factory is located in Nowhere, USA. We respond to all enquiries "
+                            "within one business day.",
+                        )]}
+
+        llm = FakeLLMClient(factory_location_response={"factory_location": "Nowhere, USA"})
+        service, _ = _make_service(repo=repo, collection_service=ContactPageCollection(), llm_client=llm)
+
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.factory_locations_found == 0
+        assert outcome.factory_locations_conflicting == 1
+        assert repo.suppliers[supplier_id]["factory_location"] == "Existing Trusted Factory Location, Springfield, IL"
+
+        prov = [p for p in repo.provenance if p["field_name"] == "factory_location_candidate"]
+        assert len(prov) == 1
+        assert prov[0]["value"] == "Nowhere, USA"
+
+    def test_falls_through_tiers_when_contact_page_has_no_factory_location(self):
+        repo = FakeRepo()
+        repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class MultiTierCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {
+                    "status": "success", "pages_visited": 2, "error": None,
+                    "pages": [
+                        FakePage(
+                            "https://acme.com/contact",
+                            "Send us a message using the form below and a member of our team "
+                            "will get back to you as soon as possible.",
+                        ),
+                        FakePage(
+                            "https://acme.com/imprint",
+                            "Impressum: Acme Co GmbH. Our production facility spans 20,000 sqm "
+                            "in Berlin, Germany. Registered at the local court.",
+                        ),
+                    ],
+                }
+
+        llm = FakeLLMClient(
+            factory_location_responses=[{"factory_location": None}, {"factory_location": "Berlin, Germany"}],
+        )
+        service, _ = _make_service(repo=repo, collection_service=MultiTierCollection(), llm_client=llm)
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.factory_locations_found == 1
+        factory_location_calls = [c for c in llm.calls if "factory_location" in c["system_prompt"]]
+        assert len(factory_location_calls) == 2
+        supplier_id = next(iter(repo.suppliers.keys()))
+        assert repo.suppliers[supplier_id]["factory_location"] == "Berlin, Germany"
+
+    def test_parking_page_candidate_is_skipped_not_extracted_from(self):
+        repo = FakeRepo()
+        repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class ParkingPageCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage("https://acme.com/contact",
+                                            "This domain is parked. Buy this domain from GoDaddy.com.")]}
+
+        llm = FakeLLMClient(factory_location_response={"factory_location": "Should Not Be Used"})
+        service, _ = _make_service(repo=repo, collection_service=ParkingPageCollection(), llm_client=llm)
+
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.factory_locations_found == 0
+        factory_location_calls = [c for c in llm.calls if "factory_location" in c["system_prompt"]]
+        assert factory_location_calls == []  # never even asked -- filtered before the LLM call
+
+    def test_no_candidate_pages_at_all_is_skipped(self):
+        repo = FakeRepo()
+        repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class NoRelevantPagesCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage("https://acme.com/products", "our great products")]}
+
+        llm = FakeLLMClient(factory_location_response={"factory_location": "Should Not Be Used"})
+        service, _ = _make_service(repo=repo, collection_service=NoRelevantPagesCollection(), llm_client=llm)
+
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.factory_locations_found == 0
+        factory_location_calls = [c for c in llm.calls if "factory_location" in c["system_prompt"]]
+        assert factory_location_calls == []
+
+    def test_factory_location_extraction_runs_for_placeholder_rows_too(self):
+        repo = FakeRepo()
+
+        class ContactPageCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {
+                    "status": "success", "pages_visited": 1, "error": None,
+                    "pages": [
+                        FakePage("https://acmetrailer.com/", "not much on the homepage, just a hero banner"),
+                        FakePage(
+                            "https://acmetrailer.com/contact",
+                            "Our factory is located at 1 Depot Rd, Ohio, USA. Open Monday "
+                            "through Friday.",
+                        ),
+                    ],
+                }
+
+        llm = FakeLLMClient(factory_location_response={"factory_location": "1 Depot Rd, Ohio, USA"})
+        service, _ = _make_service(repo=repo, collection_service=ContactPageCollection(), llm_client=llm)
+
+        outcome = service.run_batch([_row(website="https://acmetrailer.com")], "job-1")
+
+        assert outcome.factory_locations_found == 1
+        supplier_id = next(iter(repo.suppliers.keys()))
+        assert repo.suppliers[supplier_id]["factory_location"] == "1 Depot Rd, Ohio, USA"
+
+    def test_address_and_factory_location_are_independently_extracted_from_the_same_page(self):
+        """The two extractions run over the same candidate pages but
+        are entirely separate fields -- a page can yield both, one, or
+        neither, and one must never be used to fill in the other."""
+        repo = FakeRepo()
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class ContactPageCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage(
+                            "https://acme.com/contact",
+                            "Registered office: 1 Main St, Springfield, IL, USA. Our production "
+                            "facility is located in Foshan, China.",
+                        )]}
+
+        llm = FakeLLMClient(
+            response={"address": "1 Main St, Springfield, IL, USA"},
+            factory_location_response={"factory_location": "Foshan, China"},
+        )
+        service, _ = _make_service(repo=repo, collection_service=ContactPageCollection(), llm_client=llm)
+
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.addresses_found == 1
+        assert outcome.factory_locations_found == 1
+        assert repo.suppliers[supplier_id]["address"] == "1 Main St, Springfield, IL, USA"
+        assert repo.suppliers[supplier_id]["factory_location"] == "Foshan, China"
+
+
+class TestFacilityPhotoAggregation:
+
+    def test_new_urls_are_written_to_candidate_facility_photo_urls(self):
+        repo = FakeRepo()
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class PhotoCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {
+                    "status": "success", "pages_visited": 1, "error": None,
+                    "pages": [FakePage(
+                        "https://acme.com/about", "our factory floor",
+                        facility_photo_urls=["https://acme.com/img/factory1.jpg", "https://acme.com/img/factory2.jpg"],
+                    )],
+                }
+
+        service, _ = _make_service(repo=repo, collection_service=PhotoCollection())
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.facility_photos_found == 1
+        assert repo.suppliers[supplier_id]["candidate_facility_photo_urls"] == [
+            "https://acme.com/img/factory1.jpg", "https://acme.com/img/factory2.jpg",
+        ]
+
+    def test_urls_are_unioned_across_pages_and_deduplicated(self):
+        repo = FakeRepo()
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class PhotoCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {
+                    "status": "success", "pages_visited": 2, "error": None,
+                    "pages": [
+                        FakePage("https://acme.com/about", "text",
+                                 facility_photo_urls=["https://acme.com/img/factory1.jpg"]),
+                        FakePage("https://acme.com/facility", "text",
+                                 facility_photo_urls=["https://acme.com/img/factory1.jpg", "https://acme.com/img/factory2.jpg"]),
+                    ],
+                }
+
+        service, _ = _make_service(repo=repo, collection_service=PhotoCollection())
+        service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert repo.suppliers[supplier_id]["candidate_facility_photo_urls"] == [
+            "https://acme.com/img/factory1.jpg", "https://acme.com/img/factory2.jpg",
+        ]
+
+    def test_accumulates_onto_existing_candidates_rather_than_overwriting(self):
+        """Unlike address/factory_location, this is additive, not
+        gap-fill-once -- a supplier that already has candidate photos
+        from an earlier run keeps them, and new ones found this run are
+        appended, not blocked by a trusted-value guard."""
+        repo = FakeRepo()
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Acme Co", "domain": "acme.com",
+            "candidate_facility_photo_urls": ["https://acme.com/img/old.jpg"],
+        })
+
+        class PhotoCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage("https://acme.com/about", "text",
+                                            facility_photo_urls=["https://acme.com/img/new.jpg"])]}
+
+        service, _ = _make_service(repo=repo, collection_service=PhotoCollection())
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.facility_photos_found == 1
+        assert repo.suppliers[supplier_id]["candidate_facility_photo_urls"] == [
+            "https://acme.com/img/old.jpg", "https://acme.com/img/new.jpg",
+        ]
+
+    def test_no_new_urls_does_not_count_as_found_and_does_not_write(self):
+        repo = FakeRepo()
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Acme Co", "domain": "acme.com",
+            "candidate_facility_photo_urls": ["https://acme.com/img/old.jpg"],
+        })
+
+        class PhotoCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage("https://acme.com/about", "text",
+                                            facility_photo_urls=["https://acme.com/img/old.jpg"])]}
+
+        service, _ = _make_service(repo=repo, collection_service=PhotoCollection())
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.facility_photos_found == 0
+        history_calls = [c for c in repo.history_calls if "candidate_facility_photo_urls" in c["fields"]]
+        assert history_calls == []
+
+    def test_no_pages_with_facility_photos_is_skipped(self):
+        repo = FakeRepo()
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class NoPhotoCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage("https://acme.com/about", "no photos here")]}
+
+        service, _ = _make_service(repo=repo, collection_service=NoPhotoCollection())
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.facility_photos_found == 0
+        assert "candidate_facility_photo_urls" not in repo.suppliers[supplier_id]
+
+    def test_capped_at_the_per_supplier_maximum(self):
+        repo = FakeRepo()
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        many_urls = [f"https://acme.com/img/{i}.jpg" for i in range(15)]
+
+        class PhotoCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {"status": "success", "pages_visited": 1, "error": None,
+                        "pages": [FakePage("https://acme.com/about", "text", facility_photo_urls=many_urls)]}
+
+        service, _ = _make_service(repo=repo, collection_service=PhotoCollection())
+        service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert len(repo.suppliers[supplier_id]["candidate_facility_photo_urls"]) == 10
 
 
 class TestWithinBatchDedup:

@@ -219,6 +219,64 @@ def _find_image_urls(base_url: str, html: str) -> List[str]:
     return found
 
 
+
+# Checked against an <img>'s own alt text -- a stronger, per-image
+# signal than the page-level check below, since it names the specific
+# photo rather than just the page it's on.
+_FACILITY_PHOTO_ALT_KEYWORDS: Tuple[str, ...] = (
+    "factory", "workshop", "production line", "production facility",
+    "our plant", "manufacturing plant", "assembly line", "factory floor",
+    "shop floor", "warehouse",
+)
+
+# Checked against the PAGE's own URL -- an image on a page that's
+# itself about the factory/facility (an About Us / Facility page) is a
+# plausible facility photo even without matching alt text, since alt
+# text is frequently missing or generic ("image1.jpg") on real sites.
+_FACILITY_PAGE_URL_KEYWORDS: Tuple[str, ...] = (
+    "factory", "facilit", "about", "production", "workshop", "plant",
+)
+
+_MAX_FACILITY_PHOTOS_PER_PAGE = 5
+
+
+def _extract_facility_photo_urls(base_url: str, html: str) -> List[str]:
+    """Heuristic candidate factory/facility photos on this page -- for
+    the buyer's own manual reverse-image-search review (criterion C),
+    never an automated verdict about whether a photo is genuine. An
+    image counts as a candidate if its own alt text names a facility
+    (_FACILITY_PHOTO_ALT_KEYWORDS), OR it appears on a page that's
+    itself facility-flavoured (_FACILITY_PAGE_URL_KEYWORDS) -- the
+    page-level fallback exists because alt text alone would miss most
+    real photos (frequently missing or generic), and this is meant to
+    also catch an image gallery on an About Us/Facility page even when
+    each individual <img> tag says nothing useful on its own.
+    Deliberately approximate -- reuses the same logo/icon exclusion
+    filter _find_image_urls already established rather than trying to
+    be precise here, since the actual verification step is a human
+    opening each URL, not this heuristic."""
+    page_is_facility_flavoured = any(kw in base_url.lower() for kw in _FACILITY_PAGE_URL_KEYWORDS)
+    soup = BeautifulSoup(html, "html.parser")
+    found: List[str] = []
+    seen: set = set()
+    for img in soup.find_all("img", src=True):
+        src = img["src"]
+        if any(keyword in src.lower() for keyword in _NON_FACILITY_IMAGE_KEYWORDS):
+            continue
+        alt_text = (img.get("alt") or "").lower()
+        alt_matches = any(keyword in alt_text for keyword in _FACILITY_PHOTO_ALT_KEYWORDS)
+        if not (alt_matches or page_is_facility_flavoured):
+            continue
+        absolute = urllib.parse.urljoin(base_url, src)
+        normalised = absolute.split("#")[0]
+        if normalised.startswith(("http://", "https://")) and normalised not in seen:
+            seen.add(normalised)
+            found.append(normalised)
+        if len(found) >= _MAX_FACILITY_PHOTOS_PER_PAGE:
+            break
+    return found
+
+
 def _has_contact_form(html: str) -> bool:
     soup = BeautifulSoup(html, "html.parser")
     for form in soup.find_all("form"):
@@ -457,5 +515,6 @@ class SiteCollector:
             social_links=_find_social_links(html),
             download_links=_find_download_links(url, html),
             footer_text=_extract_footer_text(html),
+            facility_photo_urls=_extract_facility_photo_urls(url, html),
         )
         return collected, html

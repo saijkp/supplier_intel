@@ -61,6 +61,24 @@ completed. Same trusted-value guard as canonical_name: only written to
 suppliers.address if currently empty, otherwise recorded via
 field_provenance as field_name="address_candidate" -- a disagreement
 signal, not applied.
+
+Factory location extraction (_attempt_factory_location_extraction):
+same tiered candidate sources, same grounded-only/trusted-value-guard
+discipline as address extraction above -- but a deliberately SEPARATE
+field, not a fallback for address. A supplier's registered/contact
+address is frequently a different place than its actual production
+site, so this asks specifically about the latter (square footage,
+"our factory is located at X", explicit production-site mentions).
+
+Facility photo aggregation (_attempt_facility_photo_aggregation): no
+LLM call -- unions each collected page's facility_photo_urls (found at
+collection time, see site_collector.py's _extract_facility_photo_urls)
+into suppliers.candidate_facility_photo_urls. Unlike address/factory
+location this always accumulates rather than gap-filling once: a
+heuristic candidate photo list is evidence for the buyer's own manual
+reverse-image-search review, never a verdict, so there's no
+"conflict" to guard against -- more candidates found on a later run is
+strictly more useful, never a correction to a wrong prior answer.
 """
 
 from __future__ import annotations
@@ -156,6 +174,30 @@ Return ONLY a JSON object with exactly this key, no other text:
   "address": "the exact address text as stated, or null if not clearly stated"
 }"""
 
+# Same grounded discipline as ADDRESS_EXTRACTION_SYSTEM_PROMPT, but
+# deliberately asks about the factory/production site specifically --
+# never treats a general contact/office address as the factory unless
+# the text itself says so (see module docstring).
+FACTORY_LOCATION_EXTRACTION_SYSTEM_PROMPT = """You are reading the text of a company website page. Extract ONLY the location of the company's actual factory/production site if it is explicitly stated in the text below -- never guess, infer, or complete a partial location, and never assume the factory is at the same address as a general contact/office address unless the text explicitly says so.
+
+Look for: an explicit statement of where manufacturing/production takes place (e.g. "our factory is located in X", "production facility in Y"), a stated facility size (e.g. "50,000 sq ft manufacturing facility in X"), or an address specifically labelled as the factory/plant/production site -- as distinct from a general company or sales-office address.
+
+Rules, strictly enforced:
+1. Only report a factory/production location if it is explicitly stated in the text.
+2. Return exactly what is stated -- do not add a street, postcode, city, or country that isn't present. If only a city or a partial location is given, return just that partial text -- never complete it using typical address patterns or general knowledge.
+3. If no factory/production location is stated at all, return null.
+4. Never invent or infer a factory location from a domain name, company name, general company address, or general knowledge about the company.
+
+Return ONLY a JSON object with exactly this key, no other text:
+{
+  "factory_location": "the exact factory/production location text as stated, or null if not clearly stated"
+}"""
+
+# Cap on how many candidate facility photo URLs accumulate per supplier
+# across repeated batch runs -- keeps the export usable; a buyer
+# reviewing 10 candidate photos by hand is reasonable, 200 is not.
+_MAX_FACILITY_PHOTOS_PER_SUPPLIER = 10
+
 
 @dataclass
 class BatchOutcome:
@@ -170,6 +212,9 @@ class BatchOutcome:
     placeholder_names_conflicting: int = 0
     addresses_found: int = 0
     addresses_conflicting: int = 0
+    factory_locations_found: int = 0
+    factory_locations_conflicting: int = 0
+    facility_photos_found: int = 0
 
 
 def _address_candidate_sources(pages: List[Any]) -> List[tuple]:
@@ -334,6 +379,15 @@ class BatchService:
                 outcome.addresses_found += 1
             elif address_outcome == "conflicting":
                 outcome.addresses_conflicting += 1
+
+            factory_location_outcome = self._attempt_factory_location_extraction(supplier_id, collect_result)
+            if factory_location_outcome == "applied":
+                outcome.factory_locations_found += 1
+            elif factory_location_outcome == "conflicting":
+                outcome.factory_locations_conflicting += 1
+
+            if self._attempt_facility_photo_aggregation(supplier_id, collect_result):
+                outcome.facility_photos_found += 1
 
             if collect_result.get("status") == "success":
                 outcome.succeeded += 1
@@ -565,3 +619,121 @@ class BatchService:
             return "applied"
 
         return "skipped"
+
+    def _attempt_factory_location_extraction(self, supplier_id: int, collect_result: Dict[str, Any]) -> str:
+        """Same tiered-candidate/trusted-value-guard pattern as
+        _attempt_address_extraction immediately above, reusing the exact
+        same candidate pages (contact page, then footer text, then
+        impressum page) -- deliberately a SEPARATE field from address,
+        not a fallback for it: a supplier's registered/contact address
+        is frequently a different place than its actual production
+        site, and FACTORY_LOCATION_EXTRACTION_SYSTEM_PROMPT asks
+        specifically about the latter (square footage, "our factory is
+        located at X", explicit production-site mentions) -- never
+        inferred from a general company address.
+
+        Returns "applied" (factory_location was empty, now written to
+        suppliers.factory_location + field_provenance), "conflicting"
+        (supplier already had a non-empty factory_location from
+        elsewhere -- never overwritten, extracted value recorded via
+        field_provenance under field_name="factory_location_candidate",
+        same pattern as address_candidate), or "skipped" (no pages,
+        every tier empty/parking-page-shaped, or no factory location
+        found anywhere)."""
+        pages = collect_result.get("pages") or []
+        if not pages:
+            return "skipped"
+
+        for tier_label, url, text in _address_candidate_sources(pages):
+            if _reject_reason_for_llm_extraction(text):
+                continue
+            try:
+                extracted = self.llm_client.complete_json(
+                    FACTORY_LOCATION_EXTRACTION_SYSTEM_PROMPT,
+                    f"Website page content ({tier_label}):\n\n{text[:20_000]}",
+                )
+            except Exception as e:  # noqa: BLE001 -- an extraction failure must never fail an otherwise-successful collection
+                logger.warning(
+                    "batch: factory location extraction failed for supplier #%s (%s): %s",
+                    supplier_id, tier_label, e,
+                )
+                continue
+            if not isinstance(extracted, dict):
+                continue
+
+            factory_location = extracted.get("factory_location")
+            if not isinstance(factory_location, str) or not factory_location.strip():
+                continue
+            factory_location = factory_location.strip()
+
+            supplier = self.repo.get_supplier(supplier_id)
+            current_factory_location = (supplier or {}).get("factory_location")
+
+            if current_factory_location:
+                logger.info(
+                    "batch: extracted factory location for supplier #%s (%s) conflicts with existing "
+                    "factory_location -- not applied", supplier_id, tier_label,
+                )
+                self.repo.save_field_provenance(
+                    supplier_id=supplier_id, field_name="factory_location_candidate", value=factory_location,
+                    source_url=url, raw_snippet=text[:500],
+                    extraction_method="llm_grounded_extraction",
+                    source_tier="own_domain", claim_type="verifiable_fact",
+                )
+                return "conflicting"
+
+            self.repo.update_supplier_fields_with_history(
+                supplier_id, {"factory_location": factory_location},
+                changed_by="batch_service",
+                change_reason=f"factory location found on the supplier's own site ({tier_label})",
+            )
+            self.repo.save_field_provenance(
+                supplier_id=supplier_id, field_name="factory_location", value=factory_location,
+                source_url=url, raw_snippet=text[:500],
+                extraction_method="llm_grounded_extraction",
+                source_tier="own_domain", claim_type="verifiable_fact",
+            )
+            return "applied"
+
+        return "skipped"
+
+    def _attempt_facility_photo_aggregation(self, supplier_id: int, collect_result: Dict[str, Any]) -> int:
+        """No LLM call -- unions every collected page's
+        facility_photo_urls (computed at collection time, see
+        site_collector.py's _extract_facility_photo_urls) into
+        suppliers.candidate_facility_photo_urls. Always accumulates
+        rather than gap-filling once (see module docstring): a repeat
+        collection run might turn up different photos on a changed
+        site, and dropping a previously-found candidate would be a
+        real loss for something the buyer is meant to click through by
+        hand later. Capped at _MAX_FACILITY_PHOTOS_PER_SUPPLIER total.
+
+        Returns how many NEW urls were added this call (0 if none)."""
+        pages = collect_result.get("pages") or []
+        if not pages:
+            return 0
+
+        found_urls: List[str] = []
+        for page in pages:
+            for url in getattr(page, "facility_photo_urls", None) or []:
+                if url not in found_urls:
+                    found_urls.append(url)
+        if not found_urls:
+            return 0
+
+        supplier = self.repo.get_supplier(supplier_id)
+        combined = list((supplier or {}).get("candidate_facility_photo_urls") or [])
+        added = 0
+        for url in found_urls:
+            if url not in combined:
+                combined.append(url)
+                added += 1
+        if not added:
+            return 0
+
+        self.repo.update_supplier_fields_with_history(
+            supplier_id, {"candidate_facility_photo_urls": combined[:_MAX_FACILITY_PHOTOS_PER_SUPPLIER]},
+            changed_by="batch_service",
+            change_reason="candidate facility photo URLs found during collection",
+        )
+        return added

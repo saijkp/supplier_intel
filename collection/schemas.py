@@ -31,6 +31,7 @@ class CollectedPage:
     social_links: List[str] = field(default_factory=list)
     download_links: List[str] = field(default_factory=list)
     footer_text: str = ""  # text of the page's <footer> element, if any -- see site_collector.py's _extract_footer_text
+    facility_photo_urls: List[str] = field(default_factory=list)  # heuristic candidate factory/facility photos on this page -- see site_collector.py's _extract_facility_photo_urls; never a verdict, just a manual-review candidate list
 
 
 @dataclass

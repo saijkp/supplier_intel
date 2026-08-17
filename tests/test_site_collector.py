@@ -22,6 +22,7 @@ from collection.artifact_store import ArtifactStore
 from collection.site_collector import (
     SiteCollector,
     _build_candidate_urls,
+    _extract_facility_photo_urls,
     _extract_footer_text,
     _find_certificate_candidates,
     _find_download_links,
@@ -214,6 +215,15 @@ class TestSiteCollectorRealBrowser:
         homepage = result.pages[0]
         assert "Acme Trailer Co, 123 Industrial Way, Springfield, IL 62704, USA" in homepage.footer_text
 
+    def test_homepage_facility_photo_is_captured(self, local_site, artifact_store):
+        """The homepage fixture's own factory-floor.jpg (alt="factory")
+        should be picked up as a facility-photo candidate."""
+        collector = SiteCollector(artifact_store=artifact_store)
+        result = collector.collect(supplier_id=1, domain=local_site)
+        homepage = result.pages[0]
+        assert any("factory-floor.jpg" in u for u in homepage.facility_photo_urls)
+        assert not any("logo.png" in u for u in homepage.facility_photo_urls)
+
     def test_page_with_no_footer_has_empty_footer_text(self, local_site, artifact_store):
         collector = SiteCollector(artifact_store=artifact_store)
         result = collector.collect(supplier_id=1, domain=local_site)
@@ -293,6 +303,42 @@ class TestExtractionHelpers:
     def test_extract_footer_text_empty_when_no_footer_tag(self):
         html = "<html><body><h1>Home</h1><p>No footer here</p></body></html>"
         assert _extract_footer_text(html) == ""
+
+    def test_facility_photo_matched_via_alt_text(self):
+        html = '<html><body><img src="/img1.jpg" alt="Our factory floor"></body></html>'
+        urls = _extract_facility_photo_urls("https://acme.example.com/random-page", html)
+        assert urls == ["https://acme.example.com/img1.jpg"]
+
+    def test_facility_photo_matched_via_facility_flavoured_page_url_even_with_no_alt_text(self):
+        html = '<html><body><img src="/gallery1.jpg"></body></html>'
+        urls = _extract_facility_photo_urls("https://acme.example.com/about-our-factory", html)
+        assert urls == ["https://acme.example.com/gallery1.jpg"]
+
+    def test_image_with_no_facility_signal_on_an_unrelated_page_is_excluded(self):
+        html = '<html><body><img src="/random.jpg"></body></html>'
+        urls = _extract_facility_photo_urls("https://acme.example.com/products", html)
+        assert urls == []
+
+    def test_logo_and_icon_images_are_still_excluded_even_on_a_facility_page(self):
+        html = '<html><body><img src="/logo.png"><img src="/icon-favicon.png"></body></html>'
+        urls = _extract_facility_photo_urls("https://acme.example.com/about-our-factory", html)
+        assert urls == []
+
+    def test_relative_urls_are_resolved_to_absolute(self):
+        html = '<html><body><img src="factory1.jpg" alt="factory workshop"></body></html>'
+        urls = _extract_facility_photo_urls("https://acme.example.com/about/", html)
+        assert urls == ["https://acme.example.com/about/factory1.jpg"]
+
+    def test_deduplicates_repeated_image_urls(self):
+        html = '<html><body><img src="/f.jpg" alt="factory"><img src="/f.jpg" alt="factory"></body></html>'
+        urls = _extract_facility_photo_urls("https://acme.example.com/about", html)
+        assert urls == ["https://acme.example.com/f.jpg"]
+
+    def test_capped_at_the_per_page_maximum(self):
+        imgs = "".join(f'<img src="/f{i}.jpg" alt="factory">' for i in range(10))
+        html = f"<html><body>{imgs}</body></html>"
+        urls = _extract_facility_photo_urls("https://acme.example.com/about", html)
+        assert len(urls) == 5
 
     def test_find_relevant_links_excludes_downloads(self):
         html = '<a href="/catalogue.pdf">Catalog PDF</a><a href="/about.html">About</a>'

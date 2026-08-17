@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 
 # ═══════════════════════════════════════════════════════════
@@ -72,6 +72,8 @@ CREATE TABLE IF NOT EXISTS suppliers (
     province_state          TEXT,
     city                    TEXT,
     address                 TEXT,
+    factory_location             TEXT,          -- distinct from `address` (v21) -- a supplier's registered/contact address is often a different place than its production site; see batch.batch_service.py's FACTORY_LOCATION_EXTRACTION_SYSTEM_PROMPT
+    candidate_facility_photo_urls TEXT,         -- JSON array: image URLs found near facility-related text/pages during collection (v21) -- a heuristic candidate list for manual reverse-image-search review, deliberately never carries a verdict (unlike the older factory_photo_urls/factory_photo_verdict pair from verification.factory_photo_verifier)
 
     -- CONTACT
     primary_email           TEXT,
@@ -1260,6 +1262,27 @@ MIGRATIONS: dict[int, dict] = {
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_supplier_phone_numbers_supplier ON supplier_phone_numbers(supplier_id)",
+        ],
+    },
+    21: {
+        "description": (
+            "Procurement-tracker evidence surfacing: suppliers."
+            "factory_location (distinct from `address` -- a supplier's "
+            "registered/contact address is frequently a different place "
+            "than its actual production site) and suppliers."
+            "candidate_facility_photo_urls (JSON array -- image URLs "
+            "found near facility-related text/pages during collection, "
+            "a heuristic candidate list for the buyer's own manual "
+            "reverse-image-search review, never a verdict -- deliberately "
+            "a different field from the older factory_photo_urls/"
+            "factory_photo_verdict pair verification.factory_photo_verifier "
+            "already owns, which DOES carry an automated vision-model "
+            "verdict; conflating the two would silently attach unearned "
+            "confidence to an unreviewed heuristic guess)."
+        ),
+        "columns": [
+            ("suppliers", "factory_location", "TEXT"),
+            ("suppliers", "candidate_facility_photo_urls", "TEXT"),
         ],
     },
 }

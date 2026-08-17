@@ -56,6 +56,7 @@ SUPPLIER_JSON_FIELDS: Sequence[str] = (
     "currencies_accepted",
     "manufacturer_signals",
     "factory_photo_urls",
+    "candidate_facility_photo_urls",
     "ai_strengths",
     "ai_risks",
     "ai_suitable_customer_types",
@@ -70,6 +71,7 @@ SUPPLIER_JSON_FIELDS: Sequence[str] = (
 SUPPLIER_WRITABLE_FIELDS: Sequence[str] = (
     "canonical_name", "aliases", "domain",
     "country", "province_state", "city", "address",
+    "factory_location", "candidate_facility_photo_urls",
     "primary_email", "secondary_emails", "primary_phone",
     "whatsapp", "wechat_id", "contact_source_pages",
     "linkedin_url", "contact_name", "contact_title",
