@@ -666,6 +666,38 @@ class TestAddressCandidateSources:
         pages = [FakePage("https://x.com/products", "our products page")]
         assert _address_candidate_sources(pages) == []
 
+    def test_falls_back_to_about_page_when_no_contact_footer_or_impressum(self):
+        """Added after a real gap-analysis run against the 29 confirmed
+        injection-moulding candidates found 3 of 5 "no address found"
+        suppliers would have been recovered by an about-page tier."""
+        pages = [
+            FakePage("https://x.com/", "homepage text with no address"),
+            FakePage("https://x.com/about-us", "Acme Co was founded in 1990. Head office: 1 Main St, Berlin."),
+        ]
+        candidates = _address_candidate_sources(pages)
+        assert candidates[0][0] == "about page"
+        assert candidates[0][1] == "https://x.com/about-us"
+
+    def test_about_page_is_lowest_priority_tried_after_impressum(self):
+        pages = [
+            FakePage("https://x.com/about-us", "Acme Co, 1 Main St, Berlin"),
+            FakePage("https://x.com/imprint", "Acme Co GmbH, 1 Main St, Berlin"),
+        ]
+        candidates = _address_candidate_sources(pages)
+        assert [c[0] for c in candidates] == ["impressum page", "about page"]
+
+    def test_about_page_matches_company_url_convention_too(self):
+        """Real sites use both conventions for the same page -- e.g.
+        plasticmold.net/company/ vs hordrt.com/about-us-3/."""
+        pages = [FakePage("https://x.com/company", "Acme Co, 1 Main St, Berlin")]
+        candidates = _address_candidate_sources(pages)
+        assert candidates[0][0] == "about page"
+        assert candidates[0][1] == "https://x.com/company"
+
+    def test_empty_about_page_text_is_not_treated_as_a_candidate(self):
+        pages = [FakePage("https://x.com/about-us", "")]
+        assert _address_candidate_sources(pages) == []
+
 
 class TestAddressExtraction:
 
@@ -849,6 +881,34 @@ class TestAddressExtraction:
         assert outcome.addresses_found == 1
         supplier_id = next(iter(repo.suppliers.keys()))
         assert repo.suppliers[supplier_id]["address"] == "1 Depot Rd, Ohio, USA"
+
+    def test_falls_through_to_about_page_when_no_other_tier_has_an_address(self):
+        """The 4th, lowest-priority tier -- see _address_candidate_sources'
+        own docstring for why it's tried last."""
+        repo = FakeRepo()
+        repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class AboutPageCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {
+                    "status": "success", "pages_visited": 1, "error": None,
+                    "pages": [FakePage(
+                        "https://acme.com/about-us",
+                        "Acme Co was founded in 1990 and has grown into a leading manufacturer. "
+                        "Our head office is located at 1 Main St, Berlin, Germany.",
+                    )],
+                }
+
+        llm = FakeLLMClient(response={"address": "1 Main St, Berlin, Germany"})
+        service, _ = _make_service(repo=repo, collection_service=AboutPageCollection(), llm_client=llm)
+
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.addresses_found == 1
+        supplier_id = next(iter(repo.suppliers.keys()))
+        assert repo.suppliers[supplier_id]["address"] == "1 Main St, Berlin, Germany"
+        prov = [p for p in repo.provenance if p["field_name"] == "address"]
+        assert prov[0]["source_url"] == "https://acme.com/about-us"
 
 
 class TestFactoryLocationExtraction:
@@ -1063,6 +1123,32 @@ class TestFactoryLocationExtraction:
         assert outcome.factory_locations_found == 1
         assert repo.suppliers[supplier_id]["address"] == "1 Main St, Springfield, IL, USA"
         assert repo.suppliers[supplier_id]["factory_location"] == "Foshan, China"
+
+    def test_falls_through_to_about_page_when_no_other_tier_has_a_factory_location(self):
+        repo = FakeRepo()
+        repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        class AboutPageCollection(FakeCollectionService):
+            def collect(self, supplier_id, return_pages=False, source_url=None):
+                return {
+                    "status": "success", "pages_visited": 1, "error": None,
+                    "pages": [FakePage(
+                        "https://acme.com/about-us",
+                        "Acme Co was founded in 1990. Our factory is located in Foshan, China, "
+                        "where we manufacture all our products in-house.",
+                    )],
+                }
+
+        llm = FakeLLMClient(factory_location_response={"factory_location": "Foshan, China"})
+        service, _ = _make_service(repo=repo, collection_service=AboutPageCollection(), llm_client=llm)
+
+        outcome = service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+
+        assert outcome.factory_locations_found == 1
+        supplier_id = next(iter(repo.suppliers.keys()))
+        assert repo.suppliers[supplier_id]["factory_location"] == "Foshan, China"
+        prov = [p for p in repo.provenance if p["field_name"] == "factory_location"]
+        assert prov[0]["source_url"] == "https://acme.com/about-us"
 
 
 class TestFacilityPhotoAggregation:

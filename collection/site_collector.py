@@ -419,7 +419,11 @@ class SiteCollector:
             homepage_page, homepage_html = homepage
             pages.append(homepage_page)
 
-            for i, link in enumerate(_find_relevant_links(base_url, homepage_html), start=1):
+            # homepage_page.url (the real post-redirect location, see
+            # _visit_and_collect), not `base_url` (the pre-redirect
+            # candidate that was requested) -- see _visit_and_collect's
+            # own comment for why this matters for the same-domain check.
+            for i, link in enumerate(_find_relevant_links(homepage_page.url, homepage_html), start=1):
                 if len(pages) >= self.max_pages:
                     break
                 visited = self._visit_and_collect(page, link, i, run_dir)
@@ -494,6 +498,21 @@ class SiteCollector:
         except Exception:
             pass
 
+        # page.url, not the requested `url` -- a plain http(s)://domain
+        # candidate very commonly redirects to a www (or https) variant
+        # (found via a real gap-analysis run: plasticmold.net redirects
+        # to www.plasticmold.net, and every one of its internal links is
+        # absolute to the www host). Every function below that resolves
+        # a relative href to an absolute URL needs the page's REAL
+        # final location as its base, not the pre-redirect one it was
+        # asked to load -- using the stale `url` here made
+        # _find_relevant_links' same-domain check (in _collect_with,
+        # which uses this page's .url as its own base_url) compare
+        # "www.plasticmold.net" links against a "plasticmold.net" base
+        # and wrongly reject literally every link as off-domain,
+        # silently capping some suppliers' crawl at just the homepage.
+        resolved_url = page.url or url
+
         html = page.content()
         html_path = self.artifact_store.save_html(run_dir, index, url, html)
 
@@ -506,15 +525,15 @@ class SiteCollector:
             logger.warning("collection: screenshot failed for %s: %s", url, e)
 
         collected = CollectedPage(
-            url=url,
+            url=resolved_url,
             text=_html_to_text(html),
-            image_urls=_find_image_urls(url, html),
+            image_urls=_find_image_urls(resolved_url, html),
             has_contact_form=_has_contact_form(html),
             screenshot_path=screenshot_relpath,
             html_path=str(html_path.relative_to(run_dir)),
             social_links=_find_social_links(html),
-            download_links=_find_download_links(url, html),
+            download_links=_find_download_links(resolved_url, html),
             footer_text=_extract_footer_text(html),
-            facility_photo_urls=_extract_facility_photo_urls(url, html),
+            facility_photo_urls=_extract_facility_photo_urls(resolved_url, html),
         )
         return collected, html

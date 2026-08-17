@@ -53,9 +53,9 @@ supplier_id in the export is itself the visible signal.
 Address extraction (_attempt_address_extraction): runs for EVERY
 successfully-collected row, not just placeholder-name rows -- address
 isn't tied to whether the CSV gave a name. Candidate sources are tried
-in a fixed order (contact page, then footer text, then impressum page
--- see _address_candidate_sources), stopping at the first tier that
-yields an address; grounded-only prompt (ADDRESS_EXTRACTION_SYSTEM_PROMPT)
+in a fixed order (contact page, then footer text, then impressum page,
+then about/company page -- see _address_candidate_sources), stopping
+at the first tier that yields an address; grounded-only prompt (ADDRESS_EXTRACTION_SYSTEM_PROMPT)
 so a partial address (e.g. just a city) is stored as-is, never
 completed. Same trusted-value guard as canonical_name: only written to
 suppliers.address if currently empty, otherwise recorded via
@@ -244,11 +244,21 @@ class BatchOutcome:
 
 def _address_candidate_sources(pages: List[Any]) -> List[tuple]:
     """Ordered (tier_label, url, text) candidates for address
-    extraction -- contact page, footer text, impressum page, per the
-    required preference order. Only the first page found in each tier
-    is used (at most one candidate per tier, so at most 3 LLM calls
-    total per row -- see _attempt_address_extraction, which stops at
-    the first tier that actually yields an address)."""
+    extraction -- contact page, footer text, impressum page, about
+    page, per the required preference order. Only the first page found
+    in each tier is used (at most one candidate per tier, so at most 4
+    LLM calls total per row -- see _attempt_address_extraction, which
+    stops at the first tier that actually yields an address).
+
+    "about page" (added after a real gap-analysis run against the 29
+    confirmed injection-moulding candidates -- see batch_service's own
+    diagnostic notes): a general company-info page is the LEAST
+    authoritative of the four tiers (a dedicated contact/impressum page
+    states an address on purpose; an about page mentions one
+    incidentally, if at all) -- deliberately tried last, only once
+    contact/footer/impressum have all come up empty. Matches "about" OR
+    "company" in the URL -- real sites use both conventions for the
+    same page (e.g. plasticmold.net/company/, hordrt.com/about-us-3/)."""
     candidates: List[tuple] = []
 
     contact_page = next(
@@ -271,6 +281,15 @@ def _address_candidate_sources(pages: List[Any]) -> List[tuple]:
     )
     if impressum_page is not None:
         candidates.append(("impressum page", impressum_page.url, impressum_page.text))
+
+    about_page = next(
+        (p for p in pages
+         if any(k in (getattr(p, "url", "") or "").lower() for k in ("about", "company"))
+         and (getattr(p, "text", "") or "").strip()),
+        None,
+    )
+    if about_page is not None:
+        candidates.append(("about page", about_page.url, about_page.text))
 
     return candidates
 
@@ -657,7 +676,8 @@ class BatchService:
         """Same tiered-candidate/trusted-value-guard pattern as
         _attempt_address_extraction immediately above, reusing the exact
         same candidate pages (contact page, then footer text, then
-        impressum page) -- deliberately a SEPARATE field from address,
+        impressum page, then about/company page) -- deliberately a
+        SEPARATE field from address,
         not a fallback for it: a supplier's registered/contact address
         is frequently a different place than its actual production
         site, and FACTORY_LOCATION_EXTRACTION_SYSTEM_PROMPT asks

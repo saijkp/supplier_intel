@@ -432,9 +432,19 @@ class TestBuildCandidateUrls:
 
 
 class _FakePage:
-    def __init__(self, working_urls, html="<html><body>ok</body></html>"):
+    def __init__(self, working_urls, html="<html><body>ok</body></html>", redirects=None, html_by_url=None):
         self._working_urls = set(working_urls)
         self._html = html
+        # url -> the URL the page actually ends up at, e.g. a non-www
+        # candidate that redirects to www -- see TestRedirectHandling,
+        # which regression-tests the real bug this simulates: a same-
+        # domain link filter comparing against the pre-redirect URL
+        # instead of where the page actually landed.
+        self._redirects = redirects or {}
+        # url -> the HTML to serve once landed there (keyed by the
+        # FINAL, post-redirect URL) -- defaults to `html` for every URL
+        # when not given.
+        self._html_by_url = html_by_url or {}
         self.goto_calls: List[str] = []
         self.goto_wait_until_values: List[Any] = []
         self._current_url = None
@@ -444,13 +454,24 @@ class _FakePage:
         self.goto_wait_until_values.append(wait_until)
         if url not in self._working_urls:
             raise RuntimeError(f"net::ERR_NAME_NOT_RESOLVED for {url}")
-        self._current_url = url
+        self._current_url = self._redirects.get(url, url)
+
+    @property
+    def url(self):
+        # Mirrors real Playwright's page.url -- the page's actual
+        # current location after navigation (what site_collector.py's
+        # _visit_and_collect now reads instead of the pre-navigation
+        # `url` parameter, so a redirect is reflected correctly). This
+        # fake never simulates a real redirect, so it's just the last
+        # successfully-navigated URL -- sufficient for these tests,
+        # which are about candidate fallback, not redirect handling.
+        return self._current_url
 
     def wait_for_selector(self, selector, timeout=None):
         pass
 
     def content(self):
-        return self._html
+        return self._html_by_url.get(self._current_url, self._html)
 
     def screenshot(self, full_page=True):
         return b"fake-png-bytes"
@@ -492,8 +513,8 @@ class _FakePlaywright:
     site_collector.py's own docstring for why this seam exists (tests
     don't need a real browser launch to exercise the fallback logic)."""
 
-    def __init__(self, working_urls):
-        self.page = _FakePage(working_urls)
+    def __init__(self, working_urls, html="<html><body>ok</body></html>", redirects=None, html_by_url=None):
+        self.page = _FakePage(working_urls, html=html, redirects=redirects, html_by_url=html_by_url)
         context = _FakeContext(self.page)
         browser = _FakeBrowser(context)
         self.chromium = _FakeChromium(browser)
@@ -557,6 +578,75 @@ class TestCandidateUrlFallback:
 
         assert result.success is True
         assert fake.page.goto_calls == ["http://127.0.0.1:9999"]
+
+
+class TestRedirectHandling:
+    """Regression tests for a real bug found via a gap-analysis run
+    against 29 confirmed injection-moulding candidates: when the
+    literal source_url (a bare non-www domain, e.g. "plasticmold.net")
+    is tried first and the site redirects to www, every link on the
+    homepage is absolute to the www host -- but the same-domain filter
+    in _find_relevant_links was comparing those links against the
+    PRE-redirect base_url, so it wrongly treated every single one as
+    off-domain and silently capped the crawl at just the homepage.
+    Confirmed live: plasticmold.net (0 of 15 relevant links kept vs 15
+    when requested directly as www) and hordrt.com (1 of 6 kept)."""
+
+    def test_links_on_a_redirected_homepage_are_still_followed(self, artifact_store):
+        homepage_html = (
+            '<html><body>'
+            '<a href="https://www.plasticmold.net/company/">About Us</a>'
+            '<a href="https://www.plasticmold.net/contact-us/">Contact</a>'
+            '</body></html>'
+        )
+        fake = _FakePlaywright(
+            working_urls={
+                "https://plasticmold.net", "https://www.plasticmold.net/company/",
+                "https://www.plasticmold.net/contact-us/",
+            },
+            redirects={"https://plasticmold.net": "https://www.plasticmold.net"},
+            html_by_url={"https://www.plasticmold.net": homepage_html},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="plasticmold.net", source_url="plasticmold.net")
+
+        assert result.success is True
+        # Before the fix this was 1 (homepage only) -- every link on the
+        # redirected page was wrongly rejected as off-domain.
+        assert len(result.pages) == 3
+        assert {p.url for p in result.pages} == {
+            "https://www.plasticmold.net",
+            "https://www.plasticmold.net/company/",
+            "https://www.plasticmold.net/contact-us/",
+        }
+
+    def test_homepage_collected_page_url_reflects_the_post_redirect_location(self, artifact_store):
+        fake = _FakePlaywright(
+            working_urls={"https://plasticmold.net"},
+            redirects={"https://plasticmold.net": "https://www.plasticmold.net"},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="plasticmold.net", source_url="plasticmold.net")
+
+        assert result.pages[0].url == "https://www.plasticmold.net"
+
+    def test_no_redirect_behaves_exactly_as_before(self, artifact_store):
+        """A same-domain homepage with no redirect involved must still
+        follow its links normally -- the fix must not regress the
+        already-working, no-redirect case."""
+        homepage_html = '<html><body><a href="https://www.daroaxle.com/contact/">Contact</a></body></html>'
+        fake = _FakePlaywright(
+            working_urls={"https://www.daroaxle.com", "https://www.daroaxle.com/contact/"},
+            html_by_url={"https://www.daroaxle.com": homepage_html},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.success is True
+        assert len(result.pages) == 2
 
 
 class TestWaitUntilDomContentLoaded:
