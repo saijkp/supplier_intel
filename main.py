@@ -65,15 +65,39 @@ def init_db() -> None:
     console.print(f"[green]OK[/green] Schema version: [bold]{version}[/bold]")
 
 
+# Maps a --category value to its checked-in roster directory (see
+# data/source_files/<dir>/README.md) -- one entry per audited category.
+# Deliberately a small hardcoded dict, not a filesystem scan: a category
+# with no roster checked in yet should fail with a clear message, not
+# silently list itself as available with zero candidates.
+_STATUS_CATEGORY_ROSTERS = {
+    "injection moulding": "injection_moulding_100",
+}
+
+
 @cli.command("status")
-def status() -> None:
-    """Show schema version and current row counts for every table."""
+@click.option("--category", default=None,
+              help="Live status for one audited candidate category (e.g. \"injection moulding\") "
+                   "instead of table row counts -- confirmed/excluded are re-checked against the "
+                   "live DB (supplier still exists / suppliers.flagged), dead/rejected/mismatch are "
+                   "read from the checked-in roster at data/source_files/<category>/ (those buckets "
+                   "have no DB representation at all -- a rejected candidate never became a supplier "
+                   "row, see that directory's own README). No file written, no scraping/API calls -- "
+                   "just SQLite + small CSV reads, fast enough to run any time.")
+def status(category: Optional[str]) -> None:
+    """Show schema version and current row counts for every table, or
+    (with --category) live confirmed/excluded/dead/rejected/mismatch
+    counts for one audited candidate category."""
     if not DB_PATH.exists():
         console.print(
             f"[yellow]No database found at {DB_PATH}. "
             f"Run `python main.py init-db` first.[/yellow]"
         )
         sys.exit(1)
+
+    if category:
+        _status_for_category(category)
+        return
 
     version = get_schema_version()
     counts = table_counts()
@@ -87,6 +111,92 @@ def status() -> None:
     for name, count in counts.items():
         table.add_row(name, str(count))
     console.print(table)
+
+
+def _status_for_category(category: str) -> None:
+    import csv
+    from pathlib import Path
+
+    from deduplication.domain_utils import extract_domain
+
+    roster_dir_name = _STATUS_CATEGORY_ROSTERS.get(category.strip().lower())
+    if roster_dir_name is None:
+        supported = ", ".join(repr(k) for k in _STATUS_CATEGORY_ROSTERS) or "(none yet)"
+        console.print(f"[yellow]No roster checked in for --category {category!r}. Supported: {supported}[/yellow]")
+        return
+
+    roster_dir = Path(__file__).parent / "data" / "source_files" / roster_dir_name
+    if not roster_dir.exists():
+        console.print(f"[red]X[/red] Roster directory missing: {roster_dir}")
+        return
+
+    def _read(fname: str) -> List[dict]:
+        with open(roster_dir / fname, encoding="utf-8-sig") as f:
+            return list(csv.DictReader(f))
+
+    repo = SupplierRepository()
+
+    def _resupplied(website: str):
+        domain = extract_domain(website or "")
+        return repo.find_by_domain(domain) if domain else None
+
+    confirmed_roster = _read("confirmed.csv")
+    excluded_roster = _read("excluded.csv")
+
+    confirmed_now = 0
+    drifted_to_excluded = []
+    missing = []
+    for r in confirmed_roster:
+        supplier = _resupplied(r["Website"])
+        if supplier is None:
+            missing.append(r["Company Name"])
+        elif supplier.get("flagged"):
+            drifted_to_excluded.append(r["Company Name"])
+        else:
+            confirmed_now += 1
+
+    excluded_now = 0
+    drifted_to_confirmed = []
+    for r in excluded_roster:
+        supplier = _resupplied(r["Website"])
+        if supplier is not None and not supplier.get("flagged"):
+            drifted_to_confirmed.append(r["Company Name"])
+        else:
+            excluded_now += 1
+
+    dead_count = len(_read("genuinely_dead.csv"))
+    mismatch_count = len(_read("name_mismatch.csv"))
+    rejected_count = len(_read("other_rejected.csv"))
+
+    total = confirmed_now + excluded_now + dead_count + mismatch_count + rejected_count + len(missing)
+
+    console.print(f"[bold]{category}[/bold] -- live status (confirmed/excluded checked against the DB just now)\n")
+
+    table = Table(title=f"{category} -- candidate status")
+    table.add_column("Status", style="cyan")
+    table.add_column("Count", justify="right", style="magenta")
+    table.add_row("Confirmed", str(confirmed_now))
+    table.add_row("Excluded (flagged in DB)", str(excluded_now))
+    table.add_row("Genuinely dead", str(dead_count))
+    table.add_row("Other rejected", str(rejected_count))
+    table.add_row("Name mismatch", str(mismatch_count))
+    table.add_row("Total", str(total))
+    console.print(table)
+
+    if drifted_to_excluded:
+        console.print(f"\n[yellow]! {len(drifted_to_excluded)} roster \"confirmed\" candidate(s) are now flagged in the DB (moved to Excluded above):[/yellow]")
+        for name in drifted_to_excluded:
+            console.print(f"    - {name}")
+    if drifted_to_confirmed:
+        console.print(f"\n[yellow]! {len(drifted_to_confirmed)} roster \"excluded\" candidate(s) are no longer flagged in the DB (moved to Confirmed above):[/yellow]")
+        for name in drifted_to_confirmed:
+            console.print(f"    - {name}")
+    if missing:
+        console.print(f"\n[red]! {len(missing)} roster \"confirmed\" candidate(s) no longer resolve to any supplier in the DB (excluded from Total above -- investigate):[/red]")
+        for name in missing:
+            console.print(f"    - {name}")
+    if not (drifted_to_excluded or drifted_to_confirmed or missing):
+        console.print("\n[green]No drift from the checked-in roster -- confirmed/excluded match the DB exactly.[/green]")
 
 
 @cli.command("doctor")
