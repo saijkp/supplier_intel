@@ -26,3 +26,15 @@ data/collection/*
 logs/*.log
 *.bak
 data/*.db*
+
+# Local enrichment pipeline outputs/scripts (geocoding, Street View,
+# reverse-image-search) -- same reasoning as data/collection and
+# data/exports above: real data files and one-off local-run artifacts,
+# not codebase. Left in place, just untracked.
+RUN_THIS_GUIDE.md
+diagnose_streetview.py
+enrich_factories.py
+extract_and_verify.py
+injection_moulding_100_enriched.xlsx
+output/
+photos/
