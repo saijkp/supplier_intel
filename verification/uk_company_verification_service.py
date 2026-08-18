@@ -112,6 +112,73 @@ _PROVENANCE_FIELDS = (
 )
 
 
+def match_company_name_against_companies_house(
+    company_name: str, client: CompaniesHouseClient, max_results: int = 5,
+    min_confidence: float = _CLEAN_MATCH_THRESHOLD,
+) -> Dict[str, Any]:
+    """Stateless core of _verify_one's matching step -- search, fuzzy-
+    match against `min_confidence`, resolve the profile -- with no
+    supplier row and no DB writes. Factored out so a caller with no
+    golden record yet (discovery.candidate_validator's pre-LLM UK
+    registration gate, see that module's own docstring) can reuse the
+    exact same matching discipline instead of a second, independently
+    drifting implementation. Returns match_status
+    ("verified"/"inactive"/"no_clear_match"), confidence (0-100 or None),
+    profile (CompanyProfile or None), and matched_title (the best
+    Companies House search hit's registered name, for logging/evidence
+    even on a no_clear_match).
+
+    `min_confidence` defaults to _CLEAN_MATCH_THRESHOLD (85, the bar
+    calibrated for _verify_one's final compliance-adjacent verdict on a
+    real supplier's canonical_name -- see that constant's own
+    docstring for why false-CONFIRM is the failure mode to avoid
+    there). A caller checking a much noisier, pre-extraction name guess
+    (candidate_validator's gate 3.5) has the OPPOSITE risk profile: a
+    false pass there just costs one already-budgeted LLM call, same as
+    not having the gate at all, while a false reject silently discards
+    a candidate that already passed every real signal available at
+    that point -- so that caller passes its own, deliberately lower,
+    threshold here rather than reusing 85."""
+    company_name = (company_name or "").strip()
+    if not company_name:
+        return {"match_status": "no_clear_match", "confidence": None, "profile": None, "matched_title": None}
+
+    try:
+        matches = client.search_companies(company_name, max_results=max_results)
+    except Exception as e:  # noqa: BLE001 -- CompaniesHouseClient already never raises; defence in depth
+        logger.error("uk_company_verification: search failed for %r: %s", company_name, e)
+        return {"match_status": "no_clear_match", "confidence": None, "profile": None, "matched_title": None}
+
+    stripped_company_name = _strip_corporate_suffix(company_name).lower()
+    best_match, best_score = None, 0.0
+    for match in matches:
+        stripped_title = _strip_corporate_suffix(match.title or "").lower()
+        score = fuzz.ratio(stripped_company_name, stripped_title)
+        if score > best_score:
+            best_match, best_score = match, score
+
+    if best_match is None:
+        return {"match_status": "no_clear_match", "confidence": None, "profile": None, "matched_title": None}
+    if best_score < min_confidence:
+        return {
+            "match_status": "no_clear_match", "confidence": round(best_score),
+            "profile": None, "matched_title": best_match.title,
+        }
+
+    profile = client.get_company_profile(best_match.company_number)
+    if profile is None:
+        return {
+            "match_status": "no_clear_match", "confidence": round(best_score),
+            "profile": None, "matched_title": best_match.title,
+        }
+
+    match_status = "verified" if (profile.company_status or "").lower() == "active" else "inactive"
+    return {
+        "match_status": match_status, "confidence": round(best_score),
+        "profile": profile, "matched_title": best_match.title,
+    }
+
+
 class UKCompanyVerificationService:
 
     def __init__(
@@ -141,37 +208,23 @@ class UKCompanyVerificationService:
         if not company_name:
             return self._record_no_clear_match(supplier_id, checked_at, None, "no company name on file to search")
 
-        try:
-            matches = self.companies_house_client.search_companies(company_name, max_results=5)
-        except Exception as e:  # noqa: BLE001 -- CompaniesHouseClient already never raises; defence in depth
-            logger.error("uk_company_verification: search failed for supplier #%s: %s", supplier_id, e)
-            return self._record_no_clear_match(supplier_id, checked_at, None, f"search failed: {e}")
+        match = match_company_name_against_companies_house(company_name, self.companies_house_client)
+        confidence = match["confidence"]
+        profile = match["profile"]
 
-        stripped_company_name = _strip_corporate_suffix(company_name).lower()
-        best_match, best_score = None, 0.0
-        for match in matches:
-            stripped_title = _strip_corporate_suffix(match.title or "").lower()
-            score = fuzz.ratio(stripped_company_name, stripped_title)
-            if score > best_score:
-                best_match, best_score = match, score
+        if match["match_status"] == "no_clear_match":
+            if profile is None and match["matched_title"] is None and confidence is None:
+                reason = "no Companies House search results at all"
+            elif confidence is not None and profile is None and confidence < _CLEAN_MATCH_THRESHOLD:
+                reason = (
+                    f"best search match '{match['matched_title']}' scored {confidence:.0f}, "
+                    f"below the {_CLEAN_MATCH_THRESHOLD:.0f} confidence bar"
+                )
+            else:
+                reason = f"matched '{match['matched_title']}' (score={confidence:.0f}) but the company profile lookup failed"
+            return self._record_no_clear_match(supplier_id, checked_at, confidence, reason)
 
-        if best_match is None:
-            return self._record_no_clear_match(supplier_id, checked_at, None, "no Companies House search results at all")
-        if best_score < _CLEAN_MATCH_THRESHOLD:
-            return self._record_no_clear_match(
-                supplier_id, checked_at, round(best_score),
-                f"best search match '{best_match.title}' scored {best_score:.0f}, below the {_CLEAN_MATCH_THRESHOLD:.0f} confidence bar",
-            )
-
-        profile = self.companies_house_client.get_company_profile(best_match.company_number)
-        if profile is None:
-            return self._record_no_clear_match(
-                supplier_id, checked_at, round(best_score),
-                f"matched '{best_match.title}' (score={best_score:.0f}) but the company profile lookup failed",
-            )
-
-        match_status = "verified" if (profile.company_status or "").lower() == "active" else "inactive"
-        confidence = round(best_score)
+        match_status = match["match_status"]
 
         fields = {
             "companies_house_number": profile.company_number,

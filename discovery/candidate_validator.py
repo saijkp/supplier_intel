@@ -44,11 +44,41 @@ A candidate is "validated" only if every gate passes:
    e.g. "moulding"/"molding") -- found via a real run that the strict
    original check was rejecting genuine manufacturers on wording
    alone, not a real signal they weren't manufacturers.
+
+Gate 3.5 -- UK Companies House registration, opt-in via
+`companies_house_client` (None by default -- every other product
+category has no reason to pay this extra free API round-trip, and the
+check itself only ever makes sense for a UK-scoped search). When
+enabled, runs immediately after gate 3 (a real fetch already
+succeeded) and BEFORE gate 4 (the one PAID call in this validator) --
+found live on a "material handling equipment manufacturer" +
+--country "United Kingdom" run: 4 of 7 discovery-validated candidates
+(Indotherm, Elecon, DIPAOWANG, VEVOR) turned out to have no confirmed
+UK registration at all once main.py verify-uk-company ran against
+them afterward, each having already paid for an OpenAI call it didn't
+need. Matches on cheap, deterministic guesses at the company name from
+the raw SERP title (_title_name_candidates), NOT the gate-4 LLM
+extraction -- that extraction is the very call this gate exists to
+avoid paying for. Tries several candidate strings (the whole title,
+plus every pipe/dash/colon-separated segment), not one single guess --
+found live that a single "pick the longest segment" heuristic guessed
+wrong often enough to reject two ALREADY Companies-House-CONFIRMED
+suppliers from a real run (Toyota Material Handling UK, Permatt
+Forklift Trucks). Also matches at a deliberately LOWER confidence bar
+than uk_company_verification_service's own 85 (see
+match_company_name_against_companies_house's `min_confidence` doc) --
+this gate's failure modes are asymmetric: a false pass here just costs
+one already-budgeted LLM call, a false reject silently discards a
+candidate that already passed every other real signal. A supplier can
+still fail Companies House verification later even after passing this
+gate; that downstream check (main.py verify-uk-company, standing rule
+9 in CLAUDE.md) remains the authoritative one.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -58,6 +88,7 @@ from deduplication.domain_utils import is_platform_subdomain
 from deduplication.name_utils import normalise_company_name
 from discovery.candidate_extractor import Candidate
 from llm.client import LLMClient
+from verification.uk_company_verification_service import match_company_name_against_companies_house
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +155,60 @@ _TRAILING_QUALIFIERS: tuple = ("manufacturer", "supplier", "factory")
 _SPELLING_VARIANTS: tuple = (("mould", "mold"),)
 
 
+# Deliberately lower than uk_company_verification_service's
+# _CLEAN_MATCH_THRESHOLD (85) -- see that constant's `min_confidence`
+# doc for the asymmetric-risk reasoning. Reuses this file's own
+# _NAME_MATCH_THRESHOLD (55.0) rather than inventing a second "is this
+# plausible" number -- same bar candidate_validator already trusts for
+# the analogous gate-5 question.
+_UK_PREFILTER_MATCH_THRESHOLD = _NAME_MATCH_THRESHOLD
+
+
+def _title_name_candidates(title: str) -> list[str]:
+    """Every plausible company-name string worth trying against
+    Companies House from a raw SERP title -- used ONLY for the pre-LLM
+    gate (see validate()), never stored or treated as the grounded
+    extracted name (gate 4's LLM call still does that properly). The
+    pre-LLM gate can afford several free Companies House searches
+    (unlike the one paid LLM call it exists to gate), so rather than
+    guess a single segment -- found live to pick the WRONG one on a
+    real title like "Material Handling Equipment Supplier - UK
+    Forklifts & Trucks" (Permatt's own actual name isn't in either
+    dash-split segment at all) -- this tries the whole title AND every
+    pipe/dash/colon-separated segment, letting the caller keep
+    whichever scores best. Order preserved, duplicates dropped."""
+    title = (title or "").strip()
+    if not title:
+        return []
+    segments = [p.strip() for p in re.split(r"\s*[|\-–—:]\s*", title) if p.strip()]
+    seen: set = set()
+    candidates = []
+    for c in [title] + segments:
+        if c not in seen:
+            seen.add(c)
+            candidates.append(c)
+    return candidates
+
+
+# Tokens the LLM has been observed to return as the literal string
+# VALUE of a JSON field instead of an actual JSON null when it means
+# "not stated" -- found live: Principle Fork Lifts Ltd's country field
+# came back as the four-character string "null", which then got
+# stored on the supplier row as if "null" were a real country. Not a
+# guess at the real value either way -- coerced to None (blank), same
+# as if the model had returned proper JSON null.
+_LLM_NULL_STRINGS: frozenset = frozenset({"null", "none", "n/a", "na"})
+
+
+def _clean_llm_string_field(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped or stripped.lower() in _LLM_NULL_STRINGS:
+        return None
+    return stripped
+
+
 def _core_product_term(product_term: str) -> str:
     """Strips one trailing qualifier word (see _TRAILING_QUALIFIERS)
     from `product_term` if present -- "injection moulding
@@ -165,6 +250,7 @@ REASON_EMPTY_PAGE = "fetched page had no readable text"                         
 REASON_TERM_MISSING_PREFIX = "fetched page text does not mention the searched term"  # gate 6
 REASON_TRADER_PREFIX = "page self-identifies as a trading company/distributor"   # gate 7
 REASON_SUCCESS_PREFIX = "validated: name corroborated"                           # every gate passed
+REASON_UK_NOT_REGISTERED_PREFIX = "no confirmed active UK Companies House registration"  # gate 3.5, opt-in
 
 SYSTEM_PROMPT = """You are reading the text of a company website. Extract ONLY what is explicitly stated in the text below -- never guess, infer, or fill in based on typical industry patterns or the domain name.
 
@@ -193,12 +279,22 @@ class ValidationResult:
 
 class CandidateValidator:
 
-    def __init__(self, website_fetcher: Any, llm_client: Optional[LLMClient] = None):
+    def __init__(
+        self, website_fetcher: Any, llm_client: Optional[LLMClient] = None,
+        companies_house_client: Optional[Any] = None,
+    ):
         # Anything with `.fetch(domain) -> result with .success/.pages[0].text`
         # -- OwnWebsiteScraper or collection.SiteCollector both qualify,
         # same injectable seam the rest of this codebase already uses.
         self.website_fetcher = website_fetcher
         self.llm_client = llm_client or LLMClient()
+        # None by default -- see module docstring's "Gate 3.5" section.
+        # Deliberately NOT defaulted to a real CompaniesHouseClient()
+        # the way llm_client is defaulted above: unlike the LLM client,
+        # this gate must stay opt-in per call site (main.py discover
+        # --require-uk-registration), not silently on for every product
+        # category just because a key happens to be configured.
+        self.companies_house_client = companies_house_client
 
     def validate(self, candidate: Candidate, product_term: str) -> ValidationResult:
         if is_platform_subdomain(candidate.domain):
@@ -233,6 +329,32 @@ class CandidateValidator:
         if not page_text or not page_text.strip():
             return ValidationResult(candidate, False, None, None, None, REASON_EMPTY_PAGE)
 
+        if self.companies_house_client is not None:
+            name_candidates = _title_name_candidates(candidate.title)
+            best_ch_match = {"match_status": "no_clear_match", "confidence": None, "matched_title": None}
+            best_ch_name = None
+            for name_candidate in name_candidates:
+                ch_match = match_company_name_against_companies_house(
+                    name_candidate, self.companies_house_client, min_confidence=_UK_PREFILTER_MATCH_THRESHOLD,
+                )
+                if ch_match["match_status"] == "verified":
+                    best_ch_match, best_ch_name = ch_match, name_candidate
+                    break  # good enough -- stop spending free Companies House calls
+                if (ch_match["confidence"] or -1) > (best_ch_match["confidence"] or -1):
+                    best_ch_match, best_ch_name = ch_match, name_candidate
+
+            if best_ch_match["match_status"] != "verified":
+                detail = (
+                    f" (best Companies House match across {len(name_candidates)} title-derived "
+                    f"name guess(es): '{best_ch_match['matched_title']}', confidence={best_ch_match['confidence']}, "
+                    f"status={best_ch_match['match_status']}, tried as '{best_ch_name}')"
+                    if best_ch_match["matched_title"] else f" (tried {len(name_candidates)} title-derived name guess(es))"
+                )
+                return ValidationResult(
+                    candidate, False, None, None, None,
+                    f"{REASON_UK_NOT_REGISTERED_PREFIX}{detail}",
+                )
+
         extracted = self.llm_client.complete_json(SYSTEM_PROMPT, f"Website page content:\n\n{page_text[:20_000]}")
         if not isinstance(extracted, dict):
             return ValidationResult(
@@ -240,7 +362,7 @@ class CandidateValidator:
             )
 
         extracted_name = extracted.get("company_name")
-        extracted_country = extracted.get("country") if isinstance(extracted.get("country"), str) else None
+        extracted_country = _clean_llm_string_field(extracted.get("country"))
         if not isinstance(extracted_name, str) or not extracted_name.strip():
             return ValidationResult(
                 candidate, False, None, extracted_country, None, "no company name found in page text",

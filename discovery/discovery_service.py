@@ -94,6 +94,7 @@ class DiscoveryService:
         matcher: Optional[SupplierMatcher] = None,
         llm_candidate_source: Optional[LLMCandidateSource] = None,
         china_1688_scraper: Optional[Any] = None,
+        companies_house_client: Optional[Any] = None,
     ):
         self.repo = repo or SupplierRepository()
         if google_scraper is not None:
@@ -108,7 +109,14 @@ class DiscoveryService:
             from scrapers.own_website_scraper import OwnWebsiteScraper
 
             self.website_fetcher = OwnWebsiteScraper()
-        self.candidate_validator = candidate_validator or CandidateValidator(website_fetcher=self.website_fetcher)
+        # companies_house_client stays None unless the caller explicitly
+        # passes one (main.py discover --require-uk-registration) --
+        # see candidate_validator.CandidateValidator's own "Gate 3.5"
+        # docstring for why this must not default to a real client the
+        # way website_fetcher/llm_client do above.
+        self.candidate_validator = candidate_validator or CandidateValidator(
+            website_fetcher=self.website_fetcher, companies_house_client=companies_house_client,
+        )
         self.matcher = matcher or SupplierMatcher(self.repo)
         self.llm_candidate_source = llm_candidate_source or LLMCandidateSource()
         if china_1688_scraper is not None:
@@ -132,6 +140,7 @@ class DiscoveryService:
         self, product: str, category: Optional[str] = None, country: Optional[str] = None,
         max_candidates: int = 20, application: Optional[str] = None,
         key_specifications: Optional[List[str]] = None, source: str = "serpapi",
+        domain_tld_bias: Optional[str] = None, extra_role_words: Optional[List[str]] = None,
     ) -> DiscoveryOutcome:
         if source not in _VALID_SOURCES:
             raise ValueError(f"unknown discovery source {source!r} -- expected one of {_VALID_SOURCES}")
@@ -160,6 +169,7 @@ class DiscoveryService:
         queries = build_queries(
             product, category=category, country=country,
             application=application, key_specifications=key_specifications,
+            domain_tld_bias=domain_tld_bias, extra_role_words=extra_role_words,
         )
 
         all_candidates = []

@@ -360,9 +360,33 @@ def verify_facilities(force: bool, limit: int) -> None:
                    "search (--source serpapi) or an OpenAI call (--source llm) plus, for "
                    "candidates that pass initial filtering, a real HTTP fetch and an OpenAI "
                    "validation call either way -- start small on a first run.")
+@click.option("--domain-bias", default=None,
+              help="Optional TLD suffix (e.g. \".co.uk\") to add one extra site:-restricted query "
+                   "variant, biasing SerpAPI results toward that domain -- a cheap first-pass filter "
+                   "for a country-scoped run, since --country only qualifies the query text, it "
+                   "never restricts results to that country. Additive, not a replacement for the "
+                   "unbiased variants (a real target can sit on a plain .com too) -- see "
+                   "discovery/query_builder.py's build_queries docstring.")
+@click.option("--require-uk-registration", is_flag=True, default=False,
+              help="Reject a candidate with no confirmed ACTIVE UK Companies House registration "
+                   "before the paid OpenAI validation call, not after -- the UK-office gate for "
+                   "categories like Material Handling, moved earlier in the pipeline so a candidate "
+                   "Companies House would reject anyway never costs an OpenAI call. Free API, "
+                   "matches on a cheap guess at the company name from the raw search-result title "
+                   "(coarser than the canonical_name match main.py verify-uk-company does later, "
+                   "which remains the authoritative check) -- see "
+                   "discovery/candidate_validator.py's \"Gate 3.5\" docstring.")
+@click.option("--role-words", default=None,
+              help="Comma-separated extra role words (e.g. \"dealer,distributor,stockist\") to add "
+                   "one quoted-phrase query variant each, ON TOP OF the default manufacturer/"
+                   "supplier/factory templates -- a directory-style query shape for categories where "
+                   "the real target is an established dealer/distributor, not a raw manufacturer, "
+                   "see discovery/query_builder.py's build_queries docstring for why this stays "
+                   "opt-in rather than a global template change.")
 def discover(
     product_arg: Optional[str], product_opt: Optional[str], category: Optional[str],
     country: Optional[str], source: str, max_candidates: int,
+    domain_bias: Optional[str], require_uk_registration: bool, role_words: Optional[str],
 ) -> None:
     """AI-assisted supplier discovery. Every accepted supplier traces to a
     real fetched website and that website's own text corroborating the
@@ -379,9 +403,18 @@ def discover(
         console.print("[yellow]Give a product, either as PRODUCT or --product.[/yellow]")
         return
 
-    service = DiscoveryService()
+    companies_house_client = None
+    if require_uk_registration:
+        from verification.companies_house_client import CompaniesHouseClient
+
+        companies_house_client = CompaniesHouseClient()
+
+    role_words_list = [w.strip() for w in role_words.split(",") if w.strip()] if role_words else None
+
+    service = DiscoveryService(companies_house_client=companies_house_client)
     outcome = service.discover(
         product, category=category, country=country, max_candidates=max_candidates, source=source,
+        domain_tld_bias=domain_bias, extra_role_words=role_words_list,
     )
 
     if source == "1688":
