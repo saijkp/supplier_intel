@@ -16,8 +16,11 @@ Flagged/Y into them; see PASTE_RANGE_COLUMNS's own comment.
 
 Evidence/helper columns (a Website Note, per-field source URLs,
 candidate facility photos, a Street View link, a LinkedIn search link,
-certification evidence, D-search snippets, Checks Remaining, Sort Key)
-are appended AFTER Date Reviewed -- outside the paste range, so the
+certification evidence, the discovery pipeline's own gate-pass reason
+text, Companies House match status (blank unless main.py
+verify-uk-company has run -- see standing rule 9 in CLAUDE.md),
+D-search snippets, Checks Remaining, Sort Key) are appended AFTER Date
+Reviewed -- outside the paste range, so the
 main block still pastes in clean while the evidence needed to audit
 each value stays in the same file, one click away. Street View/
 LinkedIn links are both free Google search-links, never an automated
@@ -86,6 +89,7 @@ EVIDENCE_COLUMNS: Tuple[str, ...] = (
     "Factory Location Source URL",
     "Candidate Facility Photo URLs", "Street View Link", "LinkedIn Search Link",
     "Certifications Claimed (source + evidence)",
+    "Discovery Validation Reason", "Companies House Status",
     "D-Search: Scam", "D-Search: Review", "D-Search: Factory Tour",
     "Checks Remaining", "Sort Key (helper)",
 )
@@ -195,6 +199,51 @@ def _certifications_claimed(repo: SupplierRepository, supplier_id: int) -> str:
     return " | ".join(parts)
 
 
+def _discovery_validation_reason(repo: SupplierRepository, supplier_id: int) -> str:
+    """Export-only surfacing of discovery.candidate_validator's own
+    gate reason text for whichever raw_source_data row most recently
+    fed this supplier (e.g. "validated: name corroborated (score=100),
+    product term found on page" -- gate 6's own wording, see that
+    module's REASON_* constants) -- evidence of WHY discovery accepted
+    the candidate, never a re-judgment of it. Blank for a supplier this
+    export-adjacent stage never discovered (e.g. manually batch-
+    uploaded)."""
+    rows = repo.get_raw_by_golden_record(supplier_id)
+    for row in rows:
+        raw_json = row.get("raw_json")
+        if isinstance(raw_json, dict) and raw_json.get("reason"):
+            return raw_json["reason"]
+    return ""
+
+
+def _companies_house_status(supplier: Dict[str, Any]) -> str:
+    """Export-only surfacing of verification.uk_company_verification_service's
+    own match outcome -- never re-derived or re-judged here, same
+    "surface the evidence, not a verdict" discipline as every other
+    EVIDENCE_COLUMNS field (see module docstring / standing rule 2).
+    "no_clear_match" is deliberately not itself an exclusion signal
+    (see that service's own docstring) -- surfaced exactly as found,
+    the buyer's own manual check either way. Blank for a supplier
+    main.py verify-uk-company has never run against."""
+    status = supplier.get("companies_house_match_status")
+    if not status:
+        return ""
+    confidence = supplier.get("companies_house_match_confidence")
+    parts = [f"match_status={status}"]
+    if confidence is not None:
+        parts.append(f"confidence={confidence}")
+    company_status = supplier.get("companies_house_status")
+    if company_status:
+        parts.append(f"company_status={company_status}")
+    number = supplier.get("companies_house_number")
+    if number:
+        parts.append(f"company_number={number}")
+    office = supplier.get("companies_house_registered_office")
+    if office:
+        parts.append(f"registered_office={office}")
+    return "; ".join(parts)
+
+
 def _reputation_snippets(repo: SupplierRepository, supplier_id: int, query_type: str) -> str:
     """Export-only surfacing of Group 2's opt-in D-search results.
     Blank unless --search-reputation was actually run for this
@@ -259,6 +308,8 @@ def build_tracker_export(supplier_ids: List[int], repo: Optional[SupplierReposit
             _street_view_link(address),
             _linkedin_search_link(supplier.get("canonical_name") or ""),
             _certifications_claimed(repo, supplier_id),
+            _discovery_validation_reason(repo, supplier_id),
+            _companies_house_status(supplier),
             _reputation_snippets(repo, supplier_id, "scam"),
             _reputation_snippets(repo, supplier_id, "review"),
             _reputation_snippets(repo, supplier_id, "factory_tour"),

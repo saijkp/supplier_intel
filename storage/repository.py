@@ -206,6 +206,22 @@ class SupplierRepository:
                     pass
             return result
 
+    def get_raw_by_golden_record(self, golden_record_id: int) -> List[Dict[str, Any]]:
+        """Every raw_source_data row that fed into a given golden
+        record, most recent first -- e.g. discovery.candidate_validator's
+        per-candidate validation reason (raw_json.reason), surfaced as
+        export-only evidence by batch.tracker_exporter. A supplier
+        rediscovered under more than one product term/query has more
+        than one row here (each still points at the same
+        golden_record_id via merge/dedup), so callers wanting a single
+        reason should take the first (most recent) entry."""
+        with connection_scope(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM raw_source_data WHERE golden_record_id = ? ORDER BY scraped_at DESC",
+                (golden_record_id,),
+            ).fetchall()
+            return _rows_to_dicts(rows, json_fields=("raw_json",))
+
     def get_pending_raw(self, source: Optional[str] = None, limit: int = 500) -> List[Dict[str, Any]]:
         with connection_scope(self.db_path) as conn:
             if source:
