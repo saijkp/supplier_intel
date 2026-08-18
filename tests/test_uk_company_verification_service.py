@@ -16,7 +16,7 @@ import pytest
 
 from storage.database import initialise_schema
 from verification.companies_house_client import CompanyProfile, CompanySearchMatch
-from verification.uk_company_verification_service import UKCompanyVerificationService
+from verification.uk_company_verification_service import UKCompanyVerificationService, _strip_corporate_suffix
 
 
 @pytest.fixture()
@@ -70,6 +70,46 @@ DISSOLVED_PROFILE = CompanyProfile(
 )
 
 
+class TestStripCorporateSuffix:
+    """Found via a real gap-analysis run: Companies House always
+    returns the registered name with its legal suffix; a supplied/
+    trading name almost never has one, which penalised the fuzzy match
+    score enough to wrongly reject genuine matches (Rutland Plastics,
+    Inoplas Technology, Hymid Multi-Shot, Barkley Plastics all scored
+    just under the confidence bar for exactly this reason)."""
+
+    def test_strips_limited(self):
+        assert _strip_corporate_suffix("RUTLAND PLASTICS LIMITED") == "RUTLAND PLASTICS"
+
+    def test_strips_ltd_with_or_without_period(self):
+        assert _strip_corporate_suffix("Acme Ltd") == "Acme"
+        assert _strip_corporate_suffix("Acme Ltd.") == "Acme"
+
+    def test_strips_plc(self):
+        assert _strip_corporate_suffix("Acme PLC") == "Acme"
+
+    def test_strips_llp(self):
+        assert _strip_corporate_suffix("Acme LLP") == "Acme"
+
+    def test_strips_a_leading_comma_before_the_suffix(self):
+        assert _strip_corporate_suffix("Ningbo Reiz Mould & Plastic Co., Ltd") == "Ningbo Reiz Mould & Plastic Co."
+
+    def test_case_insensitive(self):
+        assert _strip_corporate_suffix("acme limited") == "acme"
+
+    def test_name_with_no_suffix_is_unchanged(self):
+        assert _strip_corporate_suffix("Rutland Plastics") == "Rutland Plastics"
+
+    def test_suffix_only_stripped_at_the_end_not_mid_name(self):
+        """A company legitimately named e.g. "Limited Editions Ltd"
+        must keep its own "Limited" -- only the trailing legal suffix
+        is stripped."""
+        assert _strip_corporate_suffix("Limited Editions Ltd") == "Limited Editions"
+
+    def test_empty_string_returns_empty_string(self):
+        assert _strip_corporate_suffix("") == ""
+
+
 class TestVerifiedOutcome:
 
     def test_high_confidence_active_match_is_verified(self, repo):
@@ -116,6 +156,43 @@ class TestVerifiedOutcome:
         assert "companies_house_registered_office" in by_field
         assert "companies_house_incorporated_at" in by_field
         assert "companies_house_sic_codes" in by_field
+
+    def test_supplied_name_without_the_legal_suffix_still_verifies(self, repo):
+        """The real bug this was built to fix: a supplied/trading name
+        essentially never includes "Limited," but Companies House
+        always returns it -- must not fall to no_clear_match just
+        because of that missing suffix."""
+        supplier_id = repo.create_golden_record({"canonical_name": "Rutland Plastics", "domain": "rutlandplastics.co.uk"})
+        client = FakeCompaniesHouseClient(
+            search_results={"Rutland Plastics": [
+                CompanySearchMatch(company_number="01234567", title="RUTLAND PLASTICS LIMITED", company_status="active"),
+            ]},
+            profiles={"01234567": ACTIVE_PROFILE},
+        )
+        service = _make_service(repo, client)
+
+        outcome = service.verify_uk_company(supplier_id)
+
+        assert outcome["match_status"] == "verified"
+        assert outcome["confidence"] == 100
+
+    def test_coincidental_homonym_still_correctly_rejected_after_suffix_stripping(self, repo):
+        """Stripping the suffix must not turn an unrelated company into
+        a false positive -- confirmed against the real case that
+        surfaced this: "Sungplastic" incorrectly nearly-matching
+        "NINGBO REIZ MOULD & PLASTIC CO., LTD" (a real but unrelated
+        company) at a fuzzy score just under the old threshold."""
+        supplier_id = repo.create_golden_record({"canonical_name": "Sungplastic", "domain": "sungplastic.com"})
+        client = FakeCompaniesHouseClient(
+            search_results={"Sungplastic": [
+                CompanySearchMatch(company_number="09999999", title="NINGBO REIZ MOULD & PLASTIC CO., LTD", company_status="active"),
+            ]},
+        )
+        service = _make_service(repo, client)
+
+        outcome = service.verify_uk_company(supplier_id)
+
+        assert outcome["match_status"] == "no_clear_match"
 
 
 class TestInactiveOutcome:

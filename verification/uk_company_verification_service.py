@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -80,6 +81,28 @@ _BATCH_SEMAPHORE = threading.Semaphore(UK_VERIFICATION_MAX_CONCURRENT_JOBS)
 # See module docstring for why this is deliberately higher than
 # discovery.candidate_validator's 55.0 name-match threshold.
 _CLEAN_MATCH_THRESHOLD = 85.0
+
+# Companies House ALWAYS returns the registered name with its legal
+# suffix; a supplied/trading name almost never includes one -- found
+# via a real gap-analysis run: Rutland Plastics/Inoplas Technology/
+# Hymid Multi-Shot/Barkley Plastics all scored just under
+# _CLEAN_MATCH_THRESHOLD purely because of the missing "Limited," not
+# a real mismatch (confirmed by checking the actual matched titles --
+# e.g. "RUTLAND PLASTICS LIMITED" vs supplied "Rutland Plastics").
+# Stripped from BOTH sides before scoring, never from what's actually
+# stored (companies_house_status etc. keep the verbatim registered
+# name/title). Deliberately does NOT touch _CLEAN_MATCH_THRESHOLD
+# itself -- that bar is doing real, necessary work against coincidental
+# homonyms (e.g. "Sungplastic" vs the unrelated "NINGBO REIZ MOULD &
+# PLASTIC CO., LTD," correctly still scores low after stripping "LTD,"
+# since the actual company names have nothing else in common).
+_UK_CORPORATE_SUFFIX_PATTERN = re.compile(
+    r",?\s*\b(limited|ltd\.?|plc|llp|l\.l\.p\.?)\s*$", re.IGNORECASE,
+)
+
+
+def _strip_corporate_suffix(name: str) -> str:
+    return _UK_CORPORATE_SUFFIX_PATTERN.sub("", name or "").strip()
 
 # Fields written to field_provenance alongside the supplier row, in
 # (field_name, value) pairs built fresh per call -- see _verify_one.
@@ -124,9 +147,11 @@ class UKCompanyVerificationService:
             logger.error("uk_company_verification: search failed for supplier #%s: %s", supplier_id, e)
             return self._record_no_clear_match(supplier_id, checked_at, None, f"search failed: {e}")
 
+        stripped_company_name = _strip_corporate_suffix(company_name).lower()
         best_match, best_score = None, 0.0
         for match in matches:
-            score = fuzz.ratio(company_name.lower(), (match.title or "").lower())
+            stripped_title = _strip_corporate_suffix(match.title or "").lower()
+            score = fuzz.ratio(stripped_company_name, stripped_title)
             if score > best_score:
                 best_match, best_score = match, score
 
