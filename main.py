@@ -652,7 +652,16 @@ def batch_upload(csv_path: str, output: Optional[str], plain: bool, search_reput
 @click.option("--removed-output", default=None,
               help="Removed-candidates CSV path (default: <confirmed_csv> with a "
                    "_removed_candidates suffix).")
-def export_tracker(confirmed_csv: str, universe_csv: Optional[str], output: Optional[str], removed_output: Optional[str]) -> None:
+@click.option("--xlsx-output", default=None,
+              help="Optional: also write a single .xlsx workbook to this path, three tabs "
+                   "(Supplier Audit / Qualified / Removed Candidates) matching a buyer's own "
+                   "reference tracker shape -- built from the exact same data as the CSV "
+                   "outputs above (see batch/tracker_exporter.py's build_tracker_workbook), "
+                   "which are written unchanged either way. Off by default.")
+def export_tracker(
+    confirmed_csv: str, universe_csv: Optional[str], output: Optional[str],
+    removed_output: Optional[str], xlsx_output: Optional[str],
+) -> None:
     """Group 3: export a confirmed candidate list (Company Name/Website
     columns, e.g. the output of validating a candidate list through
     the same gate discover() uses) into the buyer's own procurement-
@@ -664,7 +673,11 @@ def export_tracker(confirmed_csv: str, universe_csv: Optional[str], output: Opti
     from pathlib import Path
 
     from batch.csv_parser import parse_csv
-    from batch.tracker_exporter import build_removed_candidates_export, build_tracker_export
+    from batch.tracker_exporter import (
+        build_removed_candidates_export,
+        build_tracker_export,
+        build_tracker_workbook,
+    )
     from deduplication.domain_utils import extract_domain
 
     def _resolve_ids(csv_path: str) -> List[int]:
@@ -696,6 +709,12 @@ def export_tracker(confirmed_csv: str, universe_csv: Optional[str], output: Opti
 
     console.print(f"[green]OK[/green] {len(confirmed_ids)} confirmed candidate(s) written to [bold]{output_path}[/bold]")
     console.print(f"[green]OK[/green] Removed-candidates list written to [bold]{removed_output_path}[/bold]")
+
+    if xlsx_output:
+        workbook_bytes = build_tracker_workbook(confirmed_ids, universe_ids, repo)
+        with open(xlsx_output, "wb") as f:
+            f.write(workbook_bytes)
+        console.print(f"[green]OK[/green] 3-tab workbook (Supplier Audit / Qualified / Removed Candidates) written to [bold]{xlsx_output}[/bold]")
 
 
 @cli.command("verify-uk-company")

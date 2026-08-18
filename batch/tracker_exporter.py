@@ -345,3 +345,73 @@ def build_removed_candidates_export(
         writer.writerow([supplier.get("canonical_name") or "", website, supplier.get("flag_reason") or ""])
 
     return output.getvalue()
+
+
+def _write_csv_text_to_sheet(sheet: Any, csv_text: str) -> None:
+    """Parses `csv_text` (already-quoted CSV, e.g. build_tracker_export's
+    own output) back into rows and writes them into an openpyxl sheet --
+    round-trips cleanly since Python's csv module reads back exactly
+    what it wrote, including any embedded commas/quotes/newlines in an
+    address or evidence field. Bolds + freezes the header row and
+    auto-sizes columns, same look as the existing xlsx exports
+    (reports.generator.suppliers_to_excel_bytes). A header-only
+    csv_text (e.g. build_tracker_export([], repo)) still gets the
+    header formatting, just no data rows below it."""
+    from openpyxl.styles import Font
+
+    all_rows = list(csv.reader(io.StringIO(csv_text)))
+    for row in all_rows:
+        sheet.append(row)
+    if not all_rows:
+        return
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+    sheet.freeze_panes = "A2"
+    for i, value in enumerate(all_rows[0], start=1):
+        width = max(len(str(value)), 10)
+        sheet.column_dimensions[sheet.cell(row=1, column=i).column_letter].width = min(width + 6, 55)
+
+
+def build_tracker_workbook(
+    confirmed_supplier_ids: List[int], removed_universe_supplier_ids: List[int],
+    repo: Optional[SupplierRepository] = None,
+) -> bytes:
+    """Same three-tab shape as the buyer's own reference tracker file
+    (Supplier Audit / Qualified / Removed Candidates), built ON TOP of
+    build_tracker_export/build_removed_candidates_export above rather
+    than duplicating their row-construction logic -- the .xlsx output
+    can never drift from what the CSV exports produce, since it's
+    quite literally their own output re-parsed into sheets.
+
+    Supplier Audit and Qualified share identical columns (the same
+    paste range + evidence columns build_tracker_export always writes)
+    -- Qualified starts as a header row only, zero data rows, meant for
+    the buyer to move rows into by hand once actually reviewed; nothing
+    in this codebase ever writes a row into it itself, matching the
+    same "never write a verdict, that's the buyer's manual call"
+    discipline documented at the top of this module. Removed Candidates
+    mirrors build_removed_candidates_export exactly: Company Name/
+    Website/Reason for every flagged=1 supplier among
+    `removed_universe_supplier_ids`.
+
+    Returns raw .xlsx bytes (same convention as
+    reports.generator.suppliers_to_excel_bytes) -- caller decides the
+    output path/write mode."""
+    from openpyxl import Workbook
+
+    repo = repo or SupplierRepository()
+
+    workbook = Workbook()
+    audit_sheet = workbook.active
+    audit_sheet.title = "Supplier Audit"
+    _write_csv_text_to_sheet(audit_sheet, build_tracker_export(confirmed_supplier_ids, repo))
+
+    qualified_sheet = workbook.create_sheet("Qualified")
+    _write_csv_text_to_sheet(qualified_sheet, build_tracker_export([], repo))
+
+    removed_sheet = workbook.create_sheet("Removed Candidates")
+    _write_csv_text_to_sheet(removed_sheet, build_removed_candidates_export(removed_universe_supplier_ids, repo))
+
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
