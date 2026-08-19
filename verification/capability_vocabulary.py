@@ -134,6 +134,7 @@ VOCABULARY: Tuple[CapabilityTerm, ...] = (
     CapabilityTerm("iso 9001", CATEGORY_STANDARD, ("iso9001", "iso 9001:2015")),
     CapabilityTerm("iatf 16949", CATEGORY_STANDARD, ("iatf16949", "ts 16949", "ts16949")),
     CapabilityTerm("iso 14001", CATEGORY_STANDARD, ("iso14001",)),
+    CapabilityTerm("iso 13485", CATEGORY_STANDARD, ("iso13485", "iso 13485:2016")),
     CapabilityTerm("ce marking", CATEGORY_STANDARD, ("ce mark", "ce marked", "ce certified", "ce compliance")),
 
     # --- Logistics (commercial intelligence extension) --------------------

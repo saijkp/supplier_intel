@@ -192,6 +192,52 @@ def _linkedin_search_link(company_name: str) -> str:
     return f"https://www.google.com/search?q={urllib.parse.quote(query)}"
 
 
+def _marketplace_search_link(company_name: str, site: str) -> str:
+    """Same free-search-link pattern as _linkedin_search_link -- a
+    site:<marketplace> Google search for the company name. Presence on
+    Alibaba/Made-in-China is a neutral signal on its own (real
+    manufacturers list there too); the buyer reads the result and
+    judges it themselves -- e.g. whether a supplier is ONLY findable
+    there is the kind of thing worth noticing, not something this
+    function decides. Empty when there's no name to search for."""
+    if not company_name:
+        return ""
+    query = f'site:{site} "{company_name}"'
+    return f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+
+
+def _trustpilot_search_link(company_name: str) -> str:
+    """Trustpilot's own search page, not a Google site: search --
+    confirmed live that trustpilot.com/search?query= is a real,
+    working query parameter (no CAPTCHA, no JS-only form). Empty when
+    there's no name to search for."""
+    if not company_name:
+        return ""
+    return f"https://www.trustpilot.com/search?query={urllib.parse.quote(company_name)}"
+
+
+# Plain links to the correct registry search PAGE per certification standard --
+# NOT deep links to a specific certificate result. Confirmed live (browser
+# session) that neither registry supports a bookmarkable/parameterized direct
+# link to a certificate: IAF CertSearch's search box doesn't change the URL
+# and is gated by a reCAPTCHA on every query; IATF Customer Portal's search
+# returns a real result with no CAPTCHA, but the result URL never encodes the
+# certificate number (confirmed via window.location.href) -- it's a client-
+# side form submission, not a GET with a query string. So this is a link to
+# the right search page only -- the buyer pastes the certificate number in
+# themselves once there, same as every other link in this evidence bundle.
+_CERTIFICATION_REGISTRY_LINKS = {
+    "iso 9001": "https://www.iafcertsearch.org/",
+    "iso 14001": "https://www.iafcertsearch.org/",
+    "iso 13485": "https://www.iafcertsearch.org/",
+    "iatf 16949": "https://iatf-customerportal.org/",
+}
+
+
+def _certification_registry_link(canonical_term: Optional[str]) -> str:
+    return _CERTIFICATION_REGISTRY_LINKS.get(canonical_term or "", "")
+
+
 def _certifications_claimed(repo: SupplierRepository, supplier_id: int) -> str:
     """Export-only surfacing of certification claims the older,
     separate capability_extractor.py stage already found (category=
@@ -511,6 +557,9 @@ def build_supplier_evidence_bundle(
         "candidate_facility_photo_urls": list(supplier.get("candidate_facility_photo_urls") or []),
         "street_view_link": _street_view_link(address),
         "linkedin_search_link": _linkedin_search_link(supplier.get("canonical_name") or ""),
+        "alibaba_search_link": _marketplace_search_link(supplier.get("canonical_name") or "", "alibaba.com"),
+        "made_in_china_search_link": _marketplace_search_link(supplier.get("canonical_name") or "", "made-in-china.com"),
+        "trustpilot_search_link": _trustpilot_search_link(supplier.get("canonical_name") or ""),
         "companies_house": {
             "match_status": supplier.get("companies_house_match_status"),
             "match_confidence": supplier.get("companies_house_match_confidence"),
@@ -525,6 +574,7 @@ def build_supplier_evidence_bundle(
                 "term": cap.get("canonical_term") or cap.get("reported_term"),
                 "source_url": cap.get("source_url"),
                 "evidence": cap.get("evidence"),
+                "registry_link": _certification_registry_link(cap.get("canonical_term")),
             }
             for cap in repo.get_capabilities(supplier_id) if cap.get("category") == "standard"
         ],

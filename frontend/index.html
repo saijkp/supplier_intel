@@ -1649,6 +1649,9 @@ function renderAuditDetail(b) {
   sections.push(evidenceSection("Facility evidence", [
     evidenceRow("Street View", "Open map search", b.street_view_link),
     evidenceRow("LinkedIn search", "Open search", b.linkedin_search_link),
+    evidenceRow("Alibaba search", "Open search", b.alibaba_search_link),
+    evidenceRow("Made-in-China search", "Open search", b.made_in_china_search_link),
+    evidenceRow("Trustpilot search", "Open search", b.trustpilot_search_link),
     (b.candidate_facility_photo_urls || []).length
       ? `<div class="evidence-row"><span class="evidence-label">Candidate photos</span>${
           b.candidate_facility_photo_urls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">photo</a>`).join(", ")
@@ -1676,6 +1679,7 @@ function renderAuditDetail(b) {
         `<div class="evidence-row"><span class="evidence-label">${esc(c.term || "")}</span>
           <span class="evidence-quote">&ldquo;${esc(c.evidence || "")}&rdquo;</span>
           ${c.source_url ? ` — <a href="${esc(c.source_url)}" target="_blank" rel="noopener">source</a>` : ""}
+          ${c.registry_link ? ` — <a href="${esc(c.registry_link)}" target="_blank" rel="noopener">check registry</a>` : ""}
         </div>`
       ).join("")
     : `<div class="evidence-empty">${esc(certsEmptyText)}</div>`));

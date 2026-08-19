@@ -144,6 +144,12 @@ class TestCommercialIntelligenceExtension:
         assert result.canonical == "ce marking"
         assert result.category == CATEGORY_STANDARD
 
+    def test_iso_13485_added_alongside_existing_standards(self):
+        result = map_to_canonical("ISO13485")
+        assert result is not None
+        assert result.canonical == "iso 13485"
+        assert result.category == CATEGORY_STANDARD
+
     def test_new_terms_do_not_collide_with_existing_vocabulary(self):
         """Re-running the alias-index build (import-time in the real
         module) would already raise on a collision -- this just
