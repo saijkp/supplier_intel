@@ -110,6 +110,7 @@ SUPPLIER_WRITABLE_FIELDS: Sequence[str] = (
     "companies_house_match_status", "companies_house_match_confidence", "companies_house_checked_at",
     "catalogue_depth_extracted_at",
     "ris_verification_flag", "ris_exact_duplicate_domains", "ris_other_matching_domains", "ris_imported_at",
+    "reputation_search_attempted_at",
 )
 
 SCORE_FIELDS: Sequence[str] = (
@@ -1519,6 +1520,18 @@ class SupplierRepository:
                 if cur.rowcount:
                     inserted += 1
         return inserted
+
+    def mark_reputation_search_attempted(self, supplier_id: int) -> None:
+        """Same never-attempted-vs-attempted-and-found-nothing discipline as
+        `mark_capability_extraction_attempted`/`mark_catalogue_depth_extraction_attempted`
+        -- call once per supplier per `_attempt_reputation_search` call
+        regardless of outcome (no usable name yet, every query errored, or
+        every query returned nothing are all real, durable facts, not
+        reasons to display "not run" for a supplier that genuinely was
+        searched and turned up nothing)."""
+        self.update_supplier_fields(
+            supplier_id, {"reputation_search_attempted_at": datetime.now(timezone.utc).isoformat()}
+        )
 
     def get_reputation_snippets(self, supplier_id: int, query_type: Optional[str] = None) -> List[Dict[str, Any]]:
         with connection_scope(self.db_path) as conn:

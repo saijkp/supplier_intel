@@ -810,7 +810,13 @@ class BatchService:
 
         Returns how many NEW snippets were saved this call (0 if no
         usable name, every query errored, or every query returned
-        nothing)."""
+        nothing).
+
+        Marks reputation_search_attempted_at on every call regardless of
+        outcome (same discipline as capability_extracted_at/
+        catalogue_depth_extracted_at) -- so the Audit tab can tell
+        "searched, found nothing" apart from "never run"."""
+        self.repo.mark_reputation_search_attempted(supplier_id)
         supplier = self.repo.get_supplier(supplier_id)
         company_name = (supplier or {}).get("canonical_name")
         if not company_name:

@@ -127,6 +127,9 @@ class FakeRepo:
             return [r for r in rows if r["query_type"] == query_type]
         return list(rows)
 
+    def mark_reputation_search_attempted(self, supplier_id):
+        self.suppliers.setdefault(supplier_id, {"id": supplier_id})["reputation_search_attempted_at"] = "2024-01-01T00:00:00+00:00"
+
 
 class FakeMatcher:
     """Stand-in for deduplication.matcher.SupplierMatcher -- BatchService

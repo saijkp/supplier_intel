@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 
 # ═══════════════════════════════════════════════════════════
@@ -268,7 +268,15 @@ CREATE TABLE IF NOT EXISTS suppliers (
     ris_verification_flag          TEXT,         -- "Pending" | "Review" | "Flagged" | "Verified", verbatim from the source pipeline
     ris_exact_duplicate_domains    TEXT,         -- semicolon-joined domain list, verbatim from the source pipeline
     ris_other_matching_domains     TEXT,         -- semicolon-joined domain list, verbatim from the source pipeline
-    ris_imported_at                TIMESTAMP     -- when this one-time import wrote this supplier's row -- NOT an idempotency marker for a repeatable pipeline stage (there is no live RIS pipeline in this codebase), just provenance for when the static import ran
+    ris_imported_at                TIMESTAMP,    -- when this one-time import wrote this supplier's row -- NOT an idempotency marker for a repeatable pipeline stage (there is no live RIS pipeline in this codebase), just provenance for when the static import ran
+
+    -- D-search / reputation-search evidence (v26) -- see batch/batch_service.py's
+    -- _attempt_reputation_search. Set on every attempt, matched or not -- same
+    -- discipline as capability_extracted_at/catalogue_depth_extracted_at, added
+    -- specifically so the Audit tab can tell "searched, found nothing" apart
+    -- from "never run" for supplier_reputation_snippets, which previously had
+    -- no marker at all.
+    reputation_search_attempted_at TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_sup_domain ON suppliers(domain);
@@ -1469,6 +1477,22 @@ MIGRATIONS: dict[int, dict] = {
             ("suppliers", "ris_exact_duplicate_domains", "TEXT"),
             ("suppliers", "ris_other_matching_domains", "TEXT"),
             ("suppliers", "ris_imported_at", "TIMESTAMP"),
+        ],
+    },
+    26: {
+        "description": (
+            "D-search / reputation-search idempotency marker (see "
+            "batch/batch_service.py's _attempt_reputation_search): "
+            "suppliers.reputation_search_attempted_at, set on every attempt "
+            "regardless of outcome -- same discipline as capability_extracted_at/"
+            "catalogue_depth_extracted_at. Before this column, "
+            "supplier_reputation_snippets having zero rows for a supplier was "
+            "indistinguishable between 'searched, found nothing' and 'never "
+            "run', which the Audit tab's evidence view could not display "
+            "honestly."
+        ),
+        "columns": [
+            ("suppliers", "reputation_search_attempted_at", "TIMESTAMP"),
         ],
     },
 }

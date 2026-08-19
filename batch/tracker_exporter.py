@@ -544,5 +544,6 @@ def build_supplier_evidence_bundle(
             ]
             for query_type in ("scam", "review", "factory_tour")
         },
+        "reputation_search_attempted_at": supplier.get("reputation_search_attempted_at"),
         "discovery_validation_reason": _discovery_validation_reason(repo, supplier_id),
     }

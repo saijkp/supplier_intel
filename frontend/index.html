@@ -1607,8 +1607,8 @@ function auditSupplierCard(s) {
   </div>`;
 }
 
-function evidenceRow(label, value, link) {
-  if (!value) return `<div class="evidence-row"><span class="evidence-label">${esc(label)}</span><span class="evidence-empty">not on file</span></div>`;
+function evidenceRow(label, value, link, emptyText) {
+  if (!value) return `<div class="evidence-row"><span class="evidence-label">${esc(label)}</span><span class="evidence-empty">${esc(emptyText || "not on file")}</span></div>`;
   const shown = link ? `<a href="${esc(link)}" target="_blank" rel="noopener">${esc(value)}</a>` : esc(value);
   return `<div class="evidence-row"><span class="evidence-label">${esc(label)}</span>${shown}</div>`;
 }
@@ -1634,11 +1634,11 @@ function renderAuditDetail(b) {
   const sections = [];
 
   sections.push(evidenceSection("Contact", [
-    evidenceRow("Address", b.contact.address, b.source_urls.address),
-    evidenceRow("Factory location", b.contact.factory_location, b.source_urls.factory_location),
-    evidenceRow("Phone", b.contact.phone),
+    evidenceRow("Address", b.contact.address, b.source_urls.address, "Not stated on site"),
+    evidenceRow("Factory location", b.contact.factory_location, b.source_urls.factory_location, "Not stated on site"),
+    evidenceRow("Phone", b.contact.phone, null, "Not stated on site"),
     evidenceRow("Phone source page(s)", b.source_urls.phone_source_pages),
-    evidenceRow("Email", b.contact.email),
+    evidenceRow("Email", b.contact.email, null, "Not stated on site"),
     evidenceRow("Email source page(s)", (b.source_urls.email_source_pages || []).join("; ")),
   ].join("")));
 
@@ -1653,7 +1653,7 @@ function renderAuditDetail(b) {
       ? `<div class="evidence-row"><span class="evidence-label">Candidate photos</span>${
           b.candidate_facility_photo_urls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">photo</a>`).join(", ")
         }</div>`
-      : evidenceRow("Candidate photos", ""),
+      : evidenceRow("Candidate photos", "", null, "No candidate photos found."),
   ].join("")));
 
   const ch = b.companies_house;
@@ -1675,7 +1675,7 @@ function renderAuditDetail(b) {
           ${c.source_url ? ` — <a href="${esc(c.source_url)}" target="_blank" rel="noopener">source</a>` : ""}
         </div>`
       ).join("")
-    : `<div class="evidence-empty">Nothing on file (extract-capabilities not yet run, or nothing found)</div>`));
+    : `<div class="evidence-empty">No claims found on crawled pages</div>`));
 
   sections.push(evidenceSection("Catalogue-depth signals", b.catalogue_depth_signals.length
     ? b.catalogue_depth_signals.map(s =>
@@ -1683,7 +1683,7 @@ function renderAuditDetail(b) {
           <span class="evidence-quote">&ldquo;${esc(s.evidence || "")}&rdquo;</span>
         </div>`
       ).join("")
-    : `<div class="evidence-empty">Nothing on file (extract-catalogue-depth not yet run, or nothing found)</div>`));
+    : `<div class="evidence-empty">No claims found on crawled pages</div>`));
 
   const ris = b.reverse_image_search;
   if (ris.verification_flag) {
@@ -1696,14 +1696,18 @@ function renderAuditDetail(b) {
   }
 
   const dsearch = b.reputation_snippets;
+  const dsearchAttempted = !!b.reputation_search_attempted_at;
   const dsearchHtml = ["scam", "review", "factory_tour"].map(qt => {
     const items = dsearch[qt] || [];
-    if (!items.length) return "";
-    return `<div class="evidence-row"><span class="evidence-label">${esc(qt.replace("_", " "))}</span>
-      ${items.map(i => `${esc(i.title || "")}: ${esc(i.snippet || "")} (<a href="${esc(i.link)}" target="_blank" rel="noopener">link</a>)`).join("<br>")}
-    </div>`;
+    if (items.length) {
+      return `<div class="evidence-row"><span class="evidence-label">${esc(qt.replace("_", " "))}</span>
+        ${items.map(i => `${esc(i.title || "")}: ${esc(i.snippet || "")} (<a href="${esc(i.link)}" target="_blank" rel="noopener">link</a>)`).join("<br>")}
+      </div>`;
+    }
+    const emptyText = dsearchAttempted ? "No relevant results" : "Not run (opt-in --search-reputation)";
+    return `<div class="evidence-row"><span class="evidence-label">${esc(qt.replace("_", " "))}</span><span class="evidence-empty">${esc(emptyText)}</span></div>`;
   }).join("");
-  sections.push(evidenceSection("D-search snippets", dsearchHtml || `<div class="evidence-empty">Not run (opt-in --search-reputation)</div>`));
+  sections.push(evidenceSection("D-search snippets", dsearchHtml));
 
   if (b.discovery_validation_reason) {
     sections.push(evidenceSection("Discovery validation reason", `<div class="evidence-row">${esc(b.discovery_validation_reason)}</div>`));
