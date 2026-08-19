@@ -204,6 +204,29 @@ a{color:var(--tier-stated)}
 .badge.neutral{color:var(--steel-700);border-color:var(--rule);background:var(--paper)}
 .badge.warn{color:var(--tier-claimed);border-color:var(--tier-claimed);background:var(--tier-claimed-bg)}
 
+/* Audit tab: supplier list view, section 2 of the visual redesign.
+   Scoped entirely to #view-audit -- reuses the existing steel/orange
+   tokens only (no new colors), consistent with the dark detail
+   dialog's own "dark readout chip on a light card" motif rather than
+   converting the whole list to dark -- same light-outer/dark-inner
+   composition as the reference image. */
+#view-audit .panel-head{
+  background:var(--steel-900);color:#fff;
+  border-bottom:1px solid var(--steel-700);
+  border-left:3px solid var(--orange);
+}
+#view-audit .panel-head .panel-title{color:#fff}
+#view-audit .panel-head .count{color:var(--steel-300)}
+#view-audit .results .card{
+  border-left:3px solid transparent;
+  transition:box-shadow .15s,border-left-color .15s,transform .15s;
+}
+#view-audit .results .card:hover{border-left-color:var(--orange);transform:translateX(2px)}
+#view-audit .card-name{font-size:22px}
+#view-audit .score{background:var(--steel-900);border-color:var(--steel-900)}
+#view-audit .score-label{color:var(--steel-300)}
+#view-audit .score-val{color:var(--orange)}
+
 .card-body{padding:12px 16px 16px}
 .section-rule{
   font-family:'IBM Plex Mono',monospace;font-size:10px;
