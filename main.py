@@ -65,14 +65,10 @@ def init_db() -> None:
     console.print(f"[green]OK[/green] Schema version: [bold]{version}[/bold]")
 
 
-# Maps a --category value to its checked-in roster directory (see
-# data/source_files/<dir>/README.md) -- one entry per audited category.
-# Deliberately a small hardcoded dict, not a filesystem scan: a category
-# with no roster checked in yet should fail with a clear message, not
-# silently list itself as available with zero candidates.
-_STATUS_CATEGORY_ROSTERS = {
-    "injection moulding": "injection_moulding_100",
-}
+# Moved to batch/category_roster.py (CATEGORY_ROSTERS) so api/app.py's
+# Audit endpoints can share the exact same category->roster mapping and
+# confirmed/excluded resolution logic, not a second independently-drifting
+# copy of it.
 
 
 @cli.command("status")
@@ -114,59 +110,36 @@ def status(category: Optional[str]) -> None:
 
 
 def _status_for_category(category: str) -> None:
-    import csv
-    from pathlib import Path
-
     from deduplication.domain_utils import extract_domain
+    from batch.category_roster import CATEGORY_ROSTERS, read_roster_csv, resolve_confirmed_suppliers, roster_dir_for_category
 
-    roster_dir_name = _STATUS_CATEGORY_ROSTERS.get(category.strip().lower())
-    if roster_dir_name is None:
-        supported = ", ".join(repr(k) for k in _STATUS_CATEGORY_ROSTERS) or "(none yet)"
+    roster_dir = roster_dir_for_category(category)
+    if roster_dir is None:
+        supported = ", ".join(repr(k) for k in CATEGORY_ROSTERS) or "(none yet)"
         console.print(f"[yellow]No roster checked in for --category {category!r}. Supported: {supported}[/yellow]")
         return
 
-    roster_dir = Path(__file__).parent / "data" / "source_files" / roster_dir_name
-    if not roster_dir.exists():
-        console.print(f"[red]X[/red] Roster directory missing: {roster_dir}")
-        return
-
-    def _read(fname: str) -> List[dict]:
-        with open(roster_dir / fname, encoding="utf-8-sig") as f:
-            return list(csv.DictReader(f))
-
     repo = SupplierRepository()
 
-    def _resupplied(website: str):
-        domain = extract_domain(website or "")
-        return repo.find_by_domain(domain) if domain else None
+    confirmed_resolution = resolve_confirmed_suppliers(category, repo)
+    confirmed_now = len(confirmed_resolution["suppliers"])
+    drifted_to_excluded = confirmed_resolution["drifted_to_excluded"]
+    missing = confirmed_resolution["missing"]
 
-    confirmed_roster = _read("confirmed.csv")
-    excluded_roster = _read("excluded.csv")
-
-    confirmed_now = 0
-    drifted_to_excluded = []
-    missing = []
-    for r in confirmed_roster:
-        supplier = _resupplied(r["Website"])
-        if supplier is None:
-            missing.append(r["Company Name"])
-        elif supplier.get("flagged"):
-            drifted_to_excluded.append(r["Company Name"])
-        else:
-            confirmed_now += 1
-
+    excluded_roster = read_roster_csv(roster_dir, "excluded.csv")
     excluded_now = 0
     drifted_to_confirmed = []
     for r in excluded_roster:
-        supplier = _resupplied(r["Website"])
+        domain = extract_domain(r.get("Website") or "")
+        supplier = repo.find_by_domain(domain) if domain else None
         if supplier is not None and not supplier.get("flagged"):
             drifted_to_confirmed.append(r["Company Name"])
         else:
             excluded_now += 1
 
-    dead_count = len(_read("genuinely_dead.csv"))
-    mismatch_count = len(_read("name_mismatch.csv"))
-    rejected_count = len(_read("other_rejected.csv"))
+    dead_count = len(read_roster_csv(roster_dir, "genuinely_dead.csv"))
+    mismatch_count = len(read_roster_csv(roster_dir, "name_mismatch.csv"))
+    rejected_count = len(read_roster_csv(roster_dir, "other_rejected.csv"))
 
     total = confirmed_now + excluded_now + dead_count + mismatch_count + rejected_count + len(missing)
 
@@ -1044,6 +1017,89 @@ def extract_capabilities(force: bool, limit: int, no_photos: bool) -> None:
     console.print(table)
     if no_photos:
         console.print("[dim]Photo assessment skipped. Drop --no-photos to include it.[/dim]")
+
+
+@cli.command("extract-catalogue-depth")
+@click.option("--supplier-id", type=int, default=None, help="Extract for one specific supplier by id.")
+@click.option("--pending", is_flag=True,
+              help="Batch mode: extract for every supplier needing it (never attempted before).")
+@click.option("--limit", default=20, show_default=True,
+              help="Stop after this many suppliers in --pending mode. Each one costs a real gpt-4o "
+                   "call per page (no new HTTP fetch -- reads already-collected pages on disk; gpt-4o, "
+                   "not the cheaper gpt-4o-mini most other extraction stages use -- confirmed live that "
+                   "mini misses even clear-cut evidence on this specific task), start small on a first run.")
+@click.option("--force", is_flag=True,
+              help="In --pending mode, re-extract every supplier, not just ones never attempted.")
+def extract_catalogue_depth(supplier_id: Optional[int], pending: bool, limit: int, force: bool) -> None:
+    """Evidence-only catalogue-depth signals (customer-logos section, named
+    case studies, specific process/machine detail vs. generic marketing
+    language) from a supplier's own ALREADY-COLLECTED website pages -- no new
+    crawl, just an OpenAI call per supplier reading HTML already saved on
+    disk by a prior `batch-upload`/`collect` run. Never writes a verdict --
+    purely evidence for criterion A (Website Deep-Dive) in the buyer tracker
+    export, same discipline as Certifications Claimed. A supplier with no
+    successful collection run on file is skipped (marked attempted, not
+    retried forever), not fetched live -- see
+    verification/catalogue_depth_service.py's own docstring, including a
+    real caveat about source-URL precision worth reading before trusting
+    the evidence column's links.
+
+    Either --supplier-id ONE or --pending a batch. On a first run, start
+    small:
+
+        python main.py extract-catalogue-depth --pending --limit 5
+    """
+    from verification.catalogue_depth_service import CatalogueDepthService
+
+    if not supplier_id and not pending:
+        console.print("[red]X[/red] Specify either --supplier-id or --pending.")
+        return
+
+    service = CatalogueDepthService()
+    if supplier_id:
+        outcome = service.extract(supplier_id)
+        console.print(f"[green]OK[/green] Supplier #{supplier_id}: {outcome}")
+        return
+
+    outcome = service.extract_pending(limit=limit, force=force)
+    table = Table(show_header=False)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Count", justify="right", style="magenta")
+    for key in ("attempted", "extracted", "unavailable", "total_eligible", "status"):
+        table.add_row(key.replace("_", " "), str(outcome.get(key, "")))
+    console.print(table)
+
+
+@cli.command("import-ris-findings")
+@click.argument("xlsx_path", type=click.Path(exists=True))
+def import_ris_findings_cmd(xlsx_path: str) -> None:
+    """One-time import of reverse-image-search evidence (Verification Flag,
+    Exact Duplicate Domains, Other Matching Domains) from an external local
+    geocode/Street-View/RIS pipeline's own spreadsheet -- there is no live RIS
+    pipeline in this codebase; this reads a "Supplier Audit"-sheet-shaped xlsx
+    (same columns build_tracker_workbook produces, plus those three) and
+    writes them onto each matched supplier's row. Matches by domain first,
+    falls back to fuzzy company-name matching -- see batch/ris_importer.py's
+    own docstring. Every unmatched row is reported, never silently dropped.
+    Safe to re-run (overwrites with the same values on a re-import of the
+    same file)."""
+    from batch.ris_importer import import_ris_findings
+
+    result = import_ris_findings(xlsx_path)
+
+    table = Table(show_header=False)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Count", justify="right", style="magenta")
+    table.add_row("matched by domain", str(result.matched_by_domain))
+    table.add_row("matched by name (fuzzy fallback)", str(result.matched_by_name))
+    table.add_row("imported", str(len(result.imported_supplier_ids)))
+    table.add_row("unmatched", str(len(result.unmatched)))
+    console.print(table)
+
+    if result.unmatched:
+        console.print("\n[yellow]! Unmatched rows (no supplier found by domain or fuzzy name):[/yellow]")
+        for row in result.unmatched:
+            console.print(f"    - {row.get('Supplier Name')!r} ({row.get('Website')!r})")
 
 
 @cli.command("search")

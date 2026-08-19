@@ -108,6 +108,8 @@ SUPPLIER_WRITABLE_FIELDS: Sequence[str] = (
     "companies_house_number", "companies_house_status", "companies_house_registered_office",
     "companies_house_incorporated_at", "companies_house_sic_codes",
     "companies_house_match_status", "companies_house_match_confidence", "companies_house_checked_at",
+    "catalogue_depth_extracted_at",
+    "ris_verification_flag", "ris_exact_duplicate_domains", "ris_other_matching_domains", "ris_imported_at",
 )
 
 SCORE_FIELDS: Sequence[str] = (
@@ -1265,6 +1267,72 @@ class SupplierRepository:
         self.update_supplier_fields(
             supplier_id, {"capability_extracted_at": datetime.now(timezone.utc).isoformat()}
         )
+
+    def add_catalogue_signal_finding(self, supplier_id: int, finding: Dict[str, Any]) -> Optional[int]:
+        """Insert one catalogue-depth signal finding. Idempotent on
+        (supplier_id, signal_type, evidence) via the table's own UNIQUE
+        constraint -- re-running extraction against a page that hasn't
+        changed inserts nothing new. Returns the new row id, or `None`
+        if this exact finding was already on file (not an error --
+        `INSERT OR IGNORE` never raises for a uniqueness collision).
+
+        `finding` is expected to have the same keys as
+        `verification.catalogue_depth_extractor.CatalogueSignalFinding`'s
+        fields: signal_type, evidence, source_url.
+        """
+        columns = ("supplier_id", "signal_type", "evidence", "source_url")
+        payload = {"supplier_id": supplier_id, **{c: finding.get(c) for c in columns if c != "supplier_id"}}
+        col_sql = ", ".join(payload.keys())
+        placeholders = ", ".join("?" for _ in payload)
+        with connection_scope(self.db_path) as conn:
+            cur = conn.execute(
+                f"INSERT OR IGNORE INTO supplier_catalogue_signals ({col_sql}) VALUES ({placeholders})",
+                list(payload.values()),
+            )
+            return cur.lastrowid if cur.rowcount > 0 else None
+
+    def get_catalogue_signals(self, supplier_id: int) -> List[Dict[str, Any]]:
+        with connection_scope(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM supplier_catalogue_signals WHERE supplier_id = ? ORDER BY assessed_at DESC",
+                (supplier_id,),
+            ).fetchall()
+            return _rows_to_dicts(rows)
+
+    def mark_catalogue_depth_extraction_attempted(self, supplier_id: int) -> None:
+        """Same never-attempted-vs-attempted-and-found-nothing discipline
+        as `mark_capability_extraction_attempted` -- call once per
+        supplier per extraction pass regardless of outcome (no
+        collection artifacts on disk, a fetch/parse failure, or zero
+        signals found are all real, durable facts, not reasons to
+        retry forever)."""
+        self.update_supplier_fields(
+            supplier_id, {"catalogue_depth_extracted_at": datetime.now(timezone.utc).isoformat()}
+        )
+
+    def get_suppliers_needing_catalogue_depth_extraction(
+        self, limit: int = 20, force: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Suppliers that haven't had catalogue-depth extraction
+        attempted yet. Mirrors `get_suppliers_needing_capability_extraction`'s
+        own timestamp-gated pattern exactly -- `catalogue_depth_extracted_at
+        IS NULL` is "never attempted," not "attempted, no collection
+        artifacts available." Not filtered on `domain IS NOT NULL` here
+        (unlike the capability-extraction query) since availability for
+        this stage depends on a prior successful collection_runs row,
+        not just a domain -- checked by the caller
+        (CatalogueDepthService), which marks attempted either way so a
+        supplier that never went through collection isn't re-checked
+        forever."""
+        with connection_scope(self.db_path) as conn:
+            if force:
+                rows = conn.execute("SELECT * FROM suppliers LIMIT ?", (limit,)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM suppliers WHERE catalogue_depth_extracted_at IS NULL LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return _rows_to_dicts(rows, SUPPLIER_JSON_FIELDS)
 
     def enrich_contact_details(
         self, supplier_id: int, *, emails: List[str], phones: List[str],

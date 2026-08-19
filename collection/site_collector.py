@@ -38,7 +38,7 @@ _find_image_urls/_has_contact_form are reimplemented here (not imported
 from OwnWebsiteScraper) because they're private instance methods on
 that class, not standalone functions -- reaching across to call another
 class's private methods would be more fragile than the small amount of
-duplication this avoids. _html_to_text IS a standalone module function
+duplication this avoids. html_to_text IS a standalone module function
 there and is imported directly.
 """
 
@@ -55,7 +55,7 @@ from collection.artifact_store import ArtifactStore
 from collection.proxy_provider import NoProxyProvider, ProxyProvider
 from collection.schemas import CertificateDocument, CollectedPage, CollectionResult
 from config.settings import COLLECTION_PAGE_TIMEOUT_MS, MAX_CERTIFICATE_DOWNLOADS
-from scrapers.own_website_scraper import _html_to_text
+from scrapers.own_website_scraper import html_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +189,7 @@ def _extract_footer_text(html: str) -> str:
     """Text content of the page's <footer> element, if any -- company
     address/registration details are disproportionately likely to live
     here. Empty string if no <footer> tag is present, matching
-    _html_to_text's own "nothing found" convention -- a natural fit for
+    html_to_text's own "nothing found" convention -- a natural fit for
     batch_service.py's address-extraction candidate-building, which
     treats an empty string as "this tier has no candidate."""
     soup = BeautifulSoup(html, "html.parser")
@@ -526,7 +526,7 @@ class SiteCollector:
 
         collected = CollectedPage(
             url=resolved_url,
-            text=_html_to_text(html),
+            text=html_to_text(html),
             image_urls=_find_image_urls(resolved_url, html),
             has_contact_form=_has_contact_form(html),
             screenshot_path=screenshot_relpath,

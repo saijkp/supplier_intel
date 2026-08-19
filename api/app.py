@@ -842,3 +842,84 @@ def get_procurement_outcomes(
     if repo.get_supplier(supplier_id) is None:
         raise HTTPException(status_code=404, detail="Supplier not found")
     return [_to_outcome_response(o) for o in repo.get_procurement_outcomes(supplier_id=supplier_id)]
+
+
+# ═════════════════════════════════════════════════════
+# Audit (Stage 1 -- read-only evidence view, frontend/index.html's
+# "Audit" tab). Backed entirely by batch/category_roster.py and
+# batch/tracker_exporter.py's own evidence-assembly logic -- no new
+# business logic lives here, same "thin HTTP wrapper" discipline this
+# whole file follows (see module docstring). No response_model
+# declared for the dict-shaped routes, matching the existing precedent
+# at backfill_discovery_product_keywords -- the evidence bundle's
+# shape is still settling (Stage 2 will extend it) and isn't worth a
+# a full Pydantic model yet.
+# ═════════════════════════════════════════════════════
+
+
+@app.get("/audit/categories", dependencies=[Depends(require_api_token)])
+def list_audit_categories() -> Dict[str, Any]:
+    from batch.category_roster import CATEGORY_ROSTERS, roster_dir_for_category
+
+    return {
+        "categories": [
+            {"name": name, "available": roster_dir_for_category(name) is not None}
+            for name in CATEGORY_ROSTERS
+        ]
+    }
+
+
+@app.get("/audit/suppliers", dependencies=[Depends(require_api_token)])
+def list_audit_suppliers(
+    category: str, repo: SupplierRepository = Depends(get_repo),
+) -> Dict[str, Any]:
+    """Confirmed suppliers for `category`, sorted by evidence
+    completeness (most review-ready first) -- the exact same
+    evidence_score/Sort Key logic build_tracker_export's own row order
+    uses, reused via batch.tracker_exporter.evidence_score rather than
+    re-derived here. 404 if the category has no roster checked in
+    (distinct from "roster exists but currently has zero confirmed
+    suppliers," which returns an empty list, not a 404)."""
+    from batch.category_roster import resolve_confirmed_suppliers, roster_dir_for_category
+    from batch.tracker_exporter import evidence_score
+
+    if roster_dir_for_category(category) is None:
+        raise HTTPException(status_code=404, detail=f"No roster checked in for category {category!r}")
+
+    resolution = resolve_confirmed_suppliers(category, repo)
+    suppliers = resolution["suppliers"]
+    rows = [
+        {
+            "supplier_id": s["id"],
+            "canonical_name": s.get("canonical_name") or "",
+            "domain": s.get("domain") or "",
+            "country": s.get("country") or "",
+            "evidence_score": evidence_score(s),
+        }
+        for s in suppliers
+    ]
+    rows.sort(key=lambda r: (-r["evidence_score"], r["canonical_name"].lower()))
+
+    return {
+        "category": category,
+        "suppliers": rows,
+        "drifted_to_excluded": resolution["drifted_to_excluded"],
+        "missing": resolution["missing"],
+    }
+
+
+@app.get("/audit/suppliers/{supplier_id}", dependencies=[Depends(require_api_token)])
+def get_audit_supplier(
+    supplier_id: int, repo: SupplierRepository = Depends(get_repo),
+) -> Dict[str, Any]:
+    """The full evidence bundle for one supplier -- see
+    batch.tracker_exporter.build_supplier_evidence_bundle's own
+    docstring for exactly what's included. Purely a read: no LLM call,
+    no write, nothing inferred or summarized -- everything in the
+    response is already-stored evidence, verbatim."""
+    from batch.tracker_exporter import build_supplier_evidence_bundle
+
+    bundle = build_supplier_evidence_bundle(supplier_id, repo)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    return bundle

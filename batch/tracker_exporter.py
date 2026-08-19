@@ -16,11 +16,15 @@ Flagged/Y into them; see PASTE_RANGE_COLUMNS's own comment.
 
 Evidence/helper columns (a Website Note, per-field source URLs,
 candidate facility photos, a Street View link, a LinkedIn search link,
-certification evidence, the discovery pipeline's own gate-pass reason
-text, Companies House match status (blank unless main.py
-verify-uk-company has run -- see standing rule 9 in CLAUDE.md),
-D-search snippets, Checks Remaining, Sort Key) are appended AFTER Date
-Reviewed -- outside the paste range, so the
+certification evidence, catalogue-depth evidence (customer-logos
+section / named case studies / specific process-machine detail, blank
+unless main.py extract-catalogue-depth has run -- see
+verification/catalogue_depth_service.py, including a real caveat
+there about its source_url being a local file path, not a web link),
+the discovery pipeline's own gate-pass reason text, Companies House
+match status (blank unless main.py verify-uk-company has run -- see
+standing rule 9 in CLAUDE.md), D-search snippets, Checks Remaining,
+Sort Key) are appended AFTER Date Reviewed -- outside the paste range, so the
 main block still pastes in clean while the evidence needed to audit
 each value stays in the same file, one click away. Street View/
 LinkedIn links are both free Google search-links, never an automated
@@ -89,6 +93,7 @@ EVIDENCE_COLUMNS: Tuple[str, ...] = (
     "Factory Location Source URL",
     "Candidate Facility Photo URLs", "Street View Link", "LinkedIn Search Link",
     "Certifications Claimed (source + evidence)",
+    "Catalogue Depth Signals (source + evidence)",
     "Discovery Validation Reason", "Companies House Status",
     "D-Search: Scam", "D-Search: Review", "D-Search: Factory Tour",
     "Checks Remaining", "Sort Key (helper)",
@@ -101,7 +106,7 @@ REMOVED_CANDIDATES_COLUMNS: Tuple[str, ...] = ("Company Name", "Website", "Reaso
 # brand-new candidate rows, which never have any of A-D pre-filled.
 _CHECKS_REMAINING_ON_A_FRESH_EXPORT = "A, B, C, D"
 
-# The fields _evidence_score checks -- one point each, so Sort Key
+# The fields evidence_score checks -- one point each, so Sort Key
 # (helper) ranges 0-4. Used to rank rows by how much evidence is
 # already on file (most review-ready first), never as a Qualified
 # judgment -- it says nothing about whether the evidence is GOOD, only
@@ -109,7 +114,11 @@ _CHECKS_REMAINING_ON_A_FRESH_EXPORT = "A, B, C, D"
 _EVIDENCE_SCORE_FIELDS: Tuple[str, ...] = ("address", "primary_phone", "primary_email", "factory_location")
 
 
-def _evidence_score(supplier: Dict[str, Any]) -> int:
+def evidence_score(supplier: Dict[str, Any]) -> int:
+    """Public (not module-private) since api/app.py's Audit endpoints
+    also sort a supplier list by this -- same "list confirmed
+    suppliers by evidence completeness" question build_tracker_export's
+    own row-sort already answers, reused rather than reimplemented."""
     return sum(1 for field in _EVIDENCE_SCORE_FIELDS if supplier.get(field))
 
 
@@ -199,6 +208,33 @@ def _certifications_claimed(repo: SupplierRepository, supplier_id: int) -> str:
     return " | ".join(parts)
 
 
+_CATALOGUE_SIGNAL_LABELS = {
+    "customer_logos_section": "Customer logos",
+    "named_case_studies": "Named case study",
+    "specific_process_detail": "Specific process/machine detail",
+}
+
+
+def _catalogue_depth_signals(repo: SupplierRepository, supplier_id: int) -> str:
+    """Export-only surfacing of catalogue-depth evidence the separate
+    catalogue_depth_extractor.py stage already found (customer-logos
+    section / named case studies / specific process-machine detail) --
+    no new extraction here, same pattern as _certifications_claimed.
+    Blank for a supplier that stage has never run against. Note:
+    `source_url` here is a LOCAL ARTIFACT FILE PATH, not a web URL --
+    see verification/catalogue_depth_service.py's own docstring for
+    why (SiteCollector never persists a per-page URL mapping after a
+    collection run ends, and guessing one from the lossy filename slug
+    would present an inferred value as a stated fact)."""
+    parts = []
+    for sig in repo.get_catalogue_signals(supplier_id):
+        label = _CATALOGUE_SIGNAL_LABELS.get(sig.get("signal_type"), sig.get("signal_type") or "")
+        source = sig.get("source_url") or ""
+        evidence = (sig.get("evidence") or "").strip()
+        parts.append(f'{label} [{source}] "{evidence}"')
+    return " | ".join(parts)
+
+
 def _discovery_validation_reason(repo: SupplierRepository, supplier_id: int) -> str:
     """Export-only surfacing of discovery.candidate_validator's own
     gate reason text for whichever raw_source_data row most recently
@@ -275,7 +311,7 @@ def build_tracker_export(supplier_ids: List[int], repo: Optional[SupplierReposit
         if supplier is None:
             continue
         scored.append((
-            _evidence_score(supplier), (supplier.get("canonical_name") or "").lower(), supplier_id, supplier,
+            evidence_score(supplier), (supplier.get("canonical_name") or "").lower(), supplier_id, supplier,
         ))
     scored.sort(key=lambda t: (-t[0], t[1]))
 
@@ -308,6 +344,7 @@ def build_tracker_export(supplier_ids: List[int], repo: Optional[SupplierReposit
             _street_view_link(address),
             _linkedin_search_link(supplier.get("canonical_name") or ""),
             _certifications_claimed(repo, supplier_id),
+            _catalogue_depth_signals(repo, supplier_id),
             _discovery_validation_reason(repo, supplier_id),
             _companies_house_status(supplier),
             _reputation_snippets(repo, supplier_id, "scam"),
@@ -415,3 +452,97 @@ def build_tracker_workbook(
     buffer = io.BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()
+
+
+def build_supplier_evidence_bundle(
+    supplier_id: int, repo: Optional[SupplierRepository] = None,
+) -> Optional[Dict[str, Any]]:
+    """One supplier's complete evidence picture as structured JSON --
+    built for api/app.py's Audit endpoints (GET /audit/suppliers/{id}),
+    reusing every one of this module's own evidence helpers verbatim
+    (_website_note, _latest_provenance_source_url, _phone_source_pages,
+    _street_view_link, _linkedin_search_link, evidence_score,
+    _discovery_validation_reason) rather than re-deriving any of them.
+    Multi-item evidence (certifications, catalogue-depth signals,
+    reputation snippets) is read from the same repository methods
+    build_tracker_export itself calls, just returned as structured
+    lists here instead of the single flattened "term [url] "evidence""
+    string a CSV cell needs -- same underlying data, better shape for
+    a web page to render.
+
+    Returns None if no supplier exists with this id -- the caller
+    (an API route) turns that into a 404, this module has no HTTP
+    concept of its own.
+
+    Purely a read -- assembles and returns already-stored evidence,
+    never calls an LLM and never writes anything. A-D/Qualified are
+    deliberately NOT included here: this bundle is Stage 1 (read-only
+    evidence display) only, verdict capture is a separate, not-yet-
+    built concern (see audit_verdicts, still just a plan)."""
+    repo = repo or SupplierRepository()
+    supplier = repo.get_supplier(supplier_id)
+    if supplier is None:
+        return None
+
+    address = supplier.get("address") or ""
+
+    return {
+        "supplier_id": supplier_id,
+        "canonical_name": supplier.get("canonical_name") or "",
+        "domain": supplier.get("domain") or "",
+        "country": supplier.get("country") or "",
+        "evidence_score": evidence_score(supplier),
+        "flagged": bool(supplier.get("flagged")),
+        "flag_reason": supplier.get("flag_reason") or "",
+        "contact": {
+            "address": address,
+            "phone": supplier.get("primary_phone") or "",
+            "email": supplier.get("primary_email") or "",
+            "factory_location": supplier.get("factory_location") or "",
+        },
+        "website_note": _website_note(repo, supplier_id, supplier.get("domain") or ""),
+        "source_urls": {
+            "address": _latest_provenance_source_url(repo, supplier_id, "address"),
+            "factory_location": _latest_provenance_source_url(repo, supplier_id, "factory_location"),
+            "phone_source_pages": _phone_source_pages(repo, supplier),
+            "email_source_pages": list(supplier.get("contact_source_pages") or []),
+        },
+        "candidate_facility_photo_urls": list(supplier.get("candidate_facility_photo_urls") or []),
+        "street_view_link": _street_view_link(address),
+        "linkedin_search_link": _linkedin_search_link(supplier.get("canonical_name") or ""),
+        "companies_house": {
+            "match_status": supplier.get("companies_house_match_status"),
+            "match_confidence": supplier.get("companies_house_match_confidence"),
+            "status": supplier.get("companies_house_status"),
+            "number": supplier.get("companies_house_number"),
+            "registered_office": supplier.get("companies_house_registered_office"),
+            "incorporated_at": supplier.get("companies_house_incorporated_at"),
+            "checked_at": supplier.get("companies_house_checked_at"),
+        },
+        "certifications_claimed": [
+            {
+                "term": cap.get("canonical_term") or cap.get("reported_term"),
+                "source_url": cap.get("source_url"),
+                "evidence": cap.get("evidence"),
+            }
+            for cap in repo.get_capabilities(supplier_id) if cap.get("category") == "standard"
+        ],
+        "catalogue_depth_signals": [
+            {"signal_type": s.get("signal_type"), "evidence": s.get("evidence"), "source_url": s.get("source_url")}
+            for s in repo.get_catalogue_signals(supplier_id)
+        ],
+        "reverse_image_search": {
+            "verification_flag": supplier.get("ris_verification_flag"),
+            "exact_duplicate_domains": supplier.get("ris_exact_duplicate_domains"),
+            "other_matching_domains": supplier.get("ris_other_matching_domains"),
+            "imported_at": supplier.get("ris_imported_at"),
+        },
+        "reputation_snippets": {
+            query_type: [
+                {"title": s.get("title"), "snippet": s.get("snippet"), "link": s.get("link")}
+                for s in repo.get_reputation_snippets(supplier_id, query_type=query_type)
+            ]
+            for query_type in ("scam", "review", "factory_tour")
+        },
+        "discovery_validation_reason": _discovery_validation_reason(repo, supplier_id),
+    }

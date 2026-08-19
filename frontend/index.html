@@ -290,6 +290,19 @@ dialog{
   background:var(--surface);box-shadow:0 24px 60px rgba(15,27,45,.28);
 }
 dialog::backdrop{background:rgba(15,27,45,.5)}
+dialog.dlg-wide{max-width:880px;max-height:calc(100vh - 64px)}
+dialog.dlg-wide .dlg-body{max-height:calc(100vh - 180px);overflow-y:auto}
+.evidence-section{margin-bottom:18px}
+.evidence-section h3{
+  font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:14px;
+  letter-spacing:.06em;text-transform:uppercase;color:var(--steel-500);
+  margin:0 0 8px;padding-bottom:6px;border-bottom:1px solid var(--rule);
+}
+.evidence-row{padding:6px 0;font-size:13px;line-height:1.5;border-bottom:1px dashed var(--rule)}
+.evidence-row:last-child{border-bottom:none}
+.evidence-label{color:var(--steel-500);font-weight:600;margin-right:6px}
+.evidence-quote{color:var(--steel-700);font-style:italic}
+.evidence-empty{color:var(--steel-300);font-size:13px;font-style:italic}
 .dlg-head{padding:14px 18px;border-bottom:1px solid var(--rule);background:var(--steel-900);color:#fff}
 .dlg-title{
   font-family:'Barlow Condensed',sans-serif;font-weight:700;
@@ -326,6 +339,7 @@ dialog::backdrop{background:rgba(15,27,45,.5)}
       <button data-view="discover">Discover &amp; enrich</button>
       <button data-view="source">Source</button>
       <button data-view="compare">Compare</button>
+      <button data-view="audit">Audit</button>
     </nav>
     <div class="conn">
       <span class="dot" id="connDot"></span>
@@ -507,6 +521,36 @@ dialog::backdrop{background:rgba(15,27,45,.5)}
       </div>
     </div>
   </section>
+
+  <!-- ══ AUDIT ═══════════════════════════════════════════ -->
+  <!-- Stage 1: read-only evidence view. Nothing on this tab infers or
+       summarizes anything -- every value shown is already stored,
+       displayed verbatim with its own source link where one exists.
+       No A/B/C/D/Qualified capture here yet (Stage 2, not built). -->
+  <section id="view-audit" class="hidden">
+    <div class="split">
+      <aside class="panel rail">
+        <div class="panel-head"><h2 class="panel-title">Category</h2></div>
+        <div class="panel-body">
+          <div class="field">
+            <label class="label" for="auditCategory">Audited category</label>
+            <select class="input" id="auditCategory"></select>
+          </div>
+          <button class="btn btn-primary btn-block" id="btnAuditLoad">Load confirmed suppliers</button>
+          <p class="hint">Sorted by evidence completeness (same Sort Key logic the tracker export uses) -- most review-ready first.</p>
+        </div>
+      </aside>
+
+      <div>
+        <div id="auditAlert"></div>
+        <div class="panel-head panel" style="margin-bottom:12px">
+          <h2 class="panel-title">Confirmed suppliers</h2>
+          <span class="count" id="auditCount"></span>
+        </div>
+        <div class="results" id="auditResults"></div>
+      </div>
+    </div>
+  </section>
 </main>
 
 <!-- ══ CONNECTION DIALOG ═════════════════════════════════ -->
@@ -529,6 +573,17 @@ dialog::backdrop{background:rgba(15,27,45,.5)}
     <div class="dlg-foot">
       <button class="btn btn-ghost" value="cancel">Cancel</button>
       <button class="btn btn-primary" id="btnConnect" value="default">Connect</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ══ AUDIT DETAIL DIALOG ═══════════════════════════════ -->
+<dialog id="auditDetailDialog" class="dlg-wide">
+  <form method="dialog">
+    <div class="dlg-head"><h2 class="dlg-title" id="auditDetailTitle">Supplier</h2></div>
+    <div class="dlg-body" id="auditDetailBody"></div>
+    <div class="dlg-foot">
+      <button class="btn btn-ghost" value="cancel">Close</button>
     </div>
   </form>
 </dialog>
@@ -665,11 +720,12 @@ $("nav").addEventListener("click", (e) => {
   const view = btn.dataset.view;
   document.querySelectorAll("#nav button").forEach(b =>
     b.setAttribute("aria-current", b === btn ? "page" : "false"));
-  ["search","discover","source","compare"].forEach(v =>
+  ["search","discover","source","compare","audit"].forEach(v =>
     $("view-" + v).classList.toggle("hidden", v !== view));
   if (view === "discover") loadJobs();
   if (view === "source") initSourceView();
   if (view === "compare") initCompareView();
+  if (view === "audit") initAuditView();
 });
 
 /* ═══ Supplier cards ════════════════════════════════════════ */
@@ -1476,6 +1532,189 @@ $("rankByGroup").addEventListener("click", (e) => {
   });
   renderCompareTable();
 });
+
+/* ═══ Audit (Stage 1 -- read-only evidence view) ══════════════ */
+/* Every render function here only ever displays a value that's
+   already in the API response, verbatim, with a link where the
+   bundle provides a source_url -- nothing here infers, summarizes, or
+   computes a verdict. Stage 2 (A/B/C/D/Qualified capture) isn't built
+   yet; this tab is read-only end to end. */
+let auditCategoriesLoaded = false;
+
+async function initAuditView() {
+  if (auditCategoriesLoaded) return;
+  const sel = $("auditCategory");
+  try {
+    const data = await api("/audit/categories");
+    sel.innerHTML = (data.categories || []).map(c =>
+      `<option value="${esc(c.name)}" ${c.available ? "" : "disabled"}>${esc(c.name)}${c.available ? "" : " (no roster)"}</option>`
+    ).join("") || `<option value="">No categories available</option>`;
+    auditCategoriesLoaded = true;
+  } catch (err) {
+    explain(err, $("auditAlert"));
+  }
+}
+
+$("btnAuditLoad").addEventListener("click", loadAuditSuppliers);
+
+async function loadAuditSuppliers() {
+  const category = $("auditCategory").value;
+  const host = $("auditResults");
+  const alertHost = $("auditAlert");
+  alertBox(alertHost, 0);
+  if (!category) {
+    alertBox(alertHost, 1, "Pick a category", "Choose an audited category first.");
+    return;
+  }
+  host.innerHTML = `<div class="empty"><div class="empty-title">Loading…</div></div>`;
+  try {
+    const data = await api("/audit/suppliers?category=" + encodeURIComponent(category));
+    $("auditCount").textContent = data.suppliers.length + " confirmed";
+    if (!data.suppliers.length) {
+      host.innerHTML = `<div class="empty"><div class="empty-title">No confirmed suppliers</div></div>`;
+    } else {
+      host.innerHTML = data.suppliers.map(auditSupplierCard).join("");
+      host.querySelectorAll("[data-audit-id]").forEach(el => {
+        el.addEventListener("click", () => openAuditDetail(el.dataset.auditId, el.dataset.auditName));
+      });
+    }
+    if (data.drifted_to_excluded.length || data.missing.length) {
+      const notes = [];
+      if (data.drifted_to_excluded.length) notes.push(`${data.drifted_to_excluded.length} roster "confirmed" candidate(s) are now flagged in the DB, excluded from this list`);
+      if (data.missing.length) notes.push(`${data.missing.length} roster "confirmed" candidate(s) no longer resolve to any supplier`);
+      alertBox(alertHost, 0, "Roster drift", notes.join("; ") + ".");
+    }
+  } catch (err) {
+    host.innerHTML = "";
+    explain(err, alertHost);
+  }
+}
+
+function auditSupplierCard(s) {
+  return `<div class="card" data-audit-id="${s.supplier_id}" data-audit-name="${esc(s.canonical_name)}" style="cursor:pointer">
+    <div class="card-head">
+      <div>
+        <div class="card-name">${esc(s.canonical_name)}</div>
+        <div class="card-meta">${esc(s.domain)}${s.country ? " · " + esc(s.country) : ""}</div>
+      </div>
+      <div class="scores">
+        <div class="score">
+          <div class="score-label">Evidence</div>
+          <div class="score-val">${s.evidence_score}/4</div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function evidenceRow(label, value, link) {
+  if (!value) return `<div class="evidence-row"><span class="evidence-label">${esc(label)}</span><span class="evidence-empty">not on file</span></div>`;
+  const shown = link ? `<a href="${esc(link)}" target="_blank" rel="noopener">${esc(value)}</a>` : esc(value);
+  return `<div class="evidence-row"><span class="evidence-label">${esc(label)}</span>${shown}</div>`;
+}
+
+function evidenceSection(title, bodyHtml) {
+  return `<div class="evidence-section"><h3>${esc(title)}</h3>${bodyHtml}</div>`;
+}
+
+async function openAuditDetail(supplierId, name) {
+  $("auditDetailTitle").textContent = name || "Supplier";
+  $("auditDetailBody").innerHTML = `<div class="empty"><div class="empty-title">Loading…</div></div>`;
+  $("auditDetailDialog").showModal();
+  try {
+    const b = await api("/audit/suppliers/" + supplierId);
+    $("auditDetailBody").innerHTML = renderAuditDetail(b);
+  } catch (err) {
+    $("auditDetailBody").innerHTML = `<div id="auditDetailErr"></div>`;
+    explain(err, $("auditDetailErr"));
+  }
+}
+
+function renderAuditDetail(b) {
+  const sections = [];
+
+  sections.push(evidenceSection("Contact", [
+    evidenceRow("Address", b.contact.address, b.source_urls.address),
+    evidenceRow("Factory location", b.contact.factory_location, b.source_urls.factory_location),
+    evidenceRow("Phone", b.contact.phone),
+    evidenceRow("Phone source page(s)", b.source_urls.phone_source_pages),
+    evidenceRow("Email", b.contact.email),
+    evidenceRow("Email source page(s)", (b.source_urls.email_source_pages || []).join("; ")),
+  ].join("")));
+
+  if (b.website_note) {
+    sections.push(evidenceSection("Website note", `<div class="evidence-row">${esc(b.website_note)}</div>`));
+  }
+
+  sections.push(evidenceSection("Facility evidence", [
+    evidenceRow("Street View", "Open map search", b.street_view_link),
+    evidenceRow("LinkedIn search", "Open search", b.linkedin_search_link),
+    (b.candidate_facility_photo_urls || []).length
+      ? `<div class="evidence-row"><span class="evidence-label">Candidate photos</span>${
+          b.candidate_facility_photo_urls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">photo</a>`).join(", ")
+        }</div>`
+      : evidenceRow("Candidate photos", ""),
+  ].join("")));
+
+  const ch = b.companies_house;
+  if (ch.match_status) {
+    sections.push(evidenceSection("Companies House", [
+      evidenceRow("Match status", ch.match_status + (ch.match_confidence != null ? ` (confidence ${ch.match_confidence})` : "")),
+      evidenceRow("Company status", ch.status),
+      evidenceRow("Company number", ch.number),
+      evidenceRow("Registered office", ch.registered_office),
+      evidenceRow("Incorporated", ch.incorporated_at),
+      evidenceRow("Checked at", ch.checked_at),
+    ].join("")));
+  }
+
+  sections.push(evidenceSection("Certifications claimed", b.certifications_claimed.length
+    ? b.certifications_claimed.map(c =>
+        `<div class="evidence-row"><span class="evidence-label">${esc(c.term || "")}</span>
+          <span class="evidence-quote">&ldquo;${esc(c.evidence || "")}&rdquo;</span>
+          ${c.source_url ? ` — <a href="${esc(c.source_url)}" target="_blank" rel="noopener">source</a>` : ""}
+        </div>`
+      ).join("")
+    : `<div class="evidence-empty">Nothing on file (extract-capabilities not yet run, or nothing found)</div>`));
+
+  sections.push(evidenceSection("Catalogue-depth signals", b.catalogue_depth_signals.length
+    ? b.catalogue_depth_signals.map(s =>
+        `<div class="evidence-row"><span class="evidence-label">${esc((s.signal_type || "").replace(/_/g, " "))}</span>
+          <span class="evidence-quote">&ldquo;${esc(s.evidence || "")}&rdquo;</span>
+        </div>`
+      ).join("")
+    : `<div class="evidence-empty">Nothing on file (extract-catalogue-depth not yet run, or nothing found)</div>`));
+
+  const ris = b.reverse_image_search;
+  if (ris.verification_flag) {
+    sections.push(evidenceSection("Reverse image search", [
+      evidenceRow("Verification flag", ris.verification_flag),
+      evidenceRow("Exact duplicate domains", ris.exact_duplicate_domains),
+      evidenceRow("Other matching domains", ris.other_matching_domains),
+      evidenceRow("Imported at", ris.imported_at),
+    ].join("")));
+  }
+
+  const dsearch = b.reputation_snippets;
+  const dsearchHtml = ["scam", "review", "factory_tour"].map(qt => {
+    const items = dsearch[qt] || [];
+    if (!items.length) return "";
+    return `<div class="evidence-row"><span class="evidence-label">${esc(qt.replace("_", " "))}</span>
+      ${items.map(i => `${esc(i.title || "")}: ${esc(i.snippet || "")} (<a href="${esc(i.link)}" target="_blank" rel="noopener">link</a>)`).join("<br>")}
+    </div>`;
+  }).join("");
+  sections.push(evidenceSection("D-search snippets", dsearchHtml || `<div class="evidence-empty">Not run (opt-in --search-reputation)</div>`));
+
+  if (b.discovery_validation_reason) {
+    sections.push(evidenceSection("Discovery validation reason", `<div class="evidence-row">${esc(b.discovery_validation_reason)}</div>`));
+  }
+
+  if (b.flagged) {
+    sections.unshift(evidenceSection("⚠ Flagged in DB", `<div class="evidence-row">${esc(b.flag_reason || "(no reason recorded)")}</div>`));
+  }
+
+  return sections.join("");
+}
 
 /* ═══ Boot ══════════════════════════════════════════════════ */
 (async function init() {

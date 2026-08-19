@@ -97,10 +97,14 @@ class OwnWebsiteFetchResult:
     error: Optional[str] = None
 
 
-def _html_to_text(html: str) -> str:
+def html_to_text(html: str) -> str:
     """Strip markup to plain readable text. Deliberately dependency-free
     beyond BeautifulSoup, which this codebase already depends on for
-    every other scraper."""
+    every other scraper. Public (not module-private) since it's also
+    reused by verification/catalogue_depth_service.py to convert
+    already-saved collection HTML artifacts to text without a second
+    live fetch -- the same conversion this module already does for its
+    own freshly-fetched pages."""
     soup = BeautifulSoup(_SCRIPT_STYLE_RE.sub(" ", html), "html.parser")
     text = soup.get_text(separator="\n")
     lines = [line.strip() for line in text.splitlines()]
@@ -239,7 +243,7 @@ class OwnWebsiteScraper:
                     domain=domain, success=False, error=f"could not fetch homepage: {base_url}"
                 )
             pages.append(OwnWebsitePage(
-                url=base_url, text=_html_to_text(homepage_html),
+                url=base_url, text=html_to_text(homepage_html),
                 image_urls=self._find_image_urls(base_url, homepage_html),
                 has_contact_form=self._has_contact_form(homepage_html),
             ))
@@ -251,7 +255,7 @@ class OwnWebsiteScraper:
                 page_html = self._fetch(link)
                 if page_html:
                     pages.append(OwnWebsitePage(
-                        url=link, text=_html_to_text(page_html),
+                        url=link, text=html_to_text(page_html),
                         image_urls=self._find_image_urls(link, page_html),
                         has_contact_form=self._has_contact_form(page_html),
                     ))

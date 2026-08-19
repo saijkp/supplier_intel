@@ -144,6 +144,14 @@ SOURCING_PARALLEL_WORKERS: int = int(os.getenv("SOURCING_PARALLEL_WORKERS") or 3
 FACTORY_FACTS_JOB_MAX_SECONDS: int = int(os.getenv("FACTORY_FACTS_JOB_MAX_SECONDS") or 600)
 FACTORY_FACTS_MAX_CONCURRENT_JOBS: int = int(os.getenv("FACTORY_FACTS_MAX_CONCURRENT_JOBS") or 1)
 
+# --- Catalogue Depth Service (verification/catalogue_depth_service.py) --
+# Same wall-clock-budget / process-wide-semaphore safeguards, applied to
+# catalogue-depth-signal extraction batches (a separate, opt-in,
+# per-supplier OpenAI call over already-collected pages -- see
+# verification/catalogue_depth_extractor.py).
+CATALOGUE_DEPTH_JOB_MAX_SECONDS: int = int(os.getenv("CATALOGUE_DEPTH_JOB_MAX_SECONDS") or 600)
+CATALOGUE_DEPTH_MAX_CONCURRENT_JOBS: int = int(os.getenv("CATALOGUE_DEPTH_MAX_CONCURRENT_JOBS") or 1)
+
 # --- FastAPI layer (api/app.py) -----------------------------------------
 # A single shared-secret token, not per-user auth -- see api/auth.py's
 # own module docstring for why that's a deliberate v1 choice, not an
