@@ -212,6 +212,7 @@ _CATALOGUE_SIGNAL_LABELS = {
     "customer_logos_section": "Customer logos",
     "named_case_studies": "Named case study",
     "specific_process_detail": "Specific process/machine detail",
+    "self_described_role": "Self-described role",
 }
 
 

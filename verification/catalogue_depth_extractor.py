@@ -5,7 +5,7 @@ Reads a supplier's own website pages (already fetched -- see
 verification/catalogue_depth_service.py for where the text comes from)
 and extracts catalogue-depth signals: whether the site shows real
 customer/client evidence rather than generic marketing copy alone.
-Three signal types, each requiring a real quoted/described detail from
+Four signal types, each requiring a real quoted/described detail from
 the page, never inferred:
 
   - customer_logos_section: a section of the page displaying named
@@ -23,6 +23,15 @@ the page, never inferred:
     generic copy simply has nothing concrete to quote, so it produces
     no finding, same as every other "omit rather than guess" gate in
     this codebase.
+  - self_described_role: the site's own verbatim language describing
+    what kind of company it is / its role in the supply chain (e.g.
+    "we design and manufacture," "we are a one-stop sourcing
+    platform," "we partner with factories across Asia"). Unlike the
+    other three types, this one requires a VERBATIM quote, not a
+    paraphrase -- the exact wording is the evidence. This is evidence
+    for a human to read and weigh, never a design/manufacture verdict
+    computed by this module -- nothing downstream infers
+    manufacturer-vs-trader status from it.
 
 Evidence only, for a human to weigh manually when answering the buyer
 tracker's own criterion A (Website Deep-Dive) -- this module has no
@@ -50,17 +59,20 @@ DEFAULT_MODEL = "gpt-4o"  # NOT gpt-4o-mini, unlike capability_extractor.py -- c
 # stat-card text). Costs more per supplier than mini; worth it here since mini's output would otherwise
 # be systematically wrong (silently near-zero), not just noisier.
 
-VALID_SIGNAL_TYPES = ("customer_logos_section", "named_case_studies", "specific_process_detail")
+VALID_SIGNAL_TYPES = (
+    "customer_logos_section", "named_case_studies", "specific_process_detail", "self_described_role",
+)
 
-SYSTEM_PROMPT = """List everything on this page that is one of these three things:
+SYSTEM_PROMPT = """List everything on this page that is one of these four things:
 
 1. customer_logos_section -- named customers, clients, or partners (a logo strip, "Trusted by X, Y, Z", a client list naming real companies).
 2. named_case_studies -- a specific, named project, customer, or case study described in some detail.
 3. specific_process_detail -- a concrete, specific manufacturing fact: a machine model/brand, a machine count, tonnage/capacity, a certification actually held (e.g. "ISO 9001:2015"), a named process (e.g. "EDM machining", "laser cutting"), employee count, factory size, export volume, years in business, or any other specific named/numeric detail about the company's operations. Include stat-card numbers (e.g. "80 employees", "6,000 sqm facility"), not just prose.
+4. self_described_role -- the site's own language describing what kind of company it is or its role in the supply chain: e.g. "we design and manufacture," "we are a one-stop sourcing platform," "we partner with factories across Asia," "we are a trading company specializing in...". For this type ONLY, the evidence must be the EXACT wording from the page, verbatim -- not a paraphrase or summary. This is not a verdict on whether the company actually is a manufacturer, trader, or anything else -- just what the page itself says, quoted exactly.
 
 Skip vague marketing language with no specific name or number ("state-of-the-art", "trusted by leading brands", "cutting-edge technology").
 
-Return a JSON array. Each item: {"signal_type": one of the three types above, "evidence": a short quote or close paraphrase from the page, under 30 words}. Return [] if the page has none of these. A page commonly has several -- list all of them, not just one.
+Return a JSON array. Each item: {"signal_type": one of the four types above, "evidence": for types 1-3, a short quote or close paraphrase under 30 words; for self_described_role, the exact verbatim sentence or phrase from the page}. Return [] if the page has none of these. A page commonly has several -- list all of them, not just one.
 """
 
 

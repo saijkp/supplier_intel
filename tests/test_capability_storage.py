@@ -46,7 +46,7 @@ def _finding(**overrides):
 class TestSchemaVersion:
 
     def test_current_schema_version(self):
-        assert SCHEMA_VERSION == 27
+        assert SCHEMA_VERSION == 28
 
     def test_fresh_database_has_supplier_capabilities_table(self, db_path):
         conn = sqlite3.connect(str(db_path))

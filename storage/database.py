@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 
 # ═══════════════════════════════════════════════════════════
@@ -398,9 +398,10 @@ CREATE INDEX IF NOT EXISTS idx_cap_canonical ON supplier_capabilities(canonical_
 CREATE TABLE IF NOT EXISTS supplier_catalogue_signals (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     supplier_id         INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
-    signal_type         TEXT NOT NULL CHECK (signal_type IN (
-                            'customer_logos_section', 'named_case_studies', 'specific_process_detail'
-                        )),
+    signal_type         TEXT NOT NULL,   -- no CHECK constraint (v28) -- enforced in Python via
+                                          -- verification.catalogue_depth_extractor.VALID_SIGNAL_TYPES instead,
+                                          -- same fix migration v4 applied to shipment_records.source after a
+                                          -- hardcoded CHECK broke on the first new value added
     evidence            TEXT NOT NULL,   -- the supporting quotation/description from the page
     source_url          TEXT,
     assessed_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1516,6 +1517,41 @@ MIGRATIONS: dict[int, dict] = {
         ),
         "columns": [
             ("suppliers", "capability_extraction_status", "TEXT"),
+        ],
+    },
+    28: {
+        "description": (
+            "Drop supplier_catalogue_signals.signal_type CHECK constraint (was "
+            "hardcoded to the original 3 signal types and would break the same "
+            "way shipment_records.source broke in v4: adding a 4th type -- "
+            "self_described_role, see verification/catalogue_depth_extractor.py "
+            "-- SQLite can't ALTER a CHECK constraint in place, so this rebuilds "
+            "the table without it. Enforcement moves fully to Python's "
+            "VALID_SIGNAL_TYPES, which was already the real gate -- the DB-level "
+            "CHECK was always redundant with it, same reasoning as v4."
+        ),
+        "statements": [
+            """
+            CREATE TABLE IF NOT EXISTS supplier_catalogue_signals_v28 (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_id         INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+                signal_type         TEXT NOT NULL,
+                evidence            TEXT NOT NULL,
+                source_url          TEXT,
+                assessed_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (supplier_id, signal_type, evidence)
+            )
+            """,
+            """
+            INSERT INTO supplier_catalogue_signals_v28 (
+                id, supplier_id, signal_type, evidence, source_url, assessed_at
+            )
+            SELECT id, supplier_id, signal_type, evidence, source_url, assessed_at
+            FROM supplier_catalogue_signals
+            """,
+            "DROP TABLE supplier_catalogue_signals",
+            "ALTER TABLE supplier_catalogue_signals_v28 RENAME TO supplier_catalogue_signals",
+            "CREATE INDEX IF NOT EXISTS idx_catsig_supplier ON supplier_catalogue_signals(supplier_id)",
         ],
     },
 }
