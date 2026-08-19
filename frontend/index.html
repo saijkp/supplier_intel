@@ -94,7 +94,20 @@ a{color:var(--tier-stated)}
 .conn button:hover{color:#fff}
 
 /* ── Layout ────────────────────────────────────────────── */
-.wrap{max-width:1200px;margin:0 auto;padding:24px 20px 80px}
+/* Global shell, section 2 of the visual redesign: a dark outer
+   frame (reusing the existing steel-900 topbar color) with a light
+   rounded app container inset below it -- same composition as the
+   reference image's dark backdrop plus light main workspace. This
+   is deliberately the one shared-chrome change in the whole
+   redesign (every tab sits inside .wrap) -- no tab's own content
+   styling (panels, cards, forms) is touched here, only the frame
+   around all of them. */
+body{background:var(--steel-900)}
+.wrap{
+  max-width:1200px;margin:20px auto 32px;padding:24px 20px 56px;
+  background:var(--paper);border-radius:20px;
+  box-shadow:0 24px 60px rgba(0,0,0,.35);
+}
 .split{display:grid;grid-template-columns:296px 1fr;gap:24px;align-items:start}
 @media(max-width:960px){.split{grid-template-columns:1fr}}
 
