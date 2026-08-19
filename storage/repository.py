@@ -110,7 +110,7 @@ SUPPLIER_WRITABLE_FIELDS: Sequence[str] = (
     "companies_house_match_status", "companies_house_match_confidence", "companies_house_checked_at",
     "catalogue_depth_extracted_at",
     "ris_verification_flag", "ris_exact_duplicate_domains", "ris_other_matching_domains", "ris_imported_at",
-    "reputation_search_attempted_at",
+    "reputation_search_attempted_at", "capability_extraction_status",
 )
 
 SCORE_FIELDS: Sequence[str] = (
@@ -1255,7 +1255,7 @@ class SupplierRepository:
             rows = conn.execute(sql, params).fetchall()
             return _rows_to_dicts(rows, SUPPLIER_JSON_FIELDS)
 
-    def mark_capability_extraction_attempted(self, supplier_id: int) -> None:
+    def mark_capability_extraction_attempted(self, supplier_id: int, status: str = "extracted") -> None:
         """Record that capability extraction ran for this supplier,
         regardless of how many findings (if any) it produced. Call
         this once per supplier per extraction pass, alongside — not
@@ -1264,9 +1264,20 @@ class SupplierRepository:
         no capability language would look identical to one that has
         never been attempted, and `get_suppliers_needing_capability_extraction`
         would re-attempt it forever.
+
+        `status` is "extracted" (the page was actually read, whether or
+        not it yielded findings) or "fetch_failed" (couldn't reach the
+        site at all this attempt) -- see `capability_extraction_status`
+        column comment. Callers should pass "fetch_failed" specifically
+        when `own_website_scraper.fetch()` itself failed, so zero
+        findings from an unreachable site isn't displayed the same as
+        zero findings from a site that was successfully read.
         """
         self.update_supplier_fields(
-            supplier_id, {"capability_extracted_at": datetime.now(timezone.utc).isoformat()}
+            supplier_id, {
+                "capability_extracted_at": datetime.now(timezone.utc).isoformat(),
+                "capability_extraction_status": status,
+            }
         )
 
     def add_catalogue_signal_finding(self, supplier_id: int, finding: Dict[str, Any]) -> Optional[int]:

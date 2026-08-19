@@ -527,6 +527,7 @@ def build_supplier_evidence_bundle(
             }
             for cap in repo.get_capabilities(supplier_id) if cap.get("category") == "standard"
         ],
+        "capability_extraction_status": supplier.get("capability_extraction_status"),
         "catalogue_depth_signals": [
             {"signal_type": s.get("signal_type"), "evidence": s.get("evidence"), "source_url": s.get("source_url")}
             for s in repo.get_catalogue_signals(supplier_id)

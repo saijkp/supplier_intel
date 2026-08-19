@@ -635,8 +635,11 @@ class SupplierIntelligencePipeline:
                     # gone is a real, durable fact about this supplier
                     # right now, not a reason to retry it every single
                     # run forever. Re-run with force=True later if you
-                    # suspect it was transient.
-                    self.repo.mark_capability_extraction_attempted(supplier["id"])
+                    # suspect it was transient. status="fetch_failed"
+                    # (not the default "extracted") so zero findings from
+                    # an unreachable site isn't displayed the same as
+                    # zero findings from a site that was actually read.
+                    self.repo.mark_capability_extraction_attempted(supplier["id"], status="fetch_failed")
                     continue
 
                 findings = self.capability_extractor.extract_from_pages(fetch_result.pages)

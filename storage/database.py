@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 
 # ═══════════════════════════════════════════════════════════
@@ -276,7 +276,14 @@ CREATE TABLE IF NOT EXISTS suppliers (
     -- specifically so the Audit tab can tell "searched, found nothing" apart
     -- from "never run" for supplier_reputation_snippets, which previously had
     -- no marker at all.
-    reputation_search_attempted_at TIMESTAMP
+    reputation_search_attempted_at TIMESTAMP,
+
+    -- Capability-extraction fetch status (v27) -- 'extracted' | 'fetch_failed',
+    -- set alongside capability_extracted_at above. Without this, a fetch
+    -- failure (site down, DNS failure, blocked) and a successful fetch that
+    -- genuinely found no capability language both look like zero
+    -- supplier_capabilities rows -- indistinguishable in the Audit tab.
+    capability_extraction_status   TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sup_domain ON suppliers(domain);
@@ -1493,6 +1500,22 @@ MIGRATIONS: dict[int, dict] = {
         ),
         "columns": [
             ("suppliers", "reputation_search_attempted_at", "TIMESTAMP"),
+        ],
+    },
+    27: {
+        "description": (
+            "Capability-extraction fetch status (see pipeline/orchestrator.py's "
+            "_capability_extraction_stage): suppliers.capability_extraction_status, "
+            "'extracted' | 'fetch_failed', set alongside capability_extracted_at. "
+            "Before this column, a fetch failure (site down, DNS failure, "
+            "blocked) and a successful fetch that genuinely found no "
+            "capability language were both stored as zero supplier_capabilities "
+            "rows -- indistinguishable in the Audit tab, which could then "
+            "misrepresent a real company (unreachable from this run) as having "
+            "no certifications on its site."
+        ),
+        "columns": [
+            ("suppliers", "capability_extraction_status", "TEXT"),
         ],
     },
 }

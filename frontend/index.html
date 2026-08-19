@@ -1668,6 +1668,9 @@ function renderAuditDetail(b) {
     ].join("")));
   }
 
+  const certsEmptyText = b.capability_extraction_status === "fetch_failed"
+    ? "Couldn't fetch site to check"
+    : "No claims found on crawled pages";
   sections.push(evidenceSection("Certifications claimed", b.certifications_claimed.length
     ? b.certifications_claimed.map(c =>
         `<div class="evidence-row"><span class="evidence-label">${esc(c.term || "")}</span>
@@ -1675,7 +1678,7 @@ function renderAuditDetail(b) {
           ${c.source_url ? ` — <a href="${esc(c.source_url)}" target="_blank" rel="noopener">source</a>` : ""}
         </div>`
       ).join("")
-    : `<div class="evidence-empty">No claims found on crawled pages</div>`));
+    : `<div class="evidence-empty">${esc(certsEmptyText)}</div>`));
 
   sections.push(evidenceSection("Catalogue-depth signals", b.catalogue_depth_signals.length
     ? b.catalogue_depth_signals.map(s =>
