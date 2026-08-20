@@ -29,6 +29,7 @@ from collection.site_collector import (
     _find_relevant_links,
     _find_social_links,
     _has_contact_form,
+    _prioritise_relevant_links,
 )
 
 _SITE_FILES = {
@@ -351,6 +352,54 @@ class TestExtractionHelpers:
         html = '<a href="https://other.example.com/about.html">About</a>'
         links = _find_relevant_links("https://acme.example.com/", html)
         assert links == []
+
+    def test_prioritise_relevant_links_moves_contact_and_about_first(self):
+        """The real gap this fixes: a genuine contact page reachable in
+        one click was consistently losing its slot in the page budget
+        to blog/product links that merely appeared earlier in the
+        homepage's HTML -- confirmed live against 3erp.com (contact
+        page never crawled in 6 pages: blog/ebooks/design-tips filled
+        the budget first) and plasticmold.net (same pattern)."""
+        links = [
+            "https://acme.example.com/blog/",
+            "https://acme.example.com/products/",
+            "https://acme.example.com/contact-us/",
+            "https://acme.example.com/catalog/",
+            "https://acme.example.com/about/",
+            "https://acme.example.com/impressum/",
+        ]
+        result = _prioritise_relevant_links(links)
+        assert result == [
+            "https://acme.example.com/contact-us/",
+            "https://acme.example.com/about/",
+            "https://acme.example.com/impressum/",
+            "https://acme.example.com/blog/",
+            "https://acme.example.com/products/",
+            "https://acme.example.com/catalog/",
+        ]
+
+    def test_prioritise_relevant_links_is_stable_within_each_tier(self):
+        """Priority links keep their relative discovery order among
+        themselves, and so do non-priority links -- this only ever
+        reorders which TIER goes first, never shuffles within a tier."""
+        links = [
+            "https://acme.example.com/products/",
+            "https://acme.example.com/about/",
+            "https://acme.example.com/blog/",
+            "https://acme.example.com/contact/",
+        ]
+        result = _prioritise_relevant_links(links)
+        assert result == [
+            "https://acme.example.com/about/",
+            "https://acme.example.com/contact/",
+            "https://acme.example.com/products/",
+            "https://acme.example.com/blog/",
+        ]
+
+    def test_prioritise_relevant_links_never_drops_a_candidate(self):
+        links = ["https://acme.example.com/x/", "https://acme.example.com/y/", "https://acme.example.com/contact/"]
+        assert set(_prioritise_relevant_links(links)) == set(links)
+        assert len(_prioritise_relevant_links(links)) == len(links)
 
     def test_find_social_links(self):
         html = '<a href="https://linkedin.com/company/acme">LI</a><a href="/about.html">About</a>'

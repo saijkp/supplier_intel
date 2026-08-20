@@ -63,13 +63,32 @@ logger = logging.getLogger(__name__)
 # product/catalogue/download/certification terms -- see module
 # docstring for why Collection Service's page selection is broader.
 _RELEVANT_LINK_KEYWORDS: Tuple[str, ...] = (
-    "about", "capabilit", "manufactur", "factory", "facilit", "production",
+    "about", "company", "capabilit", "manufactur", "factory", "facilit", "production",
     "quality", "certificat", "workshop", "contact",
     "product", "catalog", "catalogue", "download", "cert",
     "impressum", "imprint",  # legal-disclosure page (DE/AT/CH etc.) -- a
                               # reliable address source batch_service.py's
                               # address extraction looks for specifically.
 )
+# "company" (added alongside "about" -- gap found auditing Nifco/nifco.com):
+# batch_service.py's _address_candidate_sources' about-tier already
+# matches "about" OR "company" in a page's URL, but this list -- which
+# decides what even gets DISCOVERED as a candidate link in the first
+# place -- was missing "company" entirely. A site whose company-profile
+# page URL contains "company" but not "about" (nifco.com/company/
+# overview.html, non-Latin anchor text so the anchor-text half of the
+# match can't save it either) was never being visited at all, address
+# extraction or not.
+
+# Subset of _RELEVANT_LINK_KEYWORDS that reliably carries an address --
+# the exact tiers batch_service.py's _address_candidate_sources looks
+# for (contact page, impressum/imprint page, about/company page). Used
+# by _prioritise_relevant_links to give these first claim on the page
+# budget below -- see that function's own docstring for why this
+# exists (a real gap-analysis finding: a genuine contact page was
+# consistently losing its budget slot to blog/product links that
+# merely appeared earlier in the homepage's HTML).
+_PRIORITY_LINK_KEYWORDS: Tuple[str, ...] = ("contact", "about", "company", "impressum", "imprint")
 
 # Same non-facility-image filter own_website_scraper._find_image_urls uses.
 _NON_FACILITY_IMAGE_KEYWORDS: Tuple[str, ...] = (
@@ -183,6 +202,19 @@ def _find_relevant_links(base_url: str, html: str) -> List[str]:
             seen.add(normalised)
             found.append(normalised)
     return found
+
+
+def _prioritise_relevant_links(links: List[str]) -> List[str]:
+    """Re-orders _find_relevant_links' output so contact/about/
+    impressum-tier pages (_PRIORITY_LINK_KEYWORDS) get first claim on
+    _collect_with's page budget (_MAX_PAGES_DEFAULT) -- previously
+    visited in whatever order they appeared in the homepage's HTML, so
+    a real contact page reachable in one click could still lose its
+    budget slot to five blog/product links that merely appeared earlier
+    in the page source. Stable sort: within each tier, original
+    discovery order is preserved, so this only ever reorders, never
+    drops, a candidate."""
+    return sorted(links, key=lambda link: 0 if any(k in link.lower() for k in _PRIORITY_LINK_KEYWORDS) else 1)
 
 
 def _extract_footer_text(html: str) -> str:
@@ -423,7 +455,8 @@ class SiteCollector:
             # _visit_and_collect), not `base_url` (the pre-redirect
             # candidate that was requested) -- see _visit_and_collect's
             # own comment for why this matters for the same-domain check.
-            for i, link in enumerate(_find_relevant_links(homepage_page.url, homepage_html), start=1):
+            relevant_links = _prioritise_relevant_links(_find_relevant_links(homepage_page.url, homepage_html))
+            for i, link in enumerate(relevant_links, start=1):
                 if len(pages) >= self.max_pages:
                     break
                 visited = self._visit_and_collect(page, link, i, run_dir)
