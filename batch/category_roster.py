@@ -35,6 +35,7 @@ from storage.repository import SupplierRepository
 # silently list itself as available with zero candidates.
 CATEGORY_ROSTERS: Dict[str, str] = {
     "injection moulding": "injection_moulding_100",
+    "material handling": "material_handling_14",
 }
 
 _ROSTER_ROOT = Path(__file__).parent.parent / "data" / "source_files"
