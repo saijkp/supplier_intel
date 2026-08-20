@@ -762,3 +762,79 @@ class TestCORSConfiguration:
 
         middleware_classes = [m.cls.__name__ for m in api.app.app.user_middleware]
         assert "CORSMiddleware" in middleware_classes
+
+    def test_put_is_an_allowed_cors_method(self, client):
+        """Regression test for a real bug found live: allow_methods was
+        ["GET", "POST"] only, so the browser's own CORS preflight for
+        PUT /audit/suppliers/{id}/verdicts/{criterion} failed before
+        the request even reached the endpoint -- reproduced as
+        "Not saved: UNREACHABLE" in the Audit tab, not an auth or 4xx
+        error, since the browser never sent the real request at all.
+        Reads the middleware's own configured kwargs directly (see
+        this class's own docstring for why ALLOWED_ORIGINS can't be
+        monkeypatched after api.app has already been imported -- the
+        same is true of allow_methods, so this checks what's actually
+        configured rather than exercising a live preflight against
+        whatever origin happens to be allowed in this environment)."""
+        import api.app
+
+        cors_middleware = next(m for m in api.app.app.user_middleware if m.cls.__name__ == "CORSMiddleware")
+        assert "PUT" in cors_middleware.kwargs["allow_methods"]
+
+
+class TestAuditVerdictEndpoint:
+    """PUT /audit/suppliers/{id}/verdicts/{criterion} -- Audit tab
+    Stage 2. Every value asserted here is exactly what the request
+    body sent, never something the endpoint derives -- see
+    api.app.set_audit_verdict's own docstring."""
+
+    def test_needs_auth(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        response = client.put(f"/audit/suppliers/{supplier_id}/verdicts/A", json={"value": "Pass"})
+        assert response.status_code == 401
+
+    def test_sets_a_verdict_and_echoes_it_back(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        response = client.put(
+            f"/audit/suppliers/{supplier_id}/verdicts/B", json={"value": "Pass"}, headers=auth_headers(),
+        )
+        assert response.status_code == 200
+        assert response.json()["value"] == "Pass"
+        assert client.repo.get_audit_verdicts(supplier_id)["B"]["value"] == "Pass"
+
+    def test_sets_notes(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        response = client.put(
+            f"/audit/suppliers/{supplier_id}/verdicts/Notes",
+            json={"notes": "Called the factory, confirmed by phone."}, headers=auth_headers(),
+        )
+        assert response.status_code == 200
+        assert response.json()["notes"] == "Called the factory, confirmed by phone."
+
+    def test_unknown_supplier_is_404(self, client):
+        response = client.put(
+            "/audit/suppliers/999999/verdicts/A", json={"value": "Pass"}, headers=auth_headers(),
+        )
+        assert response.status_code == 404
+
+    def test_unknown_criterion_is_400(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        response = client.put(
+            f"/audit/suppliers/{supplier_id}/verdicts/E", json={"value": "Pass"}, headers=auth_headers(),
+        )
+        assert response.status_code == 400
+
+    def test_value_outside_the_criterions_allowed_set_is_400(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        response = client.put(
+            f"/audit/suppliers/{supplier_id}/verdicts/Qualified", json={"value": "Pass"}, headers=auth_headers(),
+        )
+        assert response.status_code == 400
+
+    def test_get_audit_supplier_bundle_includes_verdicts(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        client.put(f"/audit/suppliers/{supplier_id}/verdicts/A", json={"value": "Fail"}, headers=auth_headers())
+
+        response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
+        assert response.status_code == 200
+        assert response.json()["verdicts"]["A"]["value"] == "Fail"

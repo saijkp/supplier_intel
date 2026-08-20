@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 
 # ═══════════════════════════════════════════════════════════
@@ -729,6 +729,27 @@ CREATE TABLE IF NOT EXISTS supplier_reputation_snippets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_supplier_reputation_snippets_supplier ON supplier_reputation_snippets(supplier_id);
+
+
+-- ═══════════════════════════════════════
+-- AUDIT VERDICTS (v29) -- manual A/B/C/D/Qualified capture, see
+-- verification/../batch/tracker_exporter.py's own module docstring.
+-- No CHECK constraint on criterion/value -- enforced in Python
+-- (same fix as v4/v28). One row per (supplier_id, criterion),
+-- including a reserved criterion='Notes' row for the tracker's
+-- single shared "Notes / Difficulties" field.
+-- ═══════════════════════════════════════
+CREATE TABLE IF NOT EXISTS audit_verdicts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    criterion   TEXT NOT NULL,
+    value       TEXT,
+    notes       TEXT,
+    set_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (supplier_id, criterion)
+);
+
+CREATE INDEX IF NOT EXISTS idx_auditverdict_supplier ON audit_verdicts(supplier_id);
 
 
 -- ═══════════════════════════════════════
@@ -1554,6 +1575,37 @@ MIGRATIONS: dict[int, dict] = {
             "CREATE INDEX IF NOT EXISTS idx_catsig_supplier ON supplier_catalogue_signals(supplier_id)",
         ],
     },
+    29: {
+        "description": (
+            "Audit tab Stage 2: audit_verdicts table -- manual A/B/C/D/"
+            "Qualified verdict capture (Pending/Pass/Fail, Pending/Yes/No "
+            "for Qualified) plus a shared Notes field, one row per "
+            "(supplier_id, criterion) including a reserved criterion="
+            "'Notes' row for the free-text field (matches the real "
+            "tracker's single 'Notes / Difficulties' column, not one per "
+            "criterion). No CHECK constraint on criterion/value -- same "
+            "fix as v4/v28, enforced in Python instead so a future "
+            "criterion or value never needs a table rebuild to add. "
+            "This is the ONLY place in the codebase that ever writes a "
+            "real Pass/Fail/Yes/No verdict -- always a direct, unmodified "
+            "echo of a human's own selection in the Audit tab UI, never "
+            "computed or inferred (see CLAUDE.md standing rule 2)."
+        ),
+        "statements": [
+            """
+            CREATE TABLE IF NOT EXISTS audit_verdicts (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+                criterion   TEXT NOT NULL,
+                value       TEXT,
+                notes       TEXT,
+                set_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (supplier_id, criterion)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_auditverdict_supplier ON audit_verdicts(supplier_id)",
+        ],
+    },
 }
 
 
@@ -1911,6 +1963,7 @@ def table_counts(db_path: Path | str | None = None) -> dict[str, int]:
         "source_query_runs",
         "supplier_capabilities",
         "supplier_catalogue_signals",
+        "audit_verdicts",
         "pipeline_jobs",
         "buyer_profiles",
         "procurement_outcomes",

@@ -36,7 +36,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, Response
 
@@ -93,7 +93,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -923,3 +923,27 @@ def get_audit_supplier(
     if bundle is None:
         raise HTTPException(status_code=404, detail="Supplier not found")
     return bundle
+
+
+@app.put("/audit/suppliers/{supplier_id}/verdicts/{criterion}", dependencies=[Depends(require_api_token)])
+def set_audit_verdict(
+    supplier_id: int, criterion: str, payload: Dict[str, Any] = Body(...),
+    repo: SupplierRepository = Depends(get_repo),
+) -> Dict[str, Any]:
+    """Writes one Audit tab Stage 2 verdict/notes row -- a direct,
+    unmodified echo of a human's own selection in the UI, never
+    computed or inferred (see storage.repository.SupplierRepository
+    .upsert_audit_verdict's own docstring, and CLAUDE.md standing rule
+    2). `criterion` is one of 'A'/'B'/'C'/'D'/'Qualified' (verdict, via
+    `payload["value"]`) or 'Notes' (free text, via `payload["notes"]`).
+    404 if the supplier doesn't exist, 400 for an unrecognised
+    criterion or a value outside that criterion's allowed set."""
+    if repo.get_supplier(supplier_id) is None:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    try:
+        repo.upsert_audit_verdict(
+            supplier_id, criterion, value=payload.get("value"), notes=payload.get("notes"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return repo.get_audit_verdicts(supplier_id).get(criterion, {})

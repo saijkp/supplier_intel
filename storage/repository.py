@@ -1224,6 +1224,78 @@ class SupplierRepository:
                 (canonical_term, category, row_id),
             )
 
+    # -- Audit verdicts (Stage 2 -- manual A/B/C/D/Qualified capture) ---
+
+    _AUDIT_VERDICT_CRITERIA = ("A", "B", "C", "D", "Qualified", "Notes")
+    _AUDIT_VERDICT_VALUES = {
+        "A": ("Pending", "Pass", "Fail"),
+        "B": ("Pending", "Pass", "Fail"),
+        "C": ("Pending", "Pass", "Fail"),
+        "D": ("Pending", "Pass", "Fail"),
+        "Qualified": ("Pending", "Yes", "No"),
+        "Notes": (),  # value is unused on the Notes row -- must be None
+    }
+
+    def upsert_audit_verdict(
+        self, supplier_id: int, criterion: str, *, value: Optional[str] = None, notes: Optional[str] = None,
+    ) -> None:
+        """Writes (or overwrites) the one current row for
+        (supplier_id, criterion) -- a real human selection made in the
+        Audit tab UI, never computed or inferred (see CLAUDE.md
+        standing rule 2). `criterion` is one of _AUDIT_VERDICT_CRITERIA
+        ('A'/'B'/'C'/'D'/'Qualified' for a verdict value, 'Notes' for
+        the tracker's single shared free-text field -- see
+        batch/tracker_exporter.py's own module docstring for why Notes
+        isn't per-criterion). No CHECK constraint backs this (same fix
+        as v4/v28) -- validated here in Python instead, including
+        which values are legal for which criterion (Pending/Pass/Fail
+        for A-D, Pending/Yes/No for Qualified, no value at all for
+        Notes) -- this is an HTTP-facing boundary, not just an
+        internal call, so a malformed request is rejected here rather
+        than silently stored."""
+        if criterion not in self._AUDIT_VERDICT_CRITERIA:
+            raise ValueError(f"unknown audit verdict criterion: {criterion!r}")
+        allowed_values = self._AUDIT_VERDICT_VALUES[criterion]
+        if value is not None and value not in allowed_values:
+            raise ValueError(f"invalid value {value!r} for criterion {criterion!r}, expected one of {allowed_values or '(no value at all)'}")
+        with connection_scope(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO audit_verdicts (supplier_id, criterion, value, notes, set_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (supplier_id, criterion)
+                DO UPDATE SET value = excluded.value, notes = excluded.notes, set_at = excluded.set_at
+                """,
+                (supplier_id, criterion, value, notes),
+            )
+
+    def get_audit_verdicts(self, supplier_id: int) -> Dict[str, Dict[str, Any]]:
+        """{criterion: {value, notes, set_at}} for every row this
+        supplier has -- a criterion with no row yet simply isn't a key
+        in the returned dict; callers treat that as "Pending" (see
+        batch/tracker_exporter.py's _verdict_or_pending)."""
+        with connection_scope(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT criterion, value, notes, set_at FROM audit_verdicts WHERE supplier_id = ?",
+                (supplier_id,),
+            ).fetchall()
+            return {row["criterion"]: dict(row) for row in rows}
+
+    def get_audit_review_date(self, supplier_id: int) -> Optional[str]:
+        """The date (YYYY-MM-DD, no time) of the most recent A/B/C/D/
+        Qualified verdict set for this supplier -- deliberately
+        excludes the 'Notes' row: typing a note alone doesn't count as
+        "reviewed" for the tracker's own Date Reviewed column. None if
+        no verdict has ever been set."""
+        with connection_scope(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT MAX(set_at) AS latest FROM audit_verdicts "
+                "WHERE supplier_id = ? AND criterion IN ('A', 'B', 'C', 'D', 'Qualified')",
+                (supplier_id,),
+            ).fetchone()
+            latest = row["latest"] if row else None
+            return latest[:10] if latest else None
+
     def clear_capabilities(self, supplier_id: int) -> int:
         """Deletes every existing capability finding for a supplier.
 

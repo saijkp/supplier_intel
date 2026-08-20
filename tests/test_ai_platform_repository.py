@@ -620,3 +620,121 @@ class TestReputationSnippets:
 
         assert inserted == 0
         assert repo.get_reputation_snippets(supplier_id) == []
+
+
+class TestAuditVerdicts:
+    """storage.repository.SupplierRepository.upsert_audit_verdict/
+    get_audit_verdicts/get_audit_review_date -- Audit tab Stage 2.
+    Every value written here is a direct, unmodified echo of a human's
+    own selection in the UI, never computed (see CLAUDE.md standing
+    rule 2) -- nothing in this test file asserts otherwise, since
+    nothing upstream of these methods ever invents a verdict to pass
+    in."""
+
+    def test_no_rows_means_no_verdicts_yet(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        assert repo.get_audit_verdicts(supplier_id) == {}
+        assert repo.get_audit_review_date(supplier_id) is None
+
+    def test_upsert_sets_a_verdict_value(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.upsert_audit_verdict(supplier_id, "A", value="Pass")
+
+        verdicts = repo.get_audit_verdicts(supplier_id)
+        assert verdicts["A"]["value"] == "Pass"
+        assert verdicts["A"]["notes"] is None
+
+    def test_upsert_overwrites_the_same_criterion_rather_than_duplicating(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.upsert_audit_verdict(supplier_id, "A", value="Pending")
+        repo.upsert_audit_verdict(supplier_id, "A", value="Fail")
+
+        verdicts = repo.get_audit_verdicts(supplier_id)
+        assert verdicts["A"]["value"] == "Fail"
+        assert len(verdicts) == 1
+
+    def test_criteria_are_independent_rows(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.upsert_audit_verdict(supplier_id, "A", value="Pass")
+        repo.upsert_audit_verdict(supplier_id, "B", value="Fail")
+        repo.upsert_audit_verdict(supplier_id, "Qualified", value="Yes")
+
+        verdicts = repo.get_audit_verdicts(supplier_id)
+        assert verdicts["A"]["value"] == "Pass"
+        assert verdicts["B"]["value"] == "Fail"
+        assert verdicts["Qualified"]["value"] == "Yes"
+        assert "C" not in verdicts
+
+    def test_notes_is_a_reserved_criterion_shared_across_the_supplier(self, tmp_path):
+        """Matches the real tracker's single "Notes / Difficulties"
+        column -- one shared free-text field, not one per A/B/C/D."""
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.upsert_audit_verdict(supplier_id, "Notes", notes="Called the factory, confirmed by phone.")
+
+        verdicts = repo.get_audit_verdicts(supplier_id)
+        assert verdicts["Notes"]["notes"] == "Called the factory, confirmed by phone."
+        assert verdicts["Notes"]["value"] is None
+
+    def test_unknown_criterion_is_rejected(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        try:
+            repo.upsert_audit_verdict(supplier_id, "E", value="Pass")
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+
+    def test_qualified_only_accepts_yes_no_pending_not_pass_fail(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        try:
+            repo.upsert_audit_verdict(supplier_id, "Qualified", value="Pass")
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+        repo.upsert_audit_verdict(supplier_id, "Qualified", value="Yes")
+        assert repo.get_audit_verdicts(supplier_id)["Qualified"]["value"] == "Yes"
+
+    def test_a_through_d_reject_yes_no(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        try:
+            repo.upsert_audit_verdict(supplier_id, "A", value="Yes")
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+
+    def test_notes_criterion_rejects_a_value(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        try:
+            repo.upsert_audit_verdict(supplier_id, "Notes", value="Pass")
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+
+    def test_review_date_reflects_a_verdict_but_not_a_notes_only_write(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        repo.upsert_audit_verdict(supplier_id, "Notes", notes="just a note, no verdict yet")
+        assert repo.get_audit_review_date(supplier_id) is None
+
+        repo.upsert_audit_verdict(supplier_id, "A", value="Pass")
+        review_date = repo.get_audit_review_date(supplier_id)
+        assert review_date is not None
+        assert len(review_date) == 10  # YYYY-MM-DD, no time component
+
+    def test_different_suppliers_do_not_share_verdicts(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        s1 = repo.create_golden_record({"canonical_name": "Company One", "domain": "one.example.com"})
+        s2 = repo.create_golden_record({"canonical_name": "Company Two", "domain": "two.example.com"})
+        repo.upsert_audit_verdict(s1, "A", value="Pass")
+
+        assert repo.get_audit_verdicts(s1)["A"]["value"] == "Pass"
+        assert repo.get_audit_verdicts(s2) == {}

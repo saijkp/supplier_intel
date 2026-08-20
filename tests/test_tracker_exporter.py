@@ -59,10 +59,12 @@ class TestPasteRangeShape:
         header = csv_text.splitlines()[0].split(",")
         assert header[len(PASTE_RANGE_COLUMNS):] == list(EVIDENCE_COLUMNS)
 
-    def test_a_through_qualified_are_always_pending_never_a_verdict(self, repo):
+    def test_a_through_qualified_are_pending_when_nothing_has_been_reviewed_yet(self, repo):
         """"Pending" is an explicit not-yet-reviewed placeholder, never
         a real verdict -- distinguishes "not yet reviewed" from "forgot
-        to check" for the buyer auditing the file."""
+        to check" for the buyer auditing the file. See
+        TestAuditVerdictExport for the case where a human HAS set a
+        real value via the Audit tab."""
         supplier_id = repo.create_golden_record({
             "canonical_name": "Acme Co", "domain": "acme.com",
             "address": "1 Main St", "primary_phone": "+123", "primary_email": "a@acme.com",
@@ -75,7 +77,7 @@ class TestPasteRangeShape:
         ):
             assert row[col] == "Pending"
 
-    def test_notes_and_date_reviewed_are_always_blank(self, repo):
+    def test_notes_and_date_reviewed_are_blank_when_nothing_has_been_reviewed_yet(self, repo):
         supplier_id = repo.create_golden_record({
             "canonical_name": "Acme Co", "domain": "acme.com",
             "address": "1 Main St", "primary_phone": "+123", "primary_email": "a@acme.com",
@@ -84,6 +86,53 @@ class TestPasteRangeShape:
         row = _rows(build_tracker_export([supplier_id], repo))[0]
         for col in ("Notes / Difficulties", "Date Reviewed"):
             assert row[col] == ""
+
+
+class TestAuditVerdictExport:
+    """Once a human sets a real value via the Audit tab (Stage 2 --
+    storage.repository.SupplierRepository.upsert_audit_verdict), the
+    export reflects it verbatim instead of "Pending"/blank. This module
+    still never computes one itself -- every value asserted here is
+    exactly what was written in via upsert_audit_verdict, nothing
+    derived."""
+
+    def test_a_real_verdict_replaces_pending_for_that_column_only(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.upsert_audit_verdict(supplier_id, "B", value="Pass")
+
+        row = _rows(build_tracker_export([supplier_id], repo))[0]
+        assert row["B - Certifications"] == "Pass"
+        assert row["A - Website Deep-Dive"] == "Pending"  # untouched columns stay Pending
+        assert row["C - Factory Authenticity"] == "Pending"
+
+    def test_qualified_shows_yes_no_not_pass_fail(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.upsert_audit_verdict(supplier_id, "Qualified", value="Yes")
+
+        row = _rows(build_tracker_export([supplier_id], repo))[0]
+        assert row["Qualified"] == "Yes"
+
+    def test_notes_column_reflects_the_shared_notes_row(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.upsert_audit_verdict(supplier_id, "Notes", notes="Called the factory, confirmed by phone.")
+
+        row = _rows(build_tracker_export([supplier_id], repo))[0]
+        assert row["Notes / Difficulties"] == "Called the factory, confirmed by phone."
+
+    def test_date_reviewed_populates_once_a_real_verdict_is_set(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.upsert_audit_verdict(supplier_id, "A", value="Pass")
+
+        row = _rows(build_tracker_export([supplier_id], repo))[0]
+        assert row["Date Reviewed"] != ""
+        assert len(row["Date Reviewed"]) == 10  # YYYY-MM-DD
+
+    def test_date_reviewed_stays_blank_for_a_notes_only_write(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.upsert_audit_verdict(supplier_id, "Notes", notes="just a note, no verdict yet")
+
+        row = _rows(build_tracker_export([supplier_id], repo))[0]
+        assert row["Date Reviewed"] == ""
 
     def test_no_column_is_1_indexed_sequential(self, repo):
         a = repo.create_golden_record({"canonical_name": "A Co", "domain": "a.com"})

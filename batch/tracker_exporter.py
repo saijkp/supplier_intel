@@ -7,12 +7,18 @@ format -- exact column order/names matching their real "Injection
 Moulding" tab (No. through Date Reviewed) so rows paste in without
 reformatting or shifting any of the tracker's own columns.
 
-Columns A-D and Qualified are always the literal text "Pending" --
-100% manual, filled in by the buyer. "Pending" is an explicit
+Columns A-D and Qualified are the literal text "Pending" until a human
+sets a real value via the Audit tab's Stage 2 verdict controls (see
+storage/repository.py's audit_verdicts table and
+SupplierRepository.upsert_audit_verdict) -- "Pending" is an explicit
 placeholder, not a verdict: it exists so a blank cell is never
-ambiguous between "not yet reviewed" and "forgot to check." Nothing in
-this module (or anywhere upstream of it) ever writes Pass/Fail/Clean/
-Flagged/Y into them; see PASTE_RANGE_COLUMNS's own comment.
+ambiguous between "not yet reviewed" and "forgot to check." This
+module (and everything upstream of it) still never COMPUTES or INFERS
+a Pass/Fail/Yes/No itself -- audit_verdicts only ever stores a direct,
+unmodified echo of what a human selected in the UI, and
+_verdict_or_pending below reads that back verbatim or falls back to
+"Pending" if nothing's been set. See PASTE_RANGE_COLUMNS's own
+comment.
 
 Evidence/helper columns (a Website Note, per-field source URLs,
 candidate facility photos, a Street View link, a LinkedIn search link,
@@ -66,9 +72,9 @@ from storage.repository import SupplierRepository
 
 # Exact column order/names of the buyer's real tracker "Injection
 # Moulding" tab, confirmed against their own exported CSV. A-D/
-# Qualified are ALWAYS the literal text "Pending" here (see
-# _PENDING_PLACEHOLDER); Notes/Date Reviewed are ALWAYS blank -- see
-# module docstring.
+# Qualified/Notes/Date Reviewed reflect real audit_verdicts rows when
+# they exist (see _verdict_or_pending), "Pending"/blank otherwise --
+# see module docstring.
 PASTE_RANGE_COLUMNS: Tuple[str, ...] = (
     "No.", "Supplier Name", "Website", "Country", "Address", "Phone", "Email",
     "Factory Location",
@@ -76,10 +82,25 @@ PASTE_RANGE_COLUMNS: Tuple[str, ...] = (
     "D - Reviews & Ratings", "Qualified", "Notes / Difficulties", "Date Reviewed",
 )
 
-# The literal placeholder written into A-D/Qualified on every export --
-# an explicit "not yet reviewed" marker, never a verdict (see module
-# docstring for why a blank cell alone is ambiguous here).
+# The literal placeholder written into A-D/Qualified/Notes/Date Reviewed
+# on export when no human has reviewed that criterion yet -- an explicit
+# "not yet reviewed" marker, never a verdict (see module docstring for
+# why a blank cell alone is ambiguous here). Once a real audit_verdicts
+# row exists (see storage.repository.SupplierRepository
+# .upsert_audit_verdict, written only from a human's own Audit tab
+# selection), _verdict_or_pending below returns that real value instead.
 _PENDING_PLACEHOLDER = "Pending"
+
+
+def _verdict_or_pending(verdicts: Dict[str, Dict[str, Any]], criterion: str) -> str:
+    """The real value a human has set for `criterion` (A/B/C/D/
+    Qualified), or _PENDING_PLACEHOLDER if nothing has been set yet.
+    `verdicts` is repo.get_audit_verdicts(supplier_id)'s own return
+    shape -- a criterion with no row simply isn't a key."""
+    row = verdicts.get(criterion)
+    if row is None or not row.get("value"):
+        return _PENDING_PLACEHOLDER
+    return row["value"]
 
 # Appended after the paste range -- never part of what gets pasted
 # into the tracker itself. Phone/Email only have row-level
@@ -371,14 +392,19 @@ def build_tracker_export(supplier_ids: List[int], repo: Optional[SupplierReposit
         phone = supplier.get("primary_phone") or ""
         email = supplier.get("primary_email") or ""
         factory_location = supplier.get("factory_location") or ""
+        verdicts = repo.get_audit_verdicts(supplier_id)
 
         paste_row = [
             i, supplier.get("canonical_name") or "", supplier.get("domain") or "",
             supplier.get("country") or "", address, phone, email, factory_location,
-            # A, B, C, D, Qualified -- always "Pending", never a verdict, see module docstring
-            _PENDING_PLACEHOLDER, _PENDING_PLACEHOLDER, _PENDING_PLACEHOLDER,
-            _PENDING_PLACEHOLDER, _PENDING_PLACEHOLDER,
-            "", "",  # Notes / Difficulties, Date Reviewed -- always blank
+            # A, B, C, D, Qualified -- the real value a human set via the Audit
+            # tab, "Pending" if nothing's been set yet. See module docstring --
+            # this module still never computes/infers a verdict itself.
+            _verdict_or_pending(verdicts, "A"), _verdict_or_pending(verdicts, "B"),
+            _verdict_or_pending(verdicts, "C"), _verdict_or_pending(verdicts, "D"),
+            _verdict_or_pending(verdicts, "Qualified"),
+            (verdicts.get("Notes") or {}).get("notes") or "",
+            repo.get_audit_review_date(supplier_id) or "",
         ]
 
         evidence_row = [
@@ -522,10 +548,15 @@ def build_supplier_evidence_bundle(
     concept of its own.
 
     Purely a read -- assembles and returns already-stored evidence,
-    never calls an LLM and never writes anything. A-D/Qualified are
-    deliberately NOT included here: this bundle is Stage 1 (read-only
-    evidence display) only, verdict capture is a separate, not-yet-
-    built concern (see audit_verdicts, still just a plan)."""
+    never calls an LLM and never writes anything. `verdicts` (Stage 2)
+    is the one exception to "evidence, not verdict": it echoes back
+    whatever a human has already selected via PUT
+    /audit/suppliers/{id}/verdicts/{criterion} (storage.repository
+    .SupplierRepository.upsert_audit_verdict), never a value this
+    function or anything upstream of it computes itself -- same
+    standing-rule-2 discipline as every other A-D/Qualified column in
+    this codebase, just now backed by a real human's own input instead
+    of always being "Pending"."""
     repo = repo or SupplierRepository()
     supplier = repo.get_supplier(supplier_id)
     if supplier is None:
@@ -598,4 +629,5 @@ def build_supplier_evidence_bundle(
         },
         "reputation_search_attempted_at": supplier.get("reputation_search_attempted_at"),
         "discovery_validation_reason": _discovery_validation_reason(repo, supplier_id),
+        "verdicts": repo.get_audit_verdicts(supplier_id),
     }

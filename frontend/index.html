@@ -408,6 +408,42 @@ dialog#auditDetailDialog .evidence-label{color:var(--text-lo);font-weight:600}
 dialog#auditDetailDialog .evidence-quote{color:var(--text-hi);opacity:.85}
 dialog#auditDetailDialog .evidence-empty{color:var(--text-lo);opacity:.7}
 
+/* Audit tab Stage 2: verdict capture. Every value here is written by
+   a human via these exact controls -- no default but Pending, nothing
+   pre-selected beyond what's actually stored (see
+   storage.repository.SupplierRepository.upsert_audit_verdict). */
+dialog#auditDetailDialog .verdict-grid{
+  display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px;
+}
+@media(max-width:640px){dialog#auditDetailDialog .verdict-grid{grid-template-columns:repeat(2,1fr)}}
+dialog#auditDetailDialog .verdict-field{display:flex;flex-direction:column;gap:5px}
+dialog#auditDetailDialog .verdict-field label{
+  font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--text-lo);
+}
+dialog#auditDetailDialog .verdict-select{
+  background:var(--ink-900);border:1px solid var(--ink-700);color:var(--text-hi);
+  border-radius:6px;padding:7px 8px;font-size:13px;font-family:inherit;
+}
+dialog#auditDetailDialog .verdict-select:focus{outline:none;border-color:var(--accent)}
+dialog#auditDetailDialog .verdict-select option{background:var(--ink-900);color:var(--text-hi)}
+dialog#auditDetailDialog .verdict-select[data-value="Pass"],
+dialog#auditDetailDialog .verdict-select[data-value="Yes"]{border-color:var(--good);color:var(--good)}
+dialog#auditDetailDialog .verdict-select[data-value="Fail"],
+dialog#auditDetailDialog .verdict-select[data-value="No"]{border-color:var(--accent);color:var(--accent)}
+dialog#auditDetailDialog .verdict-notes{
+  width:100%;min-height:64px;resize:vertical;background:var(--ink-900);
+  border:1px solid var(--ink-700);color:var(--text-hi);border-radius:6px;
+  padding:8px 10px;font-size:13px;font-family:inherit;line-height:1.5;
+}
+dialog#auditDetailDialog .verdict-notes:focus{outline:none;border-color:var(--accent)}
+dialog#auditDetailDialog .verdict-status{
+  font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--text-lo);
+  min-height:14px;margin-top:6px;
+}
+dialog#auditDetailDialog .verdict-status.ok{color:var(--good)}
+dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
+
 .spin{
   display:inline-block;width:12px;height:12px;border:2px solid rgba(255,255,255,.35);
   border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;
@@ -1714,6 +1750,85 @@ function evidenceSection(title, bodyHtml) {
   return `<div class="evidence-section"><h3>${esc(title)}</h3>${bodyHtml}</div>`;
 }
 
+/* Audit tab Stage 2: verdict capture. Options are always Pending
+   first, nothing pre-selected beyond what's actually stored in
+   audit_verdicts -- see storage.repository.SupplierRepository
+   .upsert_audit_verdict's own docstring. */
+const VERDICT_CRITERIA = [
+  {criterion: "A", label: "A - Website Deep-Dive", options: ["Pending", "Pass", "Fail"]},
+  {criterion: "B", label: "B - Certifications", options: ["Pending", "Pass", "Fail"]},
+  {criterion: "C", label: "C - Factory Authenticity", options: ["Pending", "Pass", "Fail"]},
+  {criterion: "D", label: "D - Reviews & Ratings", options: ["Pending", "Pass", "Fail"]},
+  {criterion: "Qualified", label: "Qualified", options: ["Pending", "Yes", "No"]},
+];
+
+function verdictSection(b) {
+  const verdicts = b.verdicts || {};
+  const fields = VERDICT_CRITERIA.map(({criterion, label, options}) => {
+    const current = (verdicts[criterion] && verdicts[criterion].value) || "Pending";
+    const opts = options.map(o => `<option value="${o}"${o === current ? " selected" : ""}>${o}</option>`).join("");
+    return `<div class="verdict-field">
+      <label>${esc(label)}</label>
+      <select class="verdict-select" data-criterion="${criterion}" data-value="${esc(current)}">${opts}</select>
+    </div>`;
+  }).join("");
+
+  const currentNotes = (verdicts.Notes && verdicts.Notes.notes) || "";
+
+  return `<div class="evidence-section" id="verdictSection" data-supplier-id="${b.supplier_id}">
+    <h3>Verdict</h3>
+    <div class="verdict-grid">${fields}</div>
+    <div class="verdict-field">
+      <label>Notes / Difficulties</label>
+      <textarea class="verdict-notes" id="verdictNotes" placeholder="Optional notes...">${esc(currentNotes)}</textarea>
+    </div>
+    <div class="verdict-status" id="verdictStatus"></div>
+  </div>`;
+}
+
+async function saveVerdict(supplierId, criterion, body, statusEl) {
+  statusEl.textContent = "Saving…";
+  statusEl.className = "verdict-status";
+  try {
+    await api(`/audit/suppliers/${supplierId}/verdicts/${criterion}`, {
+      method: "PUT", body: JSON.stringify(body),
+    });
+    statusEl.textContent = "Saved";
+    statusEl.className = "verdict-status ok";
+  } catch (err) {
+    statusEl.textContent = "Not saved: " + err.message;
+    statusEl.className = "verdict-status err";
+    throw err;
+  }
+}
+
+function wireVerdictControls(supplierId) {
+  const statusEl = $("verdictStatus");
+
+  document.querySelectorAll("#verdictSection .verdict-select").forEach(select => {
+    const previous = select.value;
+    select.addEventListener("change", async () => {
+      const criterion = select.dataset.criterion;
+      const value = select.value;
+      try {
+        await saveVerdict(supplierId, criterion, {value}, statusEl);
+        select.dataset.value = value;
+      } catch {
+        select.value = previous;
+      }
+    });
+  });
+
+  const notesEl = $("verdictNotes");
+  const savedNotes = notesEl.value;
+  notesEl.addEventListener("blur", async () => {
+    if (notesEl.value === savedNotes) return;
+    try {
+      await saveVerdict(supplierId, "Notes", {notes: notesEl.value}, statusEl);
+    } catch { /* left as typed -- explain() equivalent already shown via verdict-status */ }
+  });
+}
+
 async function openAuditDetail(supplierId, name) {
   $("auditDetailTitle").textContent = name || "Supplier";
   $("auditDetailBody").innerHTML = `<div class="empty"><div class="empty-title">Loading…</div></div>`;
@@ -1721,6 +1836,7 @@ async function openAuditDetail(supplierId, name) {
   try {
     const b = await api("/audit/suppliers/" + supplierId);
     $("auditDetailBody").innerHTML = renderAuditDetail(b);
+    wireVerdictControls(supplierId);
   } catch (err) {
     $("auditDetailBody").innerHTML = `<div id="auditDetailErr"></div>`;
     explain(err, $("auditDetailErr"));
@@ -1816,6 +1932,8 @@ function renderAuditDetail(b) {
   if (b.discovery_validation_reason) {
     sections.push(evidenceSection("Discovery validation reason", `<div class="evidence-row">${esc(b.discovery_validation_reason)}</div>`));
   }
+
+  sections.push(verdictSection(b));
 
   if (b.flagged) {
     sections.unshift(evidenceSection("⚠ Flagged in DB", `<div class="evidence-row">${esc(b.flag_reason || "(no reason recorded)")}</div>`));
