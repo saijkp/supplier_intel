@@ -138,6 +138,41 @@ class TestGetCapabilities:
         assert repo.get_capabilities(supplier_id) == []
 
 
+class TestBackfillCapabilityCategory:
+
+    def test_get_capabilities_missing_category_finds_unmapped_rows(self, repo):
+        supplier_id = _make_supplier(repo)
+        repo.add_capability_finding(supplier_id, _finding())  # mapped, category set
+        repo.add_capability_finding(
+            supplier_id, _finding(canonical_term=None, category=None, reported_term="hydroforming"),
+        )
+        missing = repo.get_capabilities_missing_category()
+        assert len(missing) == 1
+        assert missing[0]["reported_term"] == "hydroforming"
+
+    def test_backfill_updates_canonical_term_and_category_in_place(self, repo):
+        supplier_id = _make_supplier(repo)
+        row_id = repo.add_capability_finding(
+            supplier_id, _finding(canonical_term=None, category=None, reported_term="iso 13485"),
+        )
+        repo.backfill_capability_category(row_id, "iso 13485", "standard")
+
+        [row] = repo.get_capabilities(supplier_id)
+        assert row["canonical_term"] == "iso 13485"
+        assert row["category"] == "standard"
+        # everything else extracted at the time is untouched
+        assert row["reported_term"] == "iso 13485"
+        assert row["evidence"] == "we operate..."
+
+    def test_backfill_removes_row_from_missing_category_list(self, repo):
+        supplier_id = _make_supplier(repo)
+        row_id = repo.add_capability_finding(
+            supplier_id, _finding(canonical_term=None, category=None, reported_term="iso 13485"),
+        )
+        repo.backfill_capability_category(row_id, "iso 13485", "standard")
+        assert repo.get_capabilities_missing_category() == []
+
+
 class TestFindSuppliersByCapability:
 
     def test_finds_supplier_with_matching_in_house_capability(self, repo):

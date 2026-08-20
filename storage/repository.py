@@ -1196,6 +1196,34 @@ class SupplierRepository:
             ).fetchall()
             return _rows_to_dicts(rows)
 
+    def get_capabilities_missing_category(self) -> List[Dict[str, Any]]:
+        """Every supplier_capabilities row with category IS NULL, across
+        every supplier -- "unmapped" findings from a reported_term that
+        wasn't in verification.capability_vocabulary.VOCABULARY at
+        extraction time (see that module's own "stored as unmapped, not
+        discarded" discipline). Some of these may be mappable now if the
+        vocabulary has grown since -- see backfill_capability_category,
+        the one-time correction this powers."""
+        with connection_scope(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM supplier_capabilities WHERE category IS NULL ORDER BY supplier_id, assessed_at",
+            ).fetchall()
+            return _rows_to_dicts(rows)
+
+    def backfill_capability_category(self, row_id: int, canonical_term: str, category: str) -> None:
+        """Corrects a single supplier_capabilities row's canonical_term/
+        category in place -- for a reported_term that wasn't recognised
+        by the vocabulary at extraction time but is now. Unlike
+        add_capability_finding, this UPDATEs an existing row rather than
+        inserting a new one: the evidence/source_url/relationship this
+        stage already captured stay exactly as extracted, only the
+        classification catches up to the current vocabulary."""
+        with connection_scope(self.db_path) as conn:
+            conn.execute(
+                "UPDATE supplier_capabilities SET canonical_term = ?, category = ? WHERE id = ?",
+                (canonical_term, category, row_id),
+            )
+
     def clear_capabilities(self, supplier_id: int) -> int:
         """Deletes every existing capability finding for a supplier.
 
