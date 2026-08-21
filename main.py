@@ -27,6 +27,7 @@ Usage:
     python main.py batch-upload companies.csv    Enrich a spreadsheet of companies through the same single-company enrichment path
     python main.py verify-ai --supplier-id 123   AI cross-check + confidence score against existing verification signals
     python main.py reverify --supplier-id 123    Re-collect then re-verify an already-known supplier
+    python main.py set-verdict --supplier-id 123 --criterion A --value Pass   Set one Audit-tab verdict from the CLI
 """
 
 from __future__ import annotations
@@ -1100,6 +1101,53 @@ def import_ris_findings_cmd(xlsx_path: str) -> None:
         console.print("\n[yellow]! Unmatched rows (no supplier found by domain or fuzzy name):[/yellow]")
         for row in result.unmatched:
             console.print(f"    - {row.get('Supplier Name')!r} ({row.get('Website')!r})")
+
+
+@cli.command("set-verdict")
+@click.option("--supplier-id", type=int, required=True, help="Supplier to set a verdict on.")
+@click.option("--criterion", type=click.Choice(["A", "B", "C", "D", "Qualified", "Notes"]), required=True)
+@click.option("--value", default=None,
+              help="Pending/Pass/Fail for A-D, Pending/Yes/No for Qualified. Not used for Notes.")
+@click.option("--notes", default=None, help="Free text. Only used with --criterion Notes.")
+def set_verdict(supplier_id: int, criterion: str, value: Optional[str], notes: Optional[str]) -> None:
+    """Set one Audit-tab verdict from the command line -- writes to the
+    same audit_verdicts table (and the same upsert_audit_verdict path)
+    as clicking a dropdown in the frontend's Audit tab, so tracker export
+    and the UI both pick it up immediately. This never computes or infers
+    a verdict itself (see CLAUDE.md standing rule 2) -- it only records
+    the value you pass in, exactly like a human's own dropdown selection.
+
+        python main.py set-verdict --supplier-id 789 --criterion A --value Pass
+        python main.py set-verdict --supplier-id 789 --criterion Qualified --value Yes
+        python main.py set-verdict --supplier-id 789 --criterion Notes --notes "Confirmed by phone 2026-08-21"
+    """
+    if criterion == "Notes" and value is not None:
+        console.print("[red]X[/red] --value isn't used with --criterion Notes -- use --notes instead.")
+        raise SystemExit(1)
+    if criterion != "Notes" and notes is not None:
+        console.print(f"[red]X[/red] --notes isn't used with --criterion {criterion} -- Notes is a single "
+                       "shared field, set separately with --criterion Notes.")
+        raise SystemExit(1)
+
+    repo = SupplierRepository()
+    if repo.get_supplier(supplier_id) is None:
+        console.print(f"[red]X[/red] Supplier #{supplier_id} not found.")
+        raise SystemExit(1)
+
+    try:
+        repo.upsert_audit_verdict(supplier_id, criterion, value=value, notes=notes)
+    except ValueError as e:
+        console.print(f"[red]X[/red] {e}")
+        raise SystemExit(1)
+
+    result = repo.get_audit_verdicts(supplier_id).get(criterion, {})
+    review_date = repo.get_audit_review_date(supplier_id)
+    console.print(
+        f"[green]OK[/green] Supplier #{supplier_id} {criterion} -> "
+        f"value={result.get('value')!r} notes={result.get('notes')!r} set_at={result.get('set_at')}"
+    )
+    if review_date:
+        console.print(f"[dim]Date Reviewed: {review_date}[/dim]")
 
 
 @cli.command("search")
