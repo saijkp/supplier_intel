@@ -48,7 +48,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from deduplication.matcher import SupplierMatcher
 from discovery.candidate_extractor import extract_candidates
@@ -57,7 +57,10 @@ from discovery.candidate_validator import (
     REASON_FETCH_EXCEPTION_PREFIX,
     REASON_FETCH_UNSUCCESSFUL_PREFIX,
     REASON_MARKETPLACE_HOST_PREFIX,
+    REASON_SUCCESS_PREFIX,
+    REASON_TERM_MISSING_PREFIX,
     REASON_TRADER_PREFIX,
+    REASON_UK_NOT_REGISTERED_PREFIX,
     CandidateValidator,
 )
 from discovery.llm_candidate_source import LLMCandidateSource
@@ -68,11 +71,17 @@ logger = logging.getLogger(__name__)
 
 _VALID_SOURCES = ("serpapi", "llm", "1688")
 
+# discover_to_target()'s round-2 default -- broadened past manufacturer-only
+# phrasing, see query_builder.py's own extra_role_words docstring and
+# discover_to_target()'s own docstring for the real run that motivated this.
+_DEFAULT_TARGET_COUNT_ROLE_WORDS = ("dealer", "distributor", "stockist", "reseller")
+
 
 @dataclass
 class DiscoveryOutcome:
     candidates_generated: int = 0  # llm source only -- raw (name, website) pairs the model proposed before any filtering; 0 for serpapi
     candidates_found: int = 0
+    candidates_examined: int = 0  # candidates actually run through _process_candidate (fetch+validate attempted) -- distinct from candidates_found (raw search hits collected before any target_count early-stop); this is what actually counts against a discover_to_target() cost ceiling
     candidates_validated: int = 0
     candidates_rejected: int = 0
     candidates_duplicate: int = 0  # validated AND auto-merged into an existing supplier -- no new row
@@ -81,6 +90,79 @@ class DiscoveryOutcome:
     website_resolved: int = 0  # candidates whose site fetched successfully (validate() gate 2), whether or not they went on to validate
     content_matched: int = 0   # candidates whose fetched page actually mentioned the product term (validate() gate 5) -- see _process_candidate's own comment
     raw_1688_listings: List[Dict[str, Any]] = field(default_factory=list)  # source='1688' only -- see _discover_1688's own docstring for why this stops short of validation/storage
+
+
+@dataclass
+class DiscoveryProgressEvent:
+    """One per-candidate snapshot, fired synchronously during discover()
+    as soon as that candidate's validation (and dedup resolution)
+    completes -- the first per-candidate-detail progress signal this
+    codebase has emitted (every other job's progress -- batch upload,
+    sourcing agent -- is aggregate-counts-only). `reason` is always the
+    full, unmodified ValidationResult.reason sentence; `badge` (see
+    _classify_reason_badge) is a display-only label derived from it by
+    prefix-matching the same REASON_* constants _process_candidate
+    already checks -- never a new stored taxonomy, never a replacement
+    for showing the real reason text alongside it."""
+    domain: str
+    candidate_title: str  # candidate.title from the search hit -- best label before/without a validated name
+    extracted_name: Optional[str]
+    status: str   # "validated" | "rejected" | "duplicate"
+    reason: str
+    badge: str    # "marketplace" | "trader" | "term_missing" | "uk_not_registered" | "fetch_failed" | "name_mismatch" | "validated" | "duplicate" | "other"
+    round: int = 1              # stamped by discover_to_target() when orchestrating multiple rounds; 1 for a bare discover() call
+    round_examined: int = 0     # outcome.candidates_examined at the moment this event fired, for the discover() call that produced it (not cumulative across rounds)
+    round_validated: int = 0    # outcome.candidates_validated at the moment this event fired, same scope as round_examined
+
+
+@dataclass
+class DiscoveryToTargetOutcome:
+    """What discover_to_target() returns -- dataclasses.asdict()'able
+    the same way DiscoveryOutcome/SourcingOutcome already are."""
+    product: str
+    target_count: int
+    ceiling: int
+    rounds_run: int = 0
+    candidates_found: int = 0
+    candidates_examined: int = 0
+    candidates_validated: int = 0
+    candidates_rejected: int = 0
+    candidates_duplicate: int = 0
+    new_supplier_ids: List[int] = field(default_factory=list)
+    review_queued_supplier_ids: List[int] = field(default_factory=list)
+    reached_target: bool = False
+    used_llm_fallback: bool = False
+    stopped_reason: str = ""  # "target_reached" | "ceiling_reached" | "no_new_candidates_found" | "budget_exhausted_after_llm_fallback"
+
+
+def _classify_reason_badge(reason: str) -> str:
+    """UI-display-only short label for a ValidationResult.reason string
+    -- prefix-matches the same named REASON_* constants _process_candidate
+    already imports and checks (see that method's own website_resolved/
+    content_matched classification for the established style). Never a
+    new stored taxonomy -- see DiscoveryProgressEvent's own docstring.
+    ("duplicate" is applied at the call site in _process_candidate, not
+    here, since this function only ever sees the validation reason, not
+    the dedup matcher's merge decision.)"""
+    if reason.startswith(REASON_MARKETPLACE_HOST_PREFIX):
+        return "marketplace"
+    if (
+        reason.startswith(REASON_FETCH_EXCEPTION_PREFIX)
+        or reason.startswith(REASON_FETCH_UNSUCCESSFUL_PREFIX)
+        or reason == REASON_EMPTY_PAGE
+    ):
+        return "fetch_failed"
+    if reason.startswith(REASON_UK_NOT_REGISTERED_PREFIX):
+        return "uk_not_registered"
+    if reason.startswith(REASON_TERM_MISSING_PREFIX):
+        return "term_missing"
+    if reason.startswith(REASON_TRADER_PREFIX):
+        return "trader"
+    if reason.startswith(REASON_SUCCESS_PREFIX):
+        return "validated"
+    if "does not match the original search result" in reason:
+        return "name_mismatch"
+    return "other"
 
 
 class DiscoveryService:
@@ -141,7 +223,27 @@ class DiscoveryService:
         max_candidates: int = 20, application: Optional[str] = None,
         key_specifications: Optional[List[str]] = None, source: str = "serpapi",
         domain_tld_bias: Optional[str] = None, extra_role_words: Optional[List[str]] = None,
+        target_count: Optional[int] = None,
+        progress_callback: Optional[Callable[[DiscoveryProgressEvent], None]] = None,
     ) -> DiscoveryOutcome:
+        """`target_count` and `progress_callback` are both additive,
+        default-None/unset -- every existing caller (main.py discover,
+        sourcing.sourcing_agent.SourcingAgentService, every existing
+        test) is unaffected.
+
+        `target_count`, when given, is an early-stop on VALIDATION, not
+        on candidate collection: the raw-candidate-gathering loop below
+        still respects `max_candidates` exactly as before, but the
+        validation loop stops as soon as `outcome.candidates_validated
+        >= target_count`, saving the real fetch+LLM cost of validating
+        candidates beyond what's actually needed. See
+        discover_to_target() for the round-based orchestrator built on
+        top of this for a genuine "keep going until N found" search.
+
+        `progress_callback`, when given, is fired once per candidate
+        (see _process_candidate) with a DiscoveryProgressEvent -- the
+        first per-candidate-detail progress signal this codebase emits
+        anywhere (see DiscoveryProgressEvent's own docstring)."""
         if source not in _VALID_SOURCES:
             raise ValueError(f"unknown discovery source {source!r} -- expected one of {_VALID_SOURCES}")
 
@@ -155,7 +257,12 @@ class DiscoveryService:
             raw_source = "llm-discovery"
             outcome.candidates_found = len(all_candidates)
             for candidate in all_candidates:
-                self._process_candidate(candidate, product, country, outcome, raw_source=raw_source)
+                self._process_candidate(
+                    candidate, product, country, outcome, raw_source=raw_source,
+                    progress_callback=progress_callback,
+                )
+                if target_count is not None and outcome.candidates_validated >= target_count:
+                    break
             self.repo.record_discovery_run(
                 product_query=product, category=category, country=country,
                 candidates_found=outcome.candidates_found, candidates_validated=outcome.candidates_validated,
@@ -193,7 +300,12 @@ class DiscoveryService:
         outcome.candidates_found = len(all_candidates)
 
         for candidate in all_candidates:
-            self._process_candidate(candidate, product, country, outcome, raw_source="discovery")
+            self._process_candidate(
+                candidate, product, country, outcome, raw_source="discovery",
+                progress_callback=progress_callback,
+            )
+            if target_count is not None and outcome.candidates_validated >= target_count:
+                break
 
         self.repo.record_discovery_run(
             product_query=product, category=category, country=country,
@@ -201,6 +313,125 @@ class DiscoveryService:
             candidates_rejected=outcome.candidates_rejected, candidates_duplicate=outcome.candidates_duplicate,
         )
         return outcome
+
+    def discover_to_target(
+        self, product: str, target_count: int, category: Optional[str] = None,
+        country: Optional[str] = None, application: Optional[str] = None,
+        key_specifications: Optional[List[str]] = None, domain_tld_bias: Optional[str] = None,
+        extra_role_words: Optional[List[str]] = None, max_multiplier: int = 5,
+        allow_llm_fallback: bool = True,
+        progress_callback: Optional[Callable[[DiscoveryProgressEvent], None]] = None,
+    ) -> DiscoveryToTargetOutcome:
+        """Round-based "keep going until N validated suppliers are
+        found, but stop well before unbounded spend" orchestrator built
+        entirely on top of the existing discover() -- no new
+        candidate-finding or validation logic, just a cost-bounded loop
+        over it. `max_multiplier=5` matches
+        sourcing.sourcing_agent.SourcingAgentService's own
+        DEFAULT_MAX_MULTIPLIER, so the two mechanisms share the same
+        cost-governance philosophy even though they're separate code
+        paths (this one, unlike SourcingAgentService, has no chat-brief
+        parsing or dossier generation -- it's the plain "find me suppliers"
+        case).
+
+        Round 1: today's default discover() -- base manufacturer/
+        supplier/factory templates only, source='serpapi'.
+
+        Round 2 (only if round 1 fell short, found at least one raw
+        candidate, and budget remains): the SAME discover(), but with
+        `extra_role_words` populated (dealer/distributor/stockist/
+        reseller by default) -- broadened phrasing, not a re-query of
+        the same terms. See query_builder.py's own docstring: a real
+        Material Handling discovery run went from a 0% to a 25% hit
+        rate from exactly this kind of broadening, and query_builder.py
+        now runs these queries FIRST specifically so this round can't
+        be starved out by the base templates re-filling the budget.
+
+        Round 3 (last resort only, opt-out via allow_llm_fallback=False):
+        falls back to source='llm' -- gpt-4o-mini's own knowledge rather
+        than a real search hit, weaker provenance (see this module's own
+        docstring on verification.scorer.SOURCE_QUALITY_WEIGHTS), tried
+        only after both real-search rounds have been exhausted.
+
+        Each round's progress events are stamped with their round number
+        before being forwarded to `progress_callback`, so a live UI can
+        show which round a given candidate came from."""
+        role_words = extra_role_words if extra_role_words is not None else list(_DEFAULT_TARGET_COUNT_ROLE_WORDS)
+        ceiling = target_count * max_multiplier
+        result = DiscoveryToTargetOutcome(product=product, target_count=target_count, ceiling=ceiling)
+
+        def _stamped_callback(round_number: int) -> Optional[Callable[[DiscoveryProgressEvent], None]]:
+            if not progress_callback:
+                return None
+
+            def _callback(event: DiscoveryProgressEvent) -> None:
+                event.round = round_number
+                progress_callback(event)
+
+            return _callback
+
+        def _merge(outcome: DiscoveryOutcome) -> None:
+            result.candidates_found += outcome.candidates_found
+            result.candidates_examined += outcome.candidates_examined
+            result.candidates_validated += outcome.candidates_validated
+            result.candidates_rejected += outcome.candidates_rejected
+            result.candidates_duplicate += outcome.candidates_duplicate
+            result.new_supplier_ids.extend(outcome.new_supplier_ids)
+            result.review_queued_supplier_ids.extend(outcome.review_queued_supplier_ids)
+
+        # Round 1
+        outcome1 = self.discover(
+            product, category=category, country=country, max_candidates=ceiling,
+            application=application, key_specifications=key_specifications,
+            domain_tld_bias=domain_tld_bias, source="serpapi",
+            target_count=target_count, progress_callback=_stamped_callback(1),
+        )
+        result.rounds_run = 1
+        _merge(outcome1)
+
+        if result.candidates_validated >= target_count:
+            result.reached_target = True
+            result.stopped_reason = "target_reached"
+            return result
+        if result.candidates_examined >= ceiling:
+            result.stopped_reason = "ceiling_reached"
+            return result
+        if outcome1.candidates_found == 0:
+            result.stopped_reason = "no_new_candidates_found"
+            return result
+
+        # Round 2 -- role-word-broadened queries, remaining budget only.
+        remaining = ceiling - result.candidates_examined
+        outcome2 = self.discover(
+            product, category=category, country=country, max_candidates=remaining,
+            application=application, key_specifications=key_specifications,
+            domain_tld_bias=domain_tld_bias, source="serpapi", extra_role_words=role_words,
+            target_count=target_count - result.candidates_validated, progress_callback=_stamped_callback(2),
+        )
+        result.rounds_run = 2
+        _merge(outcome2)
+
+        if result.candidates_validated >= target_count:
+            result.reached_target = True
+            result.stopped_reason = "target_reached"
+            return result
+        if result.candidates_examined >= ceiling or not allow_llm_fallback:
+            result.stopped_reason = "ceiling_reached"
+            return result
+
+        # Round 3 -- last resort, weaker provenance.
+        remaining = ceiling - result.candidates_examined
+        outcome3 = self.discover(
+            product, category=category, country=country, max_candidates=remaining,
+            source="llm", target_count=target_count - result.candidates_validated,
+            progress_callback=_stamped_callback(3),
+        )
+        result.rounds_run = 3
+        result.used_llm_fallback = True
+        _merge(outcome3)
+        result.reached_target = result.candidates_validated >= target_count
+        result.stopped_reason = "target_reached" if result.reached_target else "budget_exhausted_after_llm_fallback"
+        return result
 
     def _discover_1688(
         self, product: str, category: Optional[str], max_candidates: int, outcome: DiscoveryOutcome,
@@ -253,10 +484,32 @@ class DiscoveryService:
         )
         return outcome
 
+    def _fire_progress(
+        self, progress_callback: Optional[Callable[[DiscoveryProgressEvent], None]],
+        *, domain: str, candidate_title: str, extracted_name: Optional[str],
+        status: str, reason: str, round_examined: int, round_validated: int,
+    ) -> None:
+        """Shared by every exit path in _process_candidate. Callback
+        exceptions are caught and logged, never abort discovery -- same
+        discipline as sourcing/sourcing_agent.py's own on_progress
+        handling."""
+        if not progress_callback:
+            return
+        try:
+            progress_callback(DiscoveryProgressEvent(
+                domain=domain, candidate_title=candidate_title, extracted_name=extracted_name,
+                status=status, reason=reason, badge=_classify_reason_badge(reason),
+                round_examined=round_examined, round_validated=round_validated,
+            ))
+        except Exception as e:  # noqa: BLE001 -- a progress-reporting glitch must never abort discovery
+            logger.warning("discovery: progress_callback failed: %s", e)
+
     def _process_candidate(
         self, candidate, product: str, country: Optional[str], outcome: DiscoveryOutcome,
         raw_source: str = "discovery",
+        progress_callback: Optional[Callable[[DiscoveryProgressEvent], None]] = None,
     ) -> None:
+        outcome.candidates_examined += 1
         try:
             validation = self.candidate_validator.validate(candidate, product)
         except Exception as e:  # noqa: BLE001 -- one candidate's failure must never abort the whole discovery run
@@ -267,6 +520,11 @@ class DiscoveryService:
                 source_id=candidate.domain, processing_status="failed",
             )
             outcome.candidates_rejected += 1
+            self._fire_progress(
+                progress_callback, domain=candidate.domain, candidate_title=candidate.title,
+                extracted_name=None, status="rejected", reason=f"validation raised an exception: {e}",
+                round_examined=outcome.candidates_examined, round_validated=outcome.candidates_validated,
+            )
             return
 
         # Website resolved = a fetch was actually attempted and didn't
@@ -310,6 +568,11 @@ class DiscoveryService:
         if not validation.validated:
             outcome.candidates_rejected += 1
             self.repo.mark_raw_processed(raw_id, status="failed", error_message=validation.reason)
+            self._fire_progress(
+                progress_callback, domain=candidate.domain, candidate_title=candidate.title,
+                extracted_name=validation.extracted_name, status="rejected", reason=validation.reason,
+                round_examined=outcome.candidates_examined, round_validated=outcome.candidates_validated,
+            )
             return
 
         outcome.candidates_validated += 1
@@ -336,6 +599,12 @@ class DiscoveryService:
         except Exception as e:
             logger.error("discovery: resolve_and_store failed for %s: %s", candidate.domain, e)
             self.repo.mark_raw_processed(raw_id, status="failed", error_message=str(e))
+            self._fire_progress(
+                progress_callback, domain=candidate.domain, candidate_title=candidate.title,
+                extracted_name=validation.extracted_name, status="rejected",
+                reason=f"validated, but saving the candidate failed: {e}",
+                round_examined=outcome.candidates_examined, round_validated=outcome.candidates_validated,
+            )
             return
 
         action = result.get("action")
@@ -354,6 +623,13 @@ class DiscoveryService:
             outcome.new_supplier_ids.append(supplier_id)
             if action == "review_queued":
                 outcome.review_queued_supplier_ids.append(supplier_id)
+
+        self._fire_progress(
+            progress_callback, domain=candidate.domain, candidate_title=candidate.title,
+            extracted_name=validation.extracted_name,
+            status="duplicate" if action == "merged" else "validated", reason=validation.reason,
+            round_examined=outcome.candidates_examined, round_validated=outcome.candidates_validated,
+        )
 
     def backfill_product_keywords(self) -> dict:
         """One-off repair for suppliers `discover()` created before this

@@ -286,7 +286,41 @@ class DiscoveryJobRequest(BaseModel):
         default=20,
         description="Stop after this many candidate companies. Each one costs a paid SerpAPI "
                      "search plus, for candidates that pass initial filtering, a real HTTP "
-                     "fetch and an OpenAI call -- start small on a first run.",
+                     "fetch and an OpenAI call -- start small on a first run. Only governs the "
+                     "plain (no target_count) path below.",
+    )
+    target_count: Optional[int] = Field(
+        default=None,
+        description="If set, drives DiscoveryService.discover_to_target()'s round-based "
+                     "auto-continue (base templates -> role-word-broadened queries -> LLM "
+                     "fallback last resort) instead of a single discover() pass -- see "
+                     "discovery/discovery_service.py's own docstring. Ceiling on candidates "
+                     "examined = target_count * max_multiplier, not max_candidates.",
+    )
+    max_multiplier: int = Field(
+        default=5,
+        description="Only used when target_count is set -- same DEFAULT_MAX_MULTIPLIER=5 "
+                     "convention as sourcing.sourcing_agent.SourcingAgentService.run().",
+    )
+
+
+class SingleCompanyEnrichRequest(BaseModel):
+    """Triggers the single-company enrichment pre-step + existing
+    batch-upload per-row path (batch.batch_service.BatchService.run_batch)
+    for exactly one company -- the HTTP equivalent of a one-row CSV
+    upload, plus (only when input_text isn't already URL-shaped) a
+    website-resolution pre-step via
+    scrapers.company_website_finder.CompanyWebsiteFinder -- see
+    api/jobs.py's run_single_company_job for the full flow."""
+
+    input_text: str = Field(
+        description="A company name or a website URL/domain, e.g. 'Acme Trailer Co' or "
+                     "'acmetrailer.com'.",
+    )
+    country: Optional[str] = Field(
+        default=None,
+        description="Only used when input_text is a bare company name (no URL) -- qualifies "
+                     "the CompanyWebsiteFinder search, same as main.py find-websites --country.",
     )
 
 
@@ -335,10 +369,12 @@ class PipelineJobResponse(BaseModel):
     stats: Optional[Dict[str, Any]] = None
     progress: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Live incremental status for a long-running job (currently only written by "
-                     "sourcing.SourcingAgentService's per-candidate progress callback), e.g. "
-                     "{'examined': 7, 'qualified': 3, 'target': 10} -- polled the same way `stats` "
-                     "already is, just before the job actually completes.",
+        description="Live incremental status for a long-running job -- written by batch upload "
+                     "(aggregate row counts), sourcing.SourcingAgentService (per-candidate "
+                     "examined/qualified/target), and discovery.DiscoveryService (per-candidate "
+                     "validated/rejected events with real reasons, plus examined/target). Shape "
+                     "varies by job type -- polled the same way `stats` already is, just before "
+                     "the job actually completes.",
     )
     error: Optional[str] = None
     created_at: Optional[str] = None

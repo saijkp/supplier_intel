@@ -70,8 +70,29 @@ def build_queries(
     NOT baked into the default _QUERY_TEMPLATES tuple -- "dealer"/
     "distributor" framing is wrong for most other product categories
     this same builder serves (e.g. injection moulding), so this stays
-    opt-in per call rather than a global behavior change."""
+    opt-in per call rather than a global behavior change.
+
+    `extra_role_words` queries are placed FIRST in the returned list,
+    ahead of the base templates -- deliberately, not incidentally.
+    `discover()`'s own candidate-collection loop stops as soon as
+    `max_candidates` raw candidates accumulate (see discovery_service.py),
+    processing queries in this list's order; a caller that explicitly
+    asked for role-word-broadened queries needs them to actually run,
+    not get silently starved out by the base "manufacturer"/"supplier"
+    templates filling the budget first -- the same class of bug already
+    fixed once in this codebase for crawl-link ordering (see
+    collection/site_collector.py's _prioritise_relevant_links). No
+    effect when extra_role_words is empty/None -- output is unchanged
+    for every existing caller."""
     queries = []
+
+    if extra_role_words:
+        for role_word in extra_role_words:
+            query = f'"{product}" {role_word}'
+            if country:
+                query = f"{query} {country}"
+            queries.append(query)
+
     for template in _QUERY_TEMPLATES:
         query = template.format(product=product)
         if country:
@@ -95,12 +116,5 @@ def build_queries(
         if country:
             query = f"{query} {country}"
         queries.append(query)
-
-    if extra_role_words:
-        for role_word in extra_role_words:
-            query = f'"{product}" {role_word}'
-            if country:
-                query = f"{query} {country}"
-            queries.append(query)
 
     return queries

@@ -416,21 +416,45 @@ class FakeDiscoveryService:
     def __init__(self, repo=None):
         self.repo = repo
         self.last_discover_call = None
+        self.last_discover_to_target_call = None
         FakeDiscoveryService.last_instance = self
 
-    def discover(self, product, category=None, country=None, max_candidates=20, source="serpapi"):
+    def discover(self, product, category=None, country=None, max_candidates=20, source="serpapi",
+                 progress_callback=None):
         from discovery.discovery_service import DiscoveryOutcome
 
         self.last_discover_call = {
             "product": product, "category": category, "country": country,
             "max_candidates": max_candidates, "source": source,
         }
+        if progress_callback:
+            from discovery.discovery_service import DiscoveryProgressEvent
+            progress_callback(DiscoveryProgressEvent(
+                domain="acmetrailer.com", candidate_title="Acme Trailer Co", extracted_name="Acme Trailer Co",
+                status="validated", reason="validated: name corroborated (score=95), product term found on page",
+                badge="validated", round_examined=1, round_validated=1,
+            ))
         return DiscoveryOutcome(candidates_found=5, candidates_validated=2, candidates_rejected=3,
                                  new_supplier_ids=[10, 11])
 
+    def discover_to_target(self, product, target_count, category=None, country=None, max_multiplier=5,
+                            progress_callback=None):
+        from discovery.discovery_service import DiscoveryToTargetOutcome
+
+        self.last_discover_to_target_call = {
+            "product": product, "target_count": target_count, "category": category,
+            "country": country, "max_multiplier": max_multiplier,
+        }
+        return DiscoveryToTargetOutcome(
+            product=product, target_count=target_count, ceiling=target_count * max_multiplier,
+            rounds_run=1, candidates_validated=target_count, reached_target=True,
+            stopped_reason="target_reached", new_supplier_ids=[20, 21],
+        )
+
 
 class FailingFakeDiscoveryService(FakeDiscoveryService):
-    def discover(self, product, category=None, country=None, max_candidates=20, source="serpapi"):
+    def discover(self, product, category=None, country=None, max_candidates=20, source="serpapi",
+                 progress_callback=None):
         raise RuntimeError("search API down")
 
 
@@ -445,7 +469,8 @@ class TestRunDiscoveryJob:
             "product": "trailer axle", "category": "Axles", "country": "China", "max_candidates": 15,
         })
 
-        assert FakeDiscoveryService.last_instance.last_discover_call == {
+        call = FakeDiscoveryService.last_instance.last_discover_call
+        assert call == {
             "product": "trailer axle", "category": "Axles", "country": "China",
             "max_candidates": 15, "source": "serpapi",
         }
@@ -483,3 +508,177 @@ class TestRunDiscoveryJob:
         job = repo.get_pipeline_job("job52")
         assert job["status"] == "failed"
         assert "search API down" in job["error"]
+
+    def test_progress_is_written_incrementally(self, repo, monkeypatch):
+        """The new capability: unlike every other existing behaviour
+        here, this job type previously had NO progress callback at all
+        -- now every discover() call (not just target_count ones) wires
+        one, so a live per-candidate feed works for plain product
+        searches too."""
+        monkeypatch.setattr(jobs_module, "DiscoveryService", FakeDiscoveryService)
+
+        repo.create_pipeline_job(job_id="job54", query="[discovery] trailer axle", options={"product": "trailer axle"})
+        jobs_module.run_discovery_job("job54", {"product": "trailer axle"})
+
+        job = repo.get_pipeline_job("job54")
+        assert job["progress"]["events"][0]["domain"] == "acmetrailer.com"
+        assert job["progress"]["events"][0]["status"] == "validated"
+        assert job["progress"]["examined"] == 1
+        assert job["progress"]["target"] is None
+
+    def test_target_count_routes_to_discover_to_target(self, repo, monkeypatch):
+        """Regression-guards the existing no-target-count path (still
+        calls discover()) while confirming target_count actually
+        switches to the round-based orchestrator."""
+        monkeypatch.setattr(jobs_module, "DiscoveryService", FakeDiscoveryService)
+
+        repo.create_pipeline_job(job_id="job55", query="[discovery] forklift",
+                                  options={"product": "forklift", "target_count": 10, "max_multiplier": 4})
+        jobs_module.run_discovery_job("job55", {"product": "forklift", "target_count": 10, "max_multiplier": 4})
+
+        instance = FakeDiscoveryService.last_instance
+        assert instance.last_discover_call is None  # discover() was NOT called
+        assert instance.last_discover_to_target_call == {
+            "product": "forklift", "target_count": 10, "category": None,
+            "country": None, "max_multiplier": 4,
+        }
+        job = repo.get_pipeline_job("job55")
+        assert job["status"] == "completed"
+        assert job["stats"]["new_supplier_ids"] == [20, 21]
+        assert job["stats"]["reached_target"] is True
+
+    def test_no_target_count_still_calls_plain_discover(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "DiscoveryService", FakeDiscoveryService)
+
+        repo.create_pipeline_job(job_id="job56", query="[discovery] trailer axle", options={"product": "trailer axle"})
+        jobs_module.run_discovery_job("job56", {"product": "trailer axle"})
+
+        instance = FakeDiscoveryService.last_instance
+        assert instance.last_discover_call is not None
+        assert instance.last_discover_to_target_call is None
+
+
+class FakeCompanyWebsiteFinder:
+    last_call = None
+
+    def __init__(self, google_scraper, own_website_scraper):
+        pass
+
+    def find_website(self, company_name, country=None):
+        from scrapers.company_website_finder import WebsiteFindingResult
+        FakeCompanyWebsiteFinder.last_call = {"company_name": company_name, "country": country}
+        result = FakeCompanyWebsiteFinder.next_result
+        return WebsiteFindingResult(
+            company_name=company_name, domain=result.get("domain"), validated=result.get("validated", False),
+            candidate_url=result.get("domain"), name_match_score=result.get("score"),
+            reason=result.get("reason", "not configured in test fake"),
+        )
+
+
+class ExplodingCompanyWebsiteFinder:
+    def __init__(self, *args, **kwargs):
+        raise AssertionError("CompanyWebsiteFinder must not be constructed for URL-shaped input")
+
+
+class FakeBatchServiceForSingleCompany:
+    """Records the exact rows run_batch was called with, and simulates
+    the real BatchService's DB side effect (writing a batch_upload_rows
+    row with a supplier_id) closely enough for
+    run_single_company_job's own resolved_supplier_id readback (via
+    repo.get_batch_upload_rows) to be genuinely exercised, not just
+    assumed."""
+
+    last_instance = None
+
+    def __init__(self, repo=None):
+        self.repo = repo
+        self.last_run_batch_rows = None
+        FakeBatchServiceForSingleCompany.last_instance = self
+
+    def run_batch(self, rows, batch_job_id, progress_callback=None, search_reputation=False):
+        from batch.batch_service import BatchOutcome
+
+        self.last_run_batch_rows = rows
+        row = rows[0]
+        supplier_id = self.repo.create_golden_record({
+            "canonical_name": row.company_name or "Acmetrailer", "domain": row.website,
+        })
+        row_id = self.repo.create_batch_upload_row(
+            batch_job_id=batch_job_id, row_index=row.row_index,
+            original_columns=row.original_columns, company_name=row.company_name, website=row.website,
+        )
+        self.repo.update_batch_upload_row(row_id, {"status": "success", "supplier_id": supplier_id})
+        self.last_resolved_supplier_id = supplier_id
+        outcome = BatchOutcome(total_rows=1, processed=1, succeeded=1)
+        if progress_callback:
+            progress_callback(outcome)
+        return outcome
+
+
+class TestRunSingleCompanyJob:
+
+    def test_url_shaped_input_skips_the_website_finder_entirely(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "BatchService", FakeBatchServiceForSingleCompany)
+        import scrapers.company_website_finder as finder_module
+        monkeypatch.setattr(finder_module, "CompanyWebsiteFinder", ExplodingCompanyWebsiteFinder)
+
+        repo.create_pipeline_job(job_id="job60", query="[single-company] acmetrailer.com",
+                                  options={"input_text": "acmetrailer.com"})
+        jobs_module.run_single_company_job("job60", {"input_text": "acmetrailer.com"})  # must not raise
+
+        job = repo.get_pipeline_job("job60")
+        assert job["status"] == "completed"
+        rows = FakeBatchServiceForSingleCompany.last_instance.last_run_batch_rows
+        assert rows[0].company_name is None
+        assert rows[0].website == "acmetrailer.com"
+
+    def test_bare_name_input_calls_find_website_with_company_name_and_country(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "BatchService", FakeBatchServiceForSingleCompany)
+        import scrapers.company_website_finder as finder_module
+        monkeypatch.setattr(finder_module, "CompanyWebsiteFinder", FakeCompanyWebsiteFinder)
+        FakeCompanyWebsiteFinder.next_result = {
+            "domain": "acmetrailer.com", "validated": True, "score": 92.0, "reason": "matched",
+        }
+
+        repo.create_pipeline_job(job_id="job61", query="[single-company] Acme Trailer Co",
+                                  options={"input_text": "Acme Trailer Co", "country": "China"})
+        jobs_module.run_single_company_job("job61", {"input_text": "Acme Trailer Co", "country": "China"})
+
+        assert FakeCompanyWebsiteFinder.last_call == {"company_name": "Acme Trailer Co", "country": "China"}
+
+    def test_unvalidated_website_finder_result_short_circuits_to_needs_url(self, repo, monkeypatch):
+        FakeBatchServiceForSingleCompany.last_instance = None  # reset -- class attribute persists across tests
+        monkeypatch.setattr(jobs_module, "BatchService", FakeBatchServiceForSingleCompany)
+        import scrapers.company_website_finder as finder_module
+        monkeypatch.setattr(finder_module, "CompanyWebsiteFinder", FakeCompanyWebsiteFinder)
+        FakeCompanyWebsiteFinder.next_result = {
+            "validated": False, "reason": "no non-platform, non-directory result found",
+        }
+
+        repo.create_pipeline_job(job_id="job62", query="[single-company] Nonexistent Widgets Ltd",
+                                  options={"input_text": "Nonexistent Widgets Ltd"})
+        jobs_module.run_single_company_job("job62", {"input_text": "Nonexistent Widgets Ltd"})
+
+        job = repo.get_pipeline_job("job62")
+        assert job["status"] == "completed"
+        assert job["stats"]["status"] == "needs_url"
+        assert job["stats"]["website_finder_reason"] == "no non-platform, non-directory result found"
+        assert FakeBatchServiceForSingleCompany.last_instance is None  # run_batch was never reached
+
+    def test_validated_result_resolves_a_real_supplier_id(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "BatchService", FakeBatchServiceForSingleCompany)
+        import scrapers.company_website_finder as finder_module
+        monkeypatch.setattr(finder_module, "CompanyWebsiteFinder", FakeCompanyWebsiteFinder)
+        FakeCompanyWebsiteFinder.next_result = {
+            "domain": "acmetrailer.com", "validated": True, "score": 92.0, "reason": "matched",
+        }
+
+        repo.create_pipeline_job(job_id="job63", query="[single-company] Acme Trailer Co",
+                                  options={"input_text": "Acme Trailer Co"})
+        jobs_module.run_single_company_job("job63", {"input_text": "Acme Trailer Co"})
+
+        job = repo.get_pipeline_job("job63")
+        assert job["status"] == "completed"
+        assert job["stats"]["resolved_domain"] == "acmetrailer.com"
+        assert job["stats"]["resolved_supplier_id"] == FakeBatchServiceForSingleCompany.last_instance.last_resolved_supplier_id
+        assert job["stats"]["succeeded"] == 1

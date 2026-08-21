@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from deduplication.name_utils import normalise_company_name, CHINESE_GEO_TOKENS
-from deduplication.domain_utils import extract_domain, domains_match, is_platform_subdomain
+from deduplication.domain_utils import extract_domain, domains_match, is_platform_subdomain, looks_like_url
 from deduplication.matcher import SupplierMatcher
 from verification.scorer import SupplierScorer
 from storage.database import initialise_schema
@@ -126,6 +126,35 @@ class TestIsPlatformSubdomain:
 
     def test_tradeindia_detected(self):
         assert is_platform_subdomain("acmetrailer.tradeindia.com") is True
+
+
+class TestLooksLikeUrl:
+
+    def test_bare_domain(self):
+        assert looks_like_url("acmetrailer.com") is True
+
+    def test_full_url(self):
+        assert looks_like_url("https://acmetrailer.com/products") is True
+
+    def test_company_name_is_not_a_url(self):
+        assert looks_like_url("Acme Trailer Co") is False
+
+    def test_company_name_with_period_is_not_a_url(self):
+        assert looks_like_url("Acme Trailer Co.") is False  # has a space, rejected regardless of the period
+
+    def test_product_term_is_not_a_url(self):
+        assert looks_like_url("wheel bearings") is False
+
+    def test_empty_input(self):
+        assert looks_like_url("") is False
+        assert looks_like_url(None) is False  # type: ignore[arg-type]
+
+    def test_extract_domain_false_positive_this_exists_to_avoid(self):
+        """The bug looks_like_url exists to prevent: extract_domain alone
+        returns a truthy (garbage) netloc for an ordinary company name,
+        so it can't be used to distinguish "is this a URL" on its own."""
+        assert extract_domain("Acme Trailer Co") is not None
+        assert looks_like_url("Acme Trailer Co") is False
 
 
 # ═════════════════════════════════════════════════════════════

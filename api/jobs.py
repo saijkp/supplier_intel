@@ -19,8 +19,9 @@ import logging
 from typing import Any, Dict
 
 from batch.batch_service import BatchService
-from batch.csv_parser import parse_csv
+from batch.csv_parser import ParsedRow, parse_csv
 from collection.collection_service import CollectionService
+from deduplication.domain_utils import looks_like_url
 from discovery.discovery_service import DiscoveryService
 from pipeline.orchestrator import SupplierIntelligencePipeline, build_limit_scraper_kwargs
 from storage.repository import SupplierRepository
@@ -244,21 +245,132 @@ def run_reverify_job(job_id: str, supplier_id: int) -> None:
 
 
 def run_discovery_job(job_id: str, options: Dict[str, Any]) -> None:
-    """The HTTP equivalent of `main.py discover`. DiscoveryOutcome is a
+    """The HTTP equivalent of `main.py discover`. DiscoveryOutcome (or
+    DiscoveryToTargetOutcome, when `target_count` is given) is a
     dataclass, not a plain dict -- converted via dataclasses.asdict()
     before mark_pipeline_job_completed's own json.dumps(stats) call,
-    which can't serialise a dataclass instance directly."""
+    which can't serialise a dataclass instance directly.
+
+    A progress_callback is now ALWAYS wired (previously this job type
+    had none at all) -- see discovery.discovery_service.
+    DiscoveryProgressEvent's own docstring: the first per-candidate-
+    detail live progress this codebase has ever surfaced, not just
+    aggregate counts like every other job type. `events` accumulates
+    for this job's whole lifetime and is capped to the most recent 200
+    in the stored progress blob to bound its size -- older events
+    aren't lost, they're still in raw_source_data/discovery_runs
+    regardless, just not shown in the live feed past that cap.
+
+    Cumulative examined/validated counters are tracked explicitly here
+    (bumped by the PREVIOUS round's final totals exactly when
+    event.round changes) because each DiscoveryProgressEvent's own
+    round_examined/round_validated are scoped to whichever single
+    discover() call produced it, not cumulative across
+    discover_to_target()'s multiple rounds."""
     repo = SupplierRepository()
     repo.mark_pipeline_job_running(job_id)
     try:
         service = DiscoveryService(repo=repo)
-        outcome = service.discover(
-            options["product"], category=options.get("category"), country=options.get("country"),
-            max_candidates=options.get("max_candidates", 20), source=options.get("source", "serpapi"),
-        )
+        target_count = options.get("target_count")
+
+        events: list = []
+        progress_state = {"round": 1, "completed_examined": 0, "completed_validated": 0}
+
+        def on_progress(event) -> None:
+            if event.round != progress_state["round"]:
+                progress_state["completed_examined"] += progress_state.get("_last_round_examined", 0)
+                progress_state["completed_validated"] += progress_state.get("_last_round_validated", 0)
+                progress_state["round"] = event.round
+            progress_state["_last_round_examined"] = event.round_examined
+            progress_state["_last_round_validated"] = event.round_validated
+            events.append(dataclasses.asdict(event))
+            repo.update_pipeline_job_progress(job_id, {
+                "events": events[-200:],
+                "examined": progress_state["completed_examined"] + event.round_examined,
+                "candidates_validated": progress_state["completed_validated"] + event.round_validated,
+                "round": event.round,
+                "target": target_count,
+            })
+
+        if target_count:
+            outcome = service.discover_to_target(
+                options["product"], target_count=target_count,
+                category=options.get("category"), country=options.get("country"),
+                max_multiplier=options.get("max_multiplier", 5), progress_callback=on_progress,
+            )
+        else:
+            outcome = service.discover(
+                options["product"], category=options.get("category"), country=options.get("country"),
+                max_candidates=options.get("max_candidates", 20), source=options.get("source", "serpapi"),
+                progress_callback=on_progress,
+            )
         repo.mark_pipeline_job_completed(job_id, stats=dataclasses.asdict(outcome))
     except Exception as e:
         logger.error("Discovery job %s failed: %s", job_id, e)
+        repo.mark_pipeline_job_failed(job_id, error=str(e))
+
+
+def run_single_company_job(job_id: str, options: Dict[str, Any]) -> None:
+    """The HTTP equivalent of pasting exactly one row into the existing
+    batch-upload CSV flow -- reuses batch.batch_service.BatchService.
+    run_batch() completely unmodified, just with a single
+    batch.csv_parser.ParsedRow built from `options["input_text"]`
+    instead of a parsed CSV. When input_text isn't already URL-shaped
+    (deduplication.domain_utils.looks_like_url), resolves a domain
+    first via scrapers.company_website_finder.CompanyWebsiteFinder --
+    the same class main.py find-websites/pipeline.
+    run_website_discovery_only already use -- since batch_service.py
+    deliberately refuses to guess or search for a website from a bare
+    name on its own (see that module's own docstring: 'company_name,
+    no website: needs_url -- never guessed or searched')."""
+    repo = SupplierRepository()
+    repo.mark_pipeline_job_running(job_id)
+    try:
+        input_text = (options.get("input_text") or "").strip()
+        website_finder_reason = None
+
+        if looks_like_url(input_text):
+            company_name, website = None, input_text
+        else:
+            from scrapers.company_website_finder import CompanyWebsiteFinder
+            from scrapers.google_search_scraper import GoogleSearchScraper
+            from scrapers.own_website_scraper import OwnWebsiteScraper
+
+            finder = CompanyWebsiteFinder(GoogleSearchScraper(), OwnWebsiteScraper())
+            finding = finder.find_website(input_text, country=options.get("country"))
+            website_finder_reason = finding.reason
+            company_name = input_text
+            website = finding.domain if finding.validated else None
+
+            if website is None:
+                repo.mark_pipeline_job_completed(job_id, stats={
+                    "status": "needs_url", "input_text": input_text,
+                    "website_finder_reason": website_finder_reason,
+                })
+                return
+
+        row = ParsedRow(
+            row_index=0,
+            original_columns={"Company Name": company_name or "", "Website": website or ""},
+            company_name=company_name, website=website,
+        )
+        service = BatchService(repo=repo)
+
+        def on_progress(outcome) -> None:
+            repo.update_pipeline_job_progress(job_id, dataclasses.asdict(outcome))
+
+        outcome = service.run_batch([row], batch_job_id=job_id, progress_callback=on_progress)
+
+        batch_rows = repo.get_batch_upload_rows(job_id)
+        resolved_supplier_id = batch_rows[0]["supplier_id"] if batch_rows else None
+
+        stats = dataclasses.asdict(outcome)
+        stats["resolved_domain"] = website
+        stats["resolved_supplier_id"] = resolved_supplier_id
+        stats["website_finder_reason"] = website_finder_reason
+        repo.mark_pipeline_job_completed(job_id, stats=stats)
+    except Exception as e:
+        logger.error("Single-company job %s failed: %s", job_id, e)
         repo.mark_pipeline_job_failed(job_id, error=str(e))
 
 

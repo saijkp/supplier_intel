@@ -51,6 +51,25 @@ def extract_domain(url: str) -> Optional[str]:
         return None
 
 
+def looks_like_url(text: Optional[str]) -> bool:
+    """True if `text` looks like a website URL or bare domain rather than
+    a free-text company name -- deliberately simple (no internal
+    whitespace, contains a '.'), not a full URL validator. Needed
+    because `extract_domain` is NOT safe for this classification: it
+    force-prepends a scheme and returns a truthy (if meaningless) netloc
+    string for ordinary multi-word input, e.g. `extract_domain("Acme
+    Trailer Co")` returns `"acme trailer co"`, not `None`. Known
+    tradeoff: a one-word company name containing a literal period (rare)
+    would be misrouted -- accepted, matches this codebase's general
+    "simple regex over LLM call" discipline."""
+    if not text:
+        return False
+    text = text.strip()
+    if not text or " " in text:
+        return False
+    return "." in text
+
+
 def is_platform_subdomain(domain: Optional[str]) -> bool:
     """True if `domain` is a subdomain of a known B2B platform (Alibaba,
     IndiaMART, HKTDC, etc.) rather than a supplier's own company website.

@@ -84,3 +84,46 @@ class TestApplicationAndKeySpecifications:
     def test_neither_given_matches_original_four_query_behaviour(self):
         queries = build_queries("winch")
         assert len(queries) == 4
+
+
+class TestExtraRoleWords:
+    """Real bug this ordering guards against: discover()'s own
+    candidate-collection loop stops as soon as max_candidates raw
+    candidates accumulate, processing queries in this function's
+    returned order. If role-word queries were appended last (as they
+    used to be), a call that explicitly asked for them could still have
+    them never run at all, silently starved out by the base templates
+    filling the budget first -- confirmed live on a real Material
+    Handling discovery run where manufacturer-framed queries alone
+    dominated the budget while dealer/distributor-framed queries (the
+    actually useful ones for that category) never even executed."""
+
+    def test_adds_one_query_per_role_word(self):
+        queries = build_queries("forklift", extra_role_words=["dealer", "distributor"])
+        assert len(queries) == 6  # 4 base + 2 role-word
+
+    def test_role_word_queries_come_first(self):
+        queries = build_queries("forklift", extra_role_words=["dealer", "distributor"])
+        assert '"forklift" dealer' == queries[0]
+        assert '"forklift" distributor' == queries[1]
+
+    def test_base_templates_still_present_after_role_words(self):
+        queries = build_queries("forklift", extra_role_words=["dealer"])
+        joined = " ".join(queries[1:])
+        assert "manufacturer" in joined
+        assert "supplier" in joined
+        assert "factory" in joined
+
+    def test_country_appended_to_role_word_queries_too(self):
+        queries = build_queries("forklift", country="United Kingdom", extra_role_words=["dealer"])
+        assert queries[0].endswith("United Kingdom")
+
+    def test_none_has_no_effect_on_default_output(self):
+        with_none = build_queries("trailer axle", extra_role_words=None)
+        without_arg = build_queries("trailer axle")
+        assert with_none == without_arg
+
+    def test_empty_list_has_no_effect_on_default_output(self):
+        with_empty = build_queries("trailer axle", extra_role_words=[])
+        without_arg = build_queries("trailer axle")
+        assert with_empty == without_arg

@@ -50,6 +50,7 @@ from api.jobs import (
     run_factory_facts_job,
     run_pipeline_job,
     run_reverify_job,
+    run_single_company_job,
     run_sourcing_job,
     run_verification_job,
 )
@@ -66,6 +67,7 @@ from api.models import (
     PipelineJobResponse,
     ProcurementOutcomeRequest,
     ProcurementOutcomeResponse,
+    SingleCompanyEnrichRequest,
     SourcingRunRequest,
     SourcingRunResponse,
     SupplierSearchResult,
@@ -359,6 +361,33 @@ async def create_batch_upload_job(
         options={"filename": file.filename},
     )
     background_tasks.add_task(run_batch_job, job_id, csv_bytes)
+    job = repo.get_pipeline_job(job_id)
+    return _to_job_response(job)
+
+
+@app.post(
+    "/companies/enrich",
+    response_model=PipelineJobResponse,
+    status_code=202,
+    dependencies=[Depends(require_api_token)],
+)
+def create_single_company_job(
+    request: SingleCompanyEnrichRequest,
+    background_tasks: BackgroundTasks,
+    repo: SupplierRepository = Depends(get_repo),
+) -> PipelineJobResponse:
+    """One company name or website -- resolves a domain first if needed
+    (see api/jobs.py's run_single_company_job), then runs EXACTLY the
+    existing batch-upload single-row path (SupplierMatcher.
+    resolve_and_store() + CollectionService.collect(), same as
+    POST /batch/upload). Same async job/poll pattern as every other job
+    endpoint."""
+    job_id = str(uuid.uuid4())
+    options = request.model_dump()
+    repo.create_pipeline_job(
+        job_id=job_id, query=f"[single-company] {request.input_text[:60]}", options=options,
+    )
+    background_tasks.add_task(run_single_company_job, job_id, options)
     job = repo.get_pipeline_job(job_id)
     return _to_job_response(job)
 

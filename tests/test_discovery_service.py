@@ -298,6 +298,288 @@ class TestDiscoverMaxCandidates:
         assert outcome.candidates_found == 3
 
 
+def _multi_candidate_service(repo, n=5):
+    """n candidates, all of which will validate successfully -- for
+    tests that need more than one real candidate in play (target_count
+    early-stop, progress-callback ordering)."""
+    from discovery.candidate_extractor import Candidate
+    results = [
+        _search_result(f"https://company{i}.example.com/", title=f"Company {i}", snippet="trailer axle manufacturer")
+        for i in range(n)
+    ]
+    outcomes = {}
+    for i in range(n):
+        domain = f"company{i}.example.com"
+        candidate = Candidate(title=f"Company {i}", link=f"https://{domain}/", snippet="trailer axle manufacturer", domain=domain)
+        outcomes[domain] = ValidationResult(
+            candidate, True, f"Company {i}", "China", 95.0,
+            "validated: name corroborated (score=95), product term found on page",
+        )
+    validator = FakeCandidateValidator(outcomes=outcomes)
+    service = DiscoveryService(
+        repo=repo, google_scraper=FakeGoogleScraper(results=results), website_fetcher=SimpleNamespace(),
+        candidate_validator=validator, matcher=SupplierMatcher(repo),
+    )
+    return service, validator
+
+
+class TestDiscoverTargetCountEarlyStop:
+
+    def test_stops_validating_once_target_reached(self, repo):
+        service, validator = _multi_candidate_service(repo, n=5)
+
+        outcome = service.discover("trailer axle", max_candidates=5, target_count=2)
+
+        assert outcome.candidates_validated == 2
+        assert len(validator.calls) == 2  # never validated the remaining 3
+
+    def test_target_count_none_validates_everything_unchanged(self, repo):
+        """Regression guard: the default (no target_count) behaviour --
+        every collected candidate gets validated -- must be unchanged."""
+        service, validator = _multi_candidate_service(repo, n=5)
+
+        outcome = service.discover("trailer axle", max_candidates=5)
+
+        assert outcome.candidates_validated == 5
+        assert len(validator.calls) == 5
+
+    def test_target_count_higher_than_available_candidates_validates_all(self, repo):
+        service, validator = _multi_candidate_service(repo, n=3)
+
+        outcome = service.discover("trailer axle", max_candidates=3, target_count=10)
+
+        assert outcome.candidates_validated == 3
+        assert len(validator.calls) == 3
+
+
+class TestDiscoverProgressCallback:
+
+    def test_fires_for_a_validated_candidate(self, repo):
+        service, _ = _multi_candidate_service(repo, n=1)
+        events = []
+
+        service.discover("trailer axle", progress_callback=events.append)
+
+        assert len(events) == 1
+        assert events[0].status == "validated"
+        assert events[0].domain == "company0.example.com"
+        assert events[0].badge == "validated"
+        assert events[0].round_examined == 1
+        assert events[0].round_validated == 1
+
+    def test_fires_for_a_rejected_candidate_with_the_real_reason(self, repo):
+        """Uses a term-missing rejection, not marketplace -- a
+        marketplace-host candidate never actually reaches
+        _process_candidate via the serpapi path in real life
+        (discovery.candidate_extractor.extract_candidates already
+        filters those out upstream, see its own module docstring and
+        candidate_validator.py's gate-2 comment on the deliberate
+        double-filtering); _classify_reason_badge's own mapping for
+        "marketplace" is covered directly in TestClassifyReasonBadge
+        instead of via this end-to-end path."""
+        from discovery.candidate_extractor import Candidate
+        domain = "otherco.example.com"
+        candidate = Candidate(title="Other Co", link=f"https://{domain}/", snippet="", domain=domain)
+        validator = FakeCandidateValidator(outcomes={
+            domain: ValidationResult(
+                candidate, False, "Other Co", None, None,
+                "fetched page text does not mention the searched term 'trailer axle'",
+            ),
+        })
+        service = DiscoveryService(
+            repo=repo, google_scraper=FakeGoogleScraper(results=[_search_result(f"https://{domain}/", title="Other Co")]),
+            website_fetcher=SimpleNamespace(), candidate_validator=validator, matcher=SupplierMatcher(repo),
+        )
+        events = []
+
+        service.discover("trailer axle", progress_callback=events.append)
+
+        assert events[0].status == "rejected"
+        assert events[0].badge == "term_missing"
+        assert events[0].reason == "fetched page text does not mention the searched term 'trailer axle'"
+
+    def test_fires_for_a_validator_exception_as_rejected(self, repo):
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        validator = FakeCandidateValidator(outcomes={}, raise_for_domain="acmetrailer.com")
+        service = _service(repo, results, "acmetrailer.com", candidate_validator=validator)
+        events = []
+
+        service.discover("trailer axle", progress_callback=events.append)
+
+        assert events[0].status == "rejected"
+        assert "exception" in events[0].reason
+
+    def test_fires_for_a_duplicate_merged_candidate(self, repo):
+        repo.create_golden_record({"canonical_name": "Acme Trailer Co", "domain": "acmetrailer.com", "country": "China"})
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        service = _service(repo, results, "acmetrailer.com")
+        events = []
+
+        service.discover("trailer axle", country="China", progress_callback=events.append)
+
+        assert events[0].status == "duplicate"
+
+    def test_callback_exception_does_not_abort_discovery(self, repo):
+        service = _service(repo, [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")], "acmetrailer.com")
+
+        def exploding_callback(event):
+            raise RuntimeError("progress UI blew up")
+
+        outcome = service.discover("trailer axle", progress_callback=exploding_callback)
+
+        assert outcome.candidates_validated == 1  # discovery itself still completed
+
+
+class TestClassifyReasonBadge:
+
+    def test_marketplace(self):
+        from discovery.discovery_service import _classify_reason_badge
+        assert _classify_reason_badge("candidate domain is a known B2B marketplace host: alibaba.com") == "marketplace"
+
+    def test_fetch_failed_variants(self):
+        from discovery.discovery_service import _classify_reason_badge
+        assert _classify_reason_badge("fetch failed: timeout") == "fetch_failed"
+        assert _classify_reason_badge("could not fetch candidate site: 404") == "fetch_failed"
+        assert _classify_reason_badge("fetched page had no readable text") == "fetch_failed"
+
+    def test_uk_not_registered(self):
+        from discovery.discovery_service import _classify_reason_badge
+        assert _classify_reason_badge("no confirmed active UK Companies House registration (...)") == "uk_not_registered"
+
+    def test_term_missing(self):
+        from discovery.discovery_service import _classify_reason_badge
+        assert _classify_reason_badge("fetched page text does not mention the searched term 'trailer axle'") == "term_missing"
+
+    def test_trader(self):
+        from discovery.discovery_service import _classify_reason_badge
+        assert _classify_reason_badge("page self-identifies as a trading company/distributor (matched phrase: 'authorised dealer') -- excluded, not a manufacturer") == "trader"
+
+    def test_validated(self):
+        from discovery.discovery_service import _classify_reason_badge
+        assert _classify_reason_badge("validated: name corroborated (score=95), product term found on page") == "validated"
+
+    def test_name_mismatch(self):
+        from discovery.discovery_service import _classify_reason_badge
+        assert _classify_reason_badge("extracted name 'Foo Ltd' does not match the original search result (score=40)") == "name_mismatch"
+
+    def test_unrecognised_reason_falls_back_to_other(self):
+        from discovery.discovery_service import _classify_reason_badge
+        assert _classify_reason_badge("something this function has never seen before") == "other"
+
+
+class TestDiscoverToTarget:
+
+    def test_round_1_alone_reaches_target_stops_there(self, repo):
+        service, validator = _multi_candidate_service(repo, n=5)
+
+        outcome = service.discover_to_target("trailer axle", target_count=2)
+
+        assert outcome.reached_target is True
+        assert outcome.stopped_reason == "target_reached"
+        assert outcome.rounds_run == 1
+        assert outcome.candidates_validated == 2
+
+    def test_ceiling_is_target_times_multiplier(self, repo):
+        service, validator = _multi_candidate_service(repo, n=3)
+
+        outcome = service.discover_to_target("trailer axle", target_count=4, max_multiplier=5)
+
+        assert outcome.ceiling == 20
+
+    def test_round_2_triggers_when_round_1_falls_short_but_found_candidates(self, repo):
+        """Round 1 (no extra_role_words) only has 2 candidates available
+        to it; round 2 (extra_role_words populated) has more -- proves
+        discover_to_target actually re-invokes discover() with broadened
+        queries rather than just giving up after one round."""
+        from discovery.candidate_extractor import Candidate
+
+        def make_outcome(domain, name):
+            candidate = Candidate(title=name, link=f"https://{domain}/", snippet="", domain=domain)
+            return ValidationResult(candidate, True, name, "UK", 90.0, "validated: name corroborated (score=90), product term found on page")
+
+        base_results = [_search_result("https://mfr1.example.com/", title="Mfr One")]
+        role_word_results = [_search_result("https://dealer1.example.com/", title="Dealer One")]
+
+        def scrape(query, max_results=20, **kwargs):
+            if "dealer" in query:
+                return role_word_results
+            return base_results
+
+        google_scraper = FakeGoogleScraper()
+        google_scraper.scrape = scrape
+        validator = FakeCandidateValidator(outcomes={
+            "mfr1.example.com": make_outcome("mfr1.example.com", "Mfr One"),
+            "dealer1.example.com": make_outcome("dealer1.example.com", "Dealer One"),
+        })
+        service = DiscoveryService(
+            repo=repo, google_scraper=google_scraper, website_fetcher=SimpleNamespace(),
+            candidate_validator=validator, matcher=SupplierMatcher(repo),
+        )
+
+        outcome = service.discover_to_target("forklift", target_count=2, max_multiplier=10)
+
+        assert outcome.rounds_run == 2
+        assert outcome.candidates_validated == 2
+        assert outcome.reached_target is True
+
+    def test_no_round_2_when_round_1_found_zero_raw_candidates(self, repo):
+        google_scraper = FakeGoogleScraper(results=[])
+        validator = FakeCandidateValidator(outcomes={})
+        service = DiscoveryService(
+            repo=repo, google_scraper=google_scraper, website_fetcher=SimpleNamespace(),
+            candidate_validator=validator, matcher=SupplierMatcher(repo),
+        )
+
+        outcome = service.discover_to_target("nonexistent widget", target_count=5)
+
+        assert outcome.rounds_run == 1
+        assert outcome.stopped_reason == "no_new_candidates_found"
+
+    def test_llm_fallback_used_only_as_round_3_last_resort(self, repo):
+        from discovery.llm_candidate_source import GenerationStats
+
+        google_scraper = FakeGoogleScraper(results=[])  # rounds 1+2 find nothing real
+        llm_source = FakeLLMCandidateSource(candidates=[])
+        validator = FakeCandidateValidator(outcomes={})
+        service = DiscoveryService(
+            repo=repo, google_scraper=google_scraper, website_fetcher=SimpleNamespace(),
+            candidate_validator=validator, matcher=SupplierMatcher(repo), llm_candidate_source=llm_source,
+        )
+
+        # Force round 1 to report at least one raw candidate found (so
+        # round 2 isn't skipped) but zero validated, by giving google
+        # results with no matching validator outcome -- everything
+        # rejected, forcing the loop through to round 3.
+        google_scraper._results = [_search_result("https://x.example.com/", title="X")]
+
+        outcome = service.discover_to_target("trailer axle", target_count=5, max_multiplier=3)
+
+        assert outcome.used_llm_fallback is True
+        assert outcome.rounds_run == 3
+        assert len(llm_source.calls) == 1
+
+    def test_llm_fallback_disabled_stops_after_round_2(self, repo):
+        google_scraper = FakeGoogleScraper(results=[_search_result("https://x.example.com/", title="X")])
+        validator = FakeCandidateValidator(outcomes={})  # nothing ever validates
+        service = DiscoveryService(
+            repo=repo, google_scraper=google_scraper, website_fetcher=SimpleNamespace(),
+            candidate_validator=validator, matcher=SupplierMatcher(repo),
+        )
+
+        outcome = service.discover_to_target("trailer axle", target_count=5, allow_llm_fallback=False)
+
+        assert outcome.used_llm_fallback is False
+        assert outcome.rounds_run == 2
+
+    def test_progress_events_are_stamped_with_their_round_number(self, repo):
+        service, validator = _multi_candidate_service(repo, n=5)
+        events = []
+
+        service.discover_to_target("trailer axle", target_count=2, progress_callback=events.append)
+
+        assert all(e.round == 1 for e in events)
+
+
 class FakeLLMCandidateSource:
     """Mirrors FakeGoogleScraper's convention: a fixed return value,
     recording every call for assertion."""

@@ -468,7 +468,8 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
       <span class="brand-name">Supplier Intel</span>
     </div>
     <nav class="nav" id="nav">
-      <button data-view="search" aria-current="page">Search</button>
+      <button data-view="find" aria-current="page">Find suppliers</button>
+      <button data-view="search">Search</button>
       <button data-view="discover">Discover &amp; enrich</button>
       <button data-view="source">Source</button>
       <button data-view="compare">Compare</button>
@@ -483,8 +484,47 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
 
 <main class="wrap">
 
+  <!-- ══ FIND SUPPLIERS (unified search/enrichment) ═════════ -->
+  <section id="view-find">
+    <div class="panel">
+      <div class="panel-head"><h2 class="panel-title">Find suppliers</h2></div>
+      <div class="panel-body">
+        <div class="field">
+          <label class="label" for="findInput">Company name, website, or product/category</label>
+          <input class="input" id="findInput" placeholder="e.g. Acme Trailer Co, acmetrailer.com, or trailer axle" autocomplete="off">
+        </div>
+        <div id="findModeRow" class="hint" style="margin:6px 0"></div>
+        <div class="field hidden" id="findTargetCountField">
+          <label class="label" for="findTargetCount">How many suppliers do you need? (optional)</label>
+          <input class="input" id="findTargetCount" type="number" min="1" max="200" placeholder="e.g. 15">
+        </div>
+        <button class="btn btn-ghost btn-sm" id="btnFindBulkToggle" style="margin:8px 0">Have a list instead? &rarr;</button>
+        <div class="field hidden" id="findBulkBlock">
+          <label class="label" for="findBulkPaste">Paste a list (one company per line, name and/or website)</label>
+          <textarea class="input" id="findBulkPaste" rows="5" placeholder="Acme Trailer Co, acmetrailer.com&#10;Beta Bearings Ltd&#10;gamma-axles.com"></textarea>
+          <label class="label" for="findBulkFile" style="margin-top:10px">…or upload a CSV</label>
+          <input class="input" id="findBulkFile" type="file" accept=".csv">
+        </div>
+        <div id="findCostNote" class="hint" style="margin:10px 0"></div>
+        <button class="btn btn-primary btn-block" id="btnFindGo">Go</button>
+      </div>
+    </div>
+
+    <div id="findAlert" style="margin-top:12px"></div>
+
+    <div class="panel" id="findProgressPanel" style="margin-top:16px;display:none">
+      <div class="panel-head">
+        <h2 class="panel-title">Progress</h2>
+        <span class="count" id="findProgressCount"></span>
+      </div>
+      <div id="findProgressFeed" style="max-height:320px;overflow-y:auto"></div>
+    </div>
+
+    <div id="findResults" style="margin-top:16px"></div>
+  </section>
+
   <!-- ══ SEARCH ══════════════════════════════════════════ -->
-  <section id="view-search">
+  <section id="view-search" class="hidden">
     <div class="split">
       <aside class="panel rail">
         <div class="panel-head"><h2 class="panel-title">Filters</h2></div>
@@ -853,8 +893,9 @@ $("nav").addEventListener("click", (e) => {
   const view = btn.dataset.view;
   document.querySelectorAll("#nav button").forEach(b =>
     b.setAttribute("aria-current", b === btn ? "page" : "false"));
-  ["search","discover","source","compare","audit"].forEach(v =>
+  ["find","search","discover","source","compare","audit"].forEach(v =>
     $("view-" + v).classList.toggle("hidden", v !== view));
+  if (view === "find") initFindView();
   if (view === "discover") loadJobs();
   if (view === "source") initSourceView();
   if (view === "compare") initCompareView();
@@ -1063,6 +1104,339 @@ function supplierCard(s, i) {
         </div>
       </div>
     </article>`;
+}
+
+/* ═══ Find suppliers (unified homepage search/enrichment) ═════
+   Routes one text box to whichever EXISTING pipeline already does the
+   job: a URL/company name -> POST /companies/enrich (the existing
+   batch-upload single-row path); a product/category term -> POST
+   /discovery/jobs (plain discover(), or discover_to_target()'s
+   bounded round-based auto-continue when a target count is given); a
+   pasted list/CSV -> the existing POST /batch/upload, unchanged, via
+   a client-built CSV Blob. No new backend logic is invoked here that
+   doesn't already exist server-side -- this block is routing +
+   live-progress rendering only.
+
+   Labeling: this feature's output is SOURCING-VALIDATED only, never
+   "audited"/"qualified"/"fully verified" -- the Audit tab's A-D manual
+   review is a separate, untouched step. See the disclaimer rendered
+   alongside every result below. */
+
+const FIND_COUNT_PATTERNS = [/\bneed\s+(\d+)\b/i, /\bfind\s+(\d+)\b/i, /\bsource\s+(\d+)\b/i, /\b(\d+)\s+suppliers?\b/i];
+
+function findLooksLikeUrl(text) {
+  text = (text || "").trim();
+  return text.length > 0 && !text.includes(" ") && text.includes(".");
+}
+function findParseTargetCountFromText(text) {
+  for (const re of FIND_COUNT_PATTERNS) {
+    const m = text.match(re);
+    if (m) return parseInt(m[1], 10);
+  }
+  return null;
+}
+
+/* Unambiguous cases (URL-shaped, or an explicit/inline target count)
+   route automatically. Everything else is genuinely ambiguous between
+   "a company name" and "a product/category term with no count" -- no
+   reliable heuristic exists for that (this codebase never
+   auto-classifies free text elsewhere, main.py always uses explicit
+   subcommands) -- so a one-click chip is shown rather than silently
+   guessing and spending a paid search call on the wrong pipeline. */
+let findAmbiguousChoice = null;  // "company" | "product" | null
+function findClassifyInput(text) {
+  if (findLooksLikeUrl(text)) return { kind: "url" };
+  const inlineCount = findParseTargetCountFromText(text);
+  const explicitCount = parseInt(($("findTargetCount").value || "").trim(), 10) || null;
+  const count = explicitCount || inlineCount;
+  if (count) return { kind: "product", targetCount: count };
+  if (findAmbiguousChoice === "company") return { kind: "company" };
+  if (findAmbiguousChoice === "product") return { kind: "product", targetCount: null };
+  return { kind: "ambiguous" };
+}
+
+function findRenderMode() {
+  const text = $("findInput").value.trim();
+  const row = $("findModeRow");
+  $("findTargetCountField").classList.toggle("hidden", findLooksLikeUrl(text) || !text);
+  if (!text) { row.innerHTML = ""; findAmbiguousChoice = null; $("findCostNote").textContent = ""; return; }
+  const c = findClassifyInput(text);
+  if (c.kind === "url") {
+    row.innerHTML = `Detected: <strong>website URL</strong> — will collect this company's own site.`;
+  } else if (c.kind === "company") {
+    row.innerHTML = `Detected: <strong>company name</strong> — will find its website, then collect. ` +
+      `<button class="btn btn-ghost btn-sm" data-find-mode="product">Not a company — it's a product/category &rarr;</button>`;
+  } else if (c.kind === "product") {
+    row.innerHTML = `Detected: <strong>product/category search</strong>${c.targetCount ? ` — target ${c.targetCount} suppliers` : ""}. ` +
+      `<button class="btn btn-ghost btn-sm" data-find-mode="company">Not a product — it's a company name &rarr;</button>`;
+  } else {
+    row.innerHTML = `Is "<strong>${esc(text)}</strong>" a company name or a product/category to search for? ` +
+      `<button class="btn btn-ghost btn-sm" data-find-mode="company">It's a company</button> ` +
+      `<button class="btn btn-ghost btn-sm" data-find-mode="product">It's a product/category</button>`;
+  }
+  findRenderCostNote(c);
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-find-mode]");
+  if (!b) return;
+  findAmbiguousChoice = b.dataset.findMode;
+  findRenderMode();
+});
+$("findInput").addEventListener("input", findRenderMode);
+$("findTargetCount").addEventListener("input", findRenderMode);
+
+function findRenderCostNote(c) {
+  const host = $("findCostNote");
+  if (c.kind === "url") {
+    host.textContent = "Cost: near-zero — one website visit, no paid search call.";
+  } else if (c.kind === "company") {
+    host.textContent = "Cost: 1 real search call to find the website, then a website visit and a couple of small AI calls for address/name — inexpensive, not free.";
+  } else if (c.kind === "product" && c.targetCount) {
+    const ceiling = c.targetCount * 5;
+    host.textContent = `Cost: up to ${ceiling} candidates examined (target ${c.targetCount} × 5) — each costs at most a free website visit and ` +
+      `(only if it passes the free marketplace/name checks) one small AI call. Up to ~8 search queries across up to 2 rounds before a last-resort AI-knowledge fallback.`;
+  } else if (c.kind === "product") {
+    host.textContent = "Cost: a real search plus a small AI check per candidate found — start small, or give a target count for a bounded run.";
+  } else {
+    host.textContent = "";
+  }
+}
+
+$("btnFindBulkToggle").addEventListener("click", () => {
+  const nowVisible = $("findBulkBlock").classList.toggle("hidden") === false;
+  $("btnFindBulkToggle").textContent = nowVisible ? "Search a single company/product instead ←" : "Have a list instead? →";
+});
+
+/* ═══ Find: dispatch ═══════════════════════════════════════ */
+function findEventRow(ev) {
+  const badgeClass = ev.status === "validated" ? "mfr" : ev.status === "duplicate" ? "warn" : "trader";
+  const label = ev.extracted_name || ev.candidate_title || ev.domain;
+  return `<div style="padding:8px 0;border-bottom:1px solid var(--rule)">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
+      <strong>${esc(label)}</strong>
+      <span class="badge ${badgeClass}">${esc(ev.status)}${ev.round > 1 ? ` · round ${ev.round}` : ""}</span>
+    </div>
+    <div class="hint" style="margin-top:2px">${esc(ev.domain)} — ${esc(ev.reason)}</div>
+  </div>`;
+}
+
+function findStopReasonMessage(stats) {
+  if (!stats.stopped_reason || stats.stopped_reason === "target_reached") return "";
+  const found = stats.candidates_validated ?? 0;
+  const target = stats.target_count ?? "?";
+  const ceiling = stats.ceiling ?? "?";
+  if (stats.stopped_reason === "no_new_candidates_found") {
+    return `<div class="alert"><div class="alert-title">Stopped — no candidates found</div>
+      <div>This search term returned nothing to examine. Try rephrasing the product term or broadening the category.</div></div>`;
+  }
+  return `<div class="alert"><div class="alert-title">Stopped after examining ${esc(String(ceiling))} candidates</div>
+    <div>Found ${esc(String(found))} of the ${esc(String(target))} you asked for. This query may have a low hit rate; ` +
+    `consider rephrasing the product term or broadening the category.</div></div>`;
+}
+
+const FIND_DISCLAIMER = `<p class="hint" style="margin-top:10px">Sourcing-validated only — these results have not been through the A-D manual review in the Audit tab.</p>`;
+
+async function findRenderSupplierResults(host, supplierIds) {
+  if (!supplierIds.length) { host.innerHTML = ""; return; }
+  try {
+    const suppliers = await Promise.all(supplierIds.map(id => api(`/suppliers/${id}`)));
+    host.innerHTML = `<div class="results">${suppliers.map(supplierCard).join("")}</div>` + FIND_DISCLAIMER;
+  } catch (err) {
+    explain(err, host);
+  }
+}
+
+async function pollSingleCompanyJob(jobId) {
+  const btn = $("btnFindGo");
+  let job;
+  try {
+    job = await api(`/pipeline/jobs/${jobId}`);
+  } catch (err) {
+    explain(err, $("findAlert"));
+    btn.disabled = false; btn.textContent = "Go";
+    return;
+  }
+
+  if (job.status === "queued" || job.status === "running") {
+    btn.innerHTML = `<span class="spin"></span> Working`;
+    setTimeout(() => pollSingleCompanyJob(jobId), 3000);
+    return;
+  }
+  btn.disabled = false; btn.textContent = "Go";
+
+  if (job.status === "failed") {
+    alertBox($("findAlert"), 1, "Enrichment failed", esc(job.error || "Unknown error"));
+    return;
+  }
+
+  const st = job.stats || {};
+  if (st.status === "needs_url") {
+    alertBox($("findAlert"), 1, "Couldn't find a website",
+      `${esc(st.website_finder_reason || "No confident match found.")} Try entering the company's website directly instead.`);
+    return;
+  }
+  if (st.resolved_supplier_id != null) {
+    await findRenderSupplierResults($("findResults"), [st.resolved_supplier_id]);
+  } else {
+    alertBox($("findAlert"), 1, "Nothing resolved", "The enrichment ran but didn't produce a supplier record.");
+  }
+}
+
+async function pollFindDiscoveryJob(jobId) {
+  const btn = $("btnFindGo");
+  let job;
+  try {
+    job = await api(`/pipeline/jobs/${jobId}`);
+  } catch (err) {
+    explain(err, $("findAlert"));
+    btn.disabled = false; btn.textContent = "Go";
+    return;
+  }
+
+  if (job.status === "queued" || job.status === "running") {
+    btn.innerHTML = `<span class="spin"></span> Searching`;
+    const p = job.progress || {};
+    $("findProgressPanel").style.display = "";
+    $("findProgressCount").textContent = `${p.candidates_validated ?? 0} validated${p.target ? " / " + p.target + " target" : ""}`;
+    $("findProgressFeed").innerHTML = (p.events || []).slice().reverse().map(findEventRow).join("");
+    setTimeout(() => pollFindDiscoveryJob(jobId), 3000);
+    return;
+  }
+  btn.disabled = false; btn.textContent = "Go";
+
+  if (job.status === "failed") {
+    alertBox($("findAlert"), 1, "Search failed", esc(job.error || "Unknown error"));
+    return;
+  }
+
+  const st = job.stats || {};
+  // Final progress-panel update -- the job can go queued/running -> completed
+  // between two polls, skipping the last incremental update above, so the
+  // panel would otherwise freeze one tick behind the true final count.
+  const p = job.progress || {};
+  $("findProgressPanel").style.display = "";
+  $("findProgressCount").textContent = `${st.candidates_validated ?? p.candidates_validated ?? 0} validated${st.target_count ? " / " + st.target_count + " target" : ""}`;
+  $("findProgressFeed").innerHTML = (p.events || []).slice().reverse().map(findEventRow).join("");
+
+  const stopMsg = findStopReasonMessage(st);
+  const ids = st.new_supplier_ids || [];
+  $("findResults").innerHTML = stopMsg;
+  if (!ids.length) {
+    $("findResults").innerHTML += `<div class="empty"><div class="empty-title">No suppliers found</div>
+      <p class="empty-text">Try rephrasing the product term, removing a filter, or asking for fewer suppliers.</p></div>`;
+    return;
+  }
+  const resultsHost = document.createElement("div");
+  $("findResults").appendChild(resultsHost);
+  await findRenderSupplierResults(resultsHost, ids);
+}
+
+$("btnFindGo").addEventListener("click", async () => {
+  const bulkVisible = !$("findBulkBlock").classList.contains("hidden");
+  if (bulkVisible) return findSubmitBulk();
+
+  const text = $("findInput").value.trim();
+  if (!text) { alertBox($("findAlert"), 1, "Nothing entered", "Type a company name, website, or product/category."); return; }
+  const c = findClassifyInput(text);
+  if (c.kind === "ambiguous") { alertBox($("findAlert"), 1, "Pick one", "Click one of the two buttons above first."); return; }
+
+  const btn = $("btnFindGo");
+  btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Starting`;
+  alertBox($("findAlert"), 0);
+  $("findResults").innerHTML = "";
+  $("findProgressPanel").style.display = "none";
+  $("findProgressFeed").innerHTML = "";
+
+  try {
+    if (c.kind === "url" || c.kind === "company") {
+      const job = await api("/companies/enrich", { method: "POST", body: JSON.stringify({ input_text: text }) });
+      pollSingleCompanyJob(job.id);
+    } else {
+      const body = { product: text };
+      if (c.targetCount) { body.target_count = c.targetCount; }
+      const job = await api("/discovery/jobs", { method: "POST", body: JSON.stringify(body) });
+      pollFindDiscoveryJob(job.id);
+    }
+  } catch (err) {
+    explain(err, $("findAlert"));
+    btn.disabled = false; btn.textContent = "Go";
+  }
+});
+
+/* ═══ Find: bulk paste/CSV -- the EXISTING /batch/upload endpoint,
+   unchanged, just fed from either a pasted list or a chosen file ═══ */
+function findBuildCsvFromPastedList(text) {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const csvEscape = (s) => /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  const rows = lines.map(line => {
+    const parts = line.split(/\t|,/).map(p => p.trim()).filter(Boolean);
+    if (parts.length >= 2) return [parts[0], parts[1]];
+    if (findLooksLikeUrl(parts[0] || "")) return ["", parts[0]];
+    return [parts[0] || "", ""];
+  });
+  return "Company Name,Website\n" + rows.map(([n, w]) => `${csvEscape(n)},${csvEscape(w)}`).join("\n") + "\n";
+}
+
+async function findSubmitBulk() {
+  const file = $("findBulkFile").files[0];
+  const pasted = $("findBulkPaste").value.trim();
+  if (!file && !pasted) { alertBox($("findAlert"), 1, "Nothing to upload", "Paste a list or choose a CSV file."); return; }
+
+  const btn = $("btnFindGo");
+  btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Uploading`;
+  alertBox($("findAlert"), 0);
+  $("findResults").innerHTML = "";
+
+  try {
+    const form = new FormData();
+    if (file) {
+      form.append("file", file);
+    } else {
+      const blob = new Blob([findBuildCsvFromPastedList(pasted)], { type: "text/csv" });
+      form.append("file", blob, "pasted.csv");
+    }
+    const res = await fetch(state.base + "/batch/upload", {
+      method: "POST", headers: { "Authorization": "Bearer " + state.token }, body: form,
+    });
+    if (!res.ok) throw Object.assign(new Error("Upload failed"), { status: res.status });
+    const job = await res.json();
+    pollFindBulkJob(job.id);
+  } catch (err) {
+    explain(err, $("findAlert"));
+    btn.disabled = false; btn.textContent = "Go";
+  }
+}
+
+async function pollFindBulkJob(jobId) {
+  const btn = $("btnFindGo");
+  try {
+    const job = await api(`/pipeline/jobs/${jobId}`);
+    if (job.status === "queued" || job.status === "running") {
+      const p = job.progress || {};
+      $("findResults").innerHTML = `<p class="hint">Processing… ${p.processed ?? 0}/${p.total_rows ?? "?"} row(s) (${p.succeeded ?? 0} succeeded, ${p.failed ?? 0} failed so far)</p>`;
+      btn.innerHTML = `<span class="spin"></span> Processing`;
+      setTimeout(() => pollFindBulkJob(jobId), 3000);
+      return;
+    }
+    btn.disabled = false; btn.textContent = "Go";
+    if (job.status === "completed") {
+      const st = job.stats || {};
+      $("findResults").innerHTML = `
+        <p class="hint">Done: ${st.succeeded ?? 0} succeeded, ${st.failed ?? 0} failed, ${st.needs_url ?? 0} need a URL.</p>
+        <button class="btn btn-ghost btn-block" data-download-batch="${esc(jobId)}" style="margin-top:8px">Download results CSV</button>` + FIND_DISCLAIMER;
+    } else {
+      $("findResults").innerHTML = `<div class="alert"><div class="alert-title">Batch failed</div><div>${esc(job.error || "unknown error")}</div></div>`;
+    }
+  } catch (err) {
+    explain(err, $("findAlert"));
+    btn.disabled = false; btn.textContent = "Go";
+  }
+}
+
+function initFindView() {
+  if ($("findInput").dataset.inited) return;
+  $("findInput").dataset.inited = "1";
+  findRenderMode();
 }
 
 /* ═══ Search ════════════════════════════════════════════════ */
@@ -1311,6 +1685,12 @@ function summarizeJobStats(j) {
   }
   if (q.startsWith("[batch]")) {
     return `${st.succeeded ?? 0} succeeded · ${st.failed ?? 0} failed · ${st.needs_url ?? 0} need URL`;
+  }
+  if (q.startsWith("[single-company]")) {
+    if (st.status === "needs_url") return "needs a URL";
+    return "resolved_supplier_id" in st
+      ? `${st.succeeded ?? 0 ? "enriched" : "failed"}`
+      : "—";
   }
   return Object.entries(st).slice(0, 2).map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(", ");
 }
@@ -1945,12 +2325,15 @@ function renderAuditDetail(b) {
 /* ═══ Boot ══════════════════════════════════════════════════ */
 (async function init() {
   await checkHealth();
+  initFindView();
   if (!state.base) {
-    $("searchResults").innerHTML = `<div class="empty">
+    const connectPrompt = `<div class="empty">
       <div class="empty-title">Connect to get started</div>
-      <p class="empty-text">Point this at your API and search will return suppliers with their contact details and evidence-backed scores.</p>
+      <p class="empty-text">Point this at your API to search, discover, and enrich suppliers.</p>
       <button class="btn btn-primary" style="margin-top:16px" onclick="document.getElementById('connBtn').click()">Add API details</button>
     </div>`;
+    $("findResults").innerHTML = connectPrompt;
+    $("searchResults").innerHTML = connectPrompt;
   } else {
     $("searchResults").innerHTML = `<div class="empty">
       <div class="empty-title">Search the supplier database</div>
