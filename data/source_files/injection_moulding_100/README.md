@@ -14,7 +14,7 @@ supplier row at all).
 Only changes if the audit is deliberately re-run by hand — nothing in this
 codebase writes to these files automatically.
 
-- `confirmed.csv` (42) — candidates that resolved to a real, validated
+- `confirmed.csv` (37) — candidates that resolved to a real, validated
   supplier. Company Name/Website only; `main.py status --category` re-checks
   each against the live DB (still exists, still unflagged) rather than
   trusting this file's snapshot blindly.
@@ -22,7 +22,7 @@ codebase writes to these files automatically.
   excluded (not a direct manufacturer: broker/network model, wrong category,
   or failed re-validation). Re-checked against `suppliers.flagged` live,
   same reasoning as confirmed.csv.
-- `genuinely_dead.csv` (19) — no live website found at all, and no
+- `genuinely_dead.csv` (24) — no live website found at all, and no
   validated alternate domain either. Static; no live DB signal applies (see
   README intro).
 - `name_mismatch.csv` (3) — a real site was fetched, but the extracted
@@ -37,3 +37,20 @@ from the original `genuinely_dead.csv` snapshot before checking in — an
 alternate domain was found and validated for each during the same audit
 session, moving them into `confirmed.csv` instead. This file reflects that
 correction already; no separate exclusion list is needed downstream.
+
+Five more names moved the OTHER direction on 2026-08-21, from
+`confirmed.csv` into `genuinely_dead.csv`: Ming-Li Precision Mould,
+Apadrecoplastics, Murray Plastics, OzMetal Plastik (dead again -- the
+validated alternate domain above has itself since gone dark), and Rutland
+Plastics. Found not from a routine audit but as a side effect of a live
+collection re-run investigating a separate phone/email-extraction bug (see
+`collection/collection_service.py`'s `default_region_fallback` and
+`verification/website_contact_extractor.py`'s `extract_mailto_emails`/
+`extract_tel_phones`) -- these five simply failed to load at all
+(DNS NXDOMAIN for four; DNS resolves but connection times out for Rutland
+Plastics specifically) during that re-run, confirmed a second way via a
+direct `socket.gethostbyname` lookup outside the crawler. See
+`genuinely_dead.csv`'s own per-row reason column for which failure mode
+applies to which domain -- Rutland Plastics is the one weaker claim of the
+five (resolves but times out, not a hard DNS failure) and is worth a manual
+recheck before treating as permanently dead.

@@ -602,7 +602,15 @@ def export_discovered(product: str, output: Optional[str], discovery_source: str
 @click.option("--force", is_flag=True,
               help="In --pending mode, re-collect every supplier with a domain, not just "
                    "ones never collected.")
-def collect(supplier_id: Optional[int], pending: bool, limit: int, force: bool) -> None:
+@click.option("--default-region", default=None,
+              help="ISO 3166-1 alpha-2 fallback (e.g. GB) for phone-number parsing when a "
+                   "supplier's own country isn't set yet -- always true for a freshly-created "
+                   "supplier, since a national-format phone number (no +44 prefix) can't be "
+                   "recognised without a region hint. Only use this when you KNOW the batch is "
+                   "regionally scoped (e.g. a UK-only category) -- never overrides a real, "
+                   "known country.")
+def collect(supplier_id: Optional[int], pending: bool, limit: int, force: bool,
+            default_region: Optional[str]) -> None:
     """Visit supplier website(s) with a real headless browser (collection.
     SiteCollector) and save HTML/screenshots/extracted contact+product data.
     Either --supplier-id ONE or --pending a batch -- see collection/
@@ -614,7 +622,7 @@ def collect(supplier_id: Optional[int], pending: bool, limit: int, force: bool) 
         console.print("[red]X[/red] Specify either --supplier-id or --pending.")
         return
 
-    service = CollectionService()
+    service = CollectionService(default_region_fallback=default_region)
     if supplier_id:
         outcome = service.collect(supplier_id)
         console.print(f"[green]OK[/green] Supplier #{supplier_id}: {outcome['status']} "

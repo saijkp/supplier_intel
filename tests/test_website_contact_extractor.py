@@ -16,7 +16,9 @@ from verification.website_contact_extractor import (
     country_name_to_region_code,
     extract_contact_details,
     extract_emails,
+    extract_mailto_emails,
     extract_phone_numbers,
+    extract_tel_phones,
     extract_typed_phone_numbers,
 )
 
@@ -226,6 +228,58 @@ class TestExtractTypedPhoneNumbers:
         assert extract_phone_numbers(text) == ["+862112345678", "+8613800001111"]
 
 
+class TestExtractMailtoEmails:
+    """See extract_mailto_emails's own docstring for the real site
+    (truckmasters.co.uk) that surfaced why this needs to exist: a
+    "Click Here"-style visible link with the real address only in the
+    href, invisible to extract_emails' text-only regex scan."""
+
+    def test_extracts_address_from_mailto_href(self):
+        assert extract_mailto_emails(["mail@acme.example.com"]) == ["mail@acme.example.com"]
+
+    def test_deduplicates(self):
+        result = extract_mailto_emails(["sales@acme.example.com", "sales@acme.example.com"])
+        assert result == ["sales@acme.example.com"]
+
+    def test_junk_domain_rejected_same_as_extract_emails(self):
+        assert extract_mailto_emails(["info@example.com"]) == []
+
+    def test_image_extension_lookalike_rejected(self):
+        assert extract_mailto_emails(["logo@2x.png"]) == []
+
+    def test_non_email_shaped_value_rejected(self):
+        assert extract_mailto_emails(["not-an-email"]) == []
+
+    def test_empty_list_returns_empty(self):
+        assert extract_mailto_emails([]) == []
+
+
+class TestExtractTelPhones:
+    """See extract_tel_phones's own docstring: a tel: href is parsed
+    as a single isolated candidate (phonenumbers.parse), not scanned
+    as free text -- unlike extract_typed_phone_numbers, which expects
+    a page of prose with possibly-multiple numbers."""
+
+    def test_finds_a_number_with_explicit_country_code(self):
+        findings = extract_tel_phones(["+441754880481"])
+        assert findings == [PhoneFinding(number="+441754880481", phone_type="landline")]
+
+    def test_national_format_requires_default_region(self):
+        assert extract_tel_phones(["01754880481"]) == []
+        findings = extract_tel_phones(["01754880481"], default_region="GB")
+        assert findings == [PhoneFinding(number="+441754880481", phone_type="landline")]
+
+    def test_deduplicates_by_number_and_type(self):
+        findings = extract_tel_phones(["+441754880481", "+441754880481"])
+        assert len(findings) == 1
+
+    def test_invalid_number_produces_no_finding(self):
+        assert extract_tel_phones(["not-a-number"]) == []
+
+    def test_empty_list_returns_empty(self):
+        assert extract_tel_phones([]) == []
+
+
 class TestCountryNameToRegionCode:
 
     def test_recognises_common_country_names(self):
@@ -240,9 +294,11 @@ class TestCountryNameToRegionCode:
 
 
 class _FakePage:
-    def __init__(self, url, text):
+    def __init__(self, url, text, mailto_emails=None, tel_phones=None):
         self.url = url
         self.text = text
+        self.mailto_emails = mailto_emails or []
+        self.tel_phones = tel_phones or []
 
 
 class TestExtractContactDetails:
@@ -280,6 +336,66 @@ class TestExtractContactDetails:
         with_hint = extract_contact_details(pages, default_region="CN")
         assert without_hint == []
         assert len(with_hint) == 1
+
+
+class TestExtractContactDetailsMailtoTel:
+    """The real bug this covers: a page whose VISIBLE text hides the
+    real email/phone behind "Click Here"-style link text, while the
+    real values sit in mailto:/tel: hrefs -- found on truckmasters.co.uk's
+    contact page (see extract_mailto_emails's docstring)."""
+
+    def test_mailto_email_found_even_when_visible_text_has_none(self):
+        pages = [_FakePage(
+            "https://acme.example.com/contact", "Email: Click Here",
+            mailto_emails=["sales@acme.example.com"],
+        )]
+        findings = extract_contact_details(pages)
+        assert findings[0].emails == ["sales@acme.example.com"]
+
+    def test_mailto_email_merged_with_text_regex_finding_not_duplicated(self):
+        pages = [_FakePage(
+            "https://acme.example.com/contact", "Email: sales@acme.example.com",
+            mailto_emails=["sales@acme.example.com"],
+        )]
+        findings = extract_contact_details(pages)
+        assert findings[0].emails == ["sales@acme.example.com"]
+
+    def test_tel_phone_found_even_when_visible_text_has_none(self):
+        pages = [_FakePage(
+            "https://acme.example.com/contact", "Call Us",
+            tel_phones=["01754880481"],
+        )]
+        findings = extract_contact_details(pages, default_region="GB")
+        assert findings[0].phone_numbers == ["+441754880481"]
+        assert findings[0].typed_phone_numbers == [PhoneFinding(number="+441754880481", phone_type="landline")]
+
+    def test_tel_phone_still_needs_a_region_hint_for_national_format(self):
+        pages = [_FakePage("https://acme.example.com/contact", "Call Us", tel_phones=["01754880481"])]
+        findings = extract_contact_details(pages)
+        assert findings == []
+
+    def test_page_with_only_a_junk_page_flag_still_contributes_nothing(self):
+        """mailto:/tel: findings must not bypass the parking-page
+        filter -- same "nothing on a junk page is trusted" discipline
+        as the text-based regex scan."""
+        pages = [_FakePage(
+            "https://parked.example.com", "The nginx web server is successfully installed.",
+            mailto_emails=["admin@parked.example.com"], tel_phones=["+441754880481"],
+        )]
+        assert extract_contact_details(pages) == []
+
+    def test_a_page_object_without_mailto_tel_attributes_is_unaffected(self):
+        """OwnWebsitePage (scrapers/own_website_scraper.py) has no
+        mailto_emails/tel_phones fields -- getattr's default must keep
+        this function working exactly as before for that caller."""
+        class BarePage:
+            def __init__(self, url, text):
+                self.url = url
+                self.text = text
+
+        pages = [BarePage("https://acme.example.com/contact", "Email: sales@acme.example.com")]
+        findings = extract_contact_details(pages)
+        assert findings[0].emails == ["sales@acme.example.com"]
 
 
 class _FakePageWithForm:

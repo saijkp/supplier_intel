@@ -104,12 +104,25 @@ class CollectionService:
         proxy_provider: Optional[ProxyProvider] = None,
         job_max_seconds: int = COLLECTION_JOB_MAX_SECONDS,
         parallel_workers: int = COLLECTION_PARALLEL_WORKERS,
+        default_region_fallback: Optional[str] = None,
     ):
         self.repo = repo or SupplierRepository()
         self.proxy_provider = proxy_provider or select_proxy_provider()
         self.site_collector = site_collector or SiteCollector(proxy_provider=self.proxy_provider)
         self.job_max_seconds = job_max_seconds
         self.parallel_workers = parallel_workers
+        # ISO 3166-1 alpha-2 fallback (e.g. "GB") used for phone parsing
+        # ONLY when the supplier's own `country` isn't set yet -- always
+        # true for a freshly-created supplier, since collect() runs
+        # BEFORE address/country extraction in the batch-upload flow
+        # (batch/batch_service.py), so a national-format phone number
+        # (no "+44" prefix) silently fails to parse without this. The
+        # caller supplies this explicitly when it KNOWS the batch is
+        # regionally scoped (e.g. main.py collect --default-region GB
+        # for a UK-only category) -- CollectionService itself stays
+        # category/region-agnostic, matching every other stage in this
+        # codebase. Never overrides a real, known country.
+        self.default_region_fallback = default_region_fallback
 
     def collect(self, supplier_id: int, return_pages: bool = False, source_url: Optional[str] = None) -> Dict[str, Any]:
         """Collect against one supplier by id -- always runs, not
@@ -226,7 +239,7 @@ class CollectionService:
             "contact_phone_types_saved": 0,
         }
         try:
-            region_hint = country_name_to_region_code(country)
+            region_hint = country_name_to_region_code(country) or self.default_region_fallback
             findings = extract_contact_details(pages, default_region=region_hint)
             all_emails: list = []
             all_phones: list = []

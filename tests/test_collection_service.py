@@ -351,6 +351,87 @@ class TestContactExtraction:
         assert repo.get_supplier(supplier_id)["primary_email"] == "info@acme.example.com"
 
 
+class TestDefaultRegionFallback:
+    """default_region_fallback exists because collect() always runs
+    BEFORE address/country extraction in the batch-upload flow (see
+    batch/batch_service.py's module docstring) -- a freshly-created
+    supplier's country is genuinely unknown at the moment contact
+    extraction runs, so a national-format phone number (no +44 prefix)
+    silently fails to parse without a region hint. Found via a real
+    diagnostic run against truckmasters.co.uk/feeleruk.com."""
+
+    def test_national_format_number_lost_without_a_fallback(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://acme.example.com/contact", text="Tel: 01754 880481", has_contact_form=False),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        service.collect(supplier_id)
+
+        assert repo.get_supplier(supplier_id)["primary_phone"] is None
+
+    def test_national_format_number_recovered_with_fallback(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://acme.example.com/contact", text="Tel: 01754 880481", has_contact_form=False),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake, default_region_fallback="GB")
+
+        service.collect(supplier_id)
+
+        assert repo.get_supplier(supplier_id)["primary_phone"] == "+441754880481"
+
+    def test_a_known_supplier_country_always_wins_over_the_fallback(self, repo):
+        """The fallback must never override a real, known country --
+        only fill in when country_name_to_region_code(country) itself
+        resolves to nothing."""
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Acme", "domain": "acme.example.com", "country": "China",
+        })
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://acme.example.com/contact", text="Tel: 021-1234 5678", has_contact_form=False),
+            ]),
+        })
+        # A wrong fallback (GB) must not corrupt a real Chinese number --
+        # proves the fallback only ever fires when country resolution fails.
+        service = CollectionService(repo=repo, site_collector=fake, default_region_fallback="GB")
+
+        service.collect(supplier_id)
+
+        supplier = repo.get_supplier(supplier_id)
+        assert supplier["primary_phone"] is not None
+        assert supplier["primary_phone"].startswith("+86")
+
+    def test_mailto_and_tel_hrefs_are_saved_through_the_full_collection_path(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(
+                    url="https://acme.example.com/contact",
+                    text="Telephone: 01754 880481 Email: Click Here",
+                    mailto_emails=["mail@acme.example.com"],
+                    tel_phones=["01754880481"],
+                    has_contact_form=False,
+                ),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake, default_region_fallback="GB")
+
+        outcome = service.collect(supplier_id)
+
+        assert outcome["contact_emails_added"] == 1
+        assert outcome["contact_phones_added"] == 1
+        supplier = repo.get_supplier(supplier_id)
+        assert supplier["primary_email"] == "mail@acme.example.com"
+        assert supplier["primary_phone"] == "+441754880481"
+
+
 class TestCertificateDocuments:
     """SiteCollector already downloaded/saved certificate files during
     collect() -- CollectionService's job here is just to record what

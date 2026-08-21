@@ -18,3 +18,8 @@ Rosenberger Spritzguss,rosenberger-spritzguss.de,no validated alternate domain f
 B+S Werkzeug- und Formenbau,bs-werkzeugbau.de,no validated alternate domain found in top search results
 SIC Hungary,sichungary.hu,no validated alternate domain found in top search results
 Mikroplast,mikroplast.com,no validated alternate domain found in top search results
+Ming-Li Precision Mould,ming-li.com,domain no longer resolves (DNS NXDOMAIN) -- confirmed 2026-08-21 via both a real collection attempt (3 URL variants) and a direct socket.gethostbyname lookup
+Apadrecoplastics,apadrecoplastics.co.uk,domain no longer resolves (DNS NXDOMAIN) -- confirmed 2026-08-21 via both a real collection attempt (3 URL variants) and a direct socket.gethostbyname lookup
+Murray Plastics,murrayplastics.co.uk,domain no longer resolves (DNS NXDOMAIN) -- confirmed 2026-08-21 via both a real collection attempt (3 URL variants) and a direct socket.gethostbyname lookup
+OzMetal Plastik,ozmetalplastik.com.tr,domain no longer resolves (DNS NXDOMAIN) -- confirmed 2026-08-21 via both a real collection attempt (3 URL variants) and a direct socket.gethostbyname lookup
+Rutland Plastics,rutlandplastics.co.uk,domain still resolves via DNS but the server does not respond -- connection timed out on all 3 URL variants (https/www, https/bare, http/www) during 2026-08-21 re-collection; less certain than the DNS-NXDOMAIN cases above, worth a manual recheck before treating as permanent

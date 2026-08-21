@@ -354,6 +354,48 @@ def _find_download_links(base_url: str, html: str) -> List[str]:
     return found
 
 
+def _find_mailto_emails(html: str) -> List[str]:
+    """Raw `mailto:` href values (the address only -- scheme and any
+    `?subject=`/`?body=` query string stripped) -- feeds
+    verification.website_contact_extractor.extract_mailto_emails via
+    CollectedPage.mailto_emails. A real, common pattern this exists
+    for: a page's VISIBLE link text is "Click Here" or an icon
+    (deters naive text-scraping) while the real address sits untouched
+    in the href for any actual browser -- invisible to a regex scan
+    over rendered text alone (see extract_mailto_emails's docstring
+    for the real site that surfaced this)."""
+    soup = BeautifulSoup(html, "html.parser")
+    found: List[str] = []
+    seen: set = set()
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"]
+        if href.lower().startswith("mailto:"):
+            address = href[len("mailto:"):].split("?")[0].strip()
+            if address and address not in seen:
+                seen.add(address)
+                found.append(address)
+    return found
+
+
+def _find_tel_phones(html: str) -> List[str]:
+    """Raw `tel:` href values (scheme and any trailing query string
+    stripped) -- feeds verification.website_contact_extractor.
+    extract_tel_phones via CollectedPage.tel_phones. Same rationale as
+    _find_mailto_emails: a `tel:` href is machine-readable even when
+    the visible link text isn't a plain number ("Call Us", an icon)."""
+    soup = BeautifulSoup(html, "html.parser")
+    found: List[str] = []
+    seen: set = set()
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"]
+        if href.lower().startswith("tel:"):
+            number = href[len("tel:"):].split("?")[0].strip()
+            if number and number not in seen:
+                seen.add(number)
+                found.append(number)
+    return found
+
+
 class SiteCollector:
 
     def __init__(
@@ -568,5 +610,7 @@ class SiteCollector:
             download_links=_find_download_links(resolved_url, html),
             footer_text=_extract_footer_text(html),
             facility_photo_urls=_extract_facility_photo_urls(resolved_url, html),
+            mailto_emails=_find_mailto_emails(html),
+            tel_phones=_find_tel_phones(html),
         )
         return collected, html

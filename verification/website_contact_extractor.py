@@ -170,6 +170,26 @@ def _deobfuscate_email_markers(text: str) -> str:
     return text
 
 
+def _filter_email_candidate(match: str) -> Optional[str]:
+    """Shared junk/image-extension filter used by both `extract_emails`
+    (regex matches over page text) and `extract_mailto_emails` (already-
+    structured `mailto:` href values) -- same rejection rules either
+    way, so a junk address isn't trusted just because it came from an
+    href instead of free text."""
+    candidate = match.lower().strip(".")
+    local_part, _, domain = candidate.partition("@")
+    if not domain:
+        return None
+    tld = domain.rsplit(".", 1)[-1]
+    if tld in _IMAGE_EXTENSION_TLDS:
+        return None
+    if local_part in _JUNK_LOCAL_PARTS:
+        return None
+    if domain in _JUNK_DOMAINS:
+        return None
+    return candidate
+
+
 def extract_emails(text: str) -> List[str]:
     """Every plausible, non-junk email address in `text`, deduplicated
     and lowercased, in first-seen order. See the module docstring for
@@ -184,18 +204,40 @@ def extract_emails(text: str) -> List[str]:
     seen_set = set()
     candidates = _EMAIL_RE.findall(text) + _EMAIL_RE.findall(_deobfuscate_email_markers(text))
     for match in candidates:
-        candidate = match.lower().strip(".")
-        local_part, _, domain = candidate.partition("@")
-        if not domain:
+        candidate = _filter_email_candidate(match)
+        if candidate and candidate not in seen_set:
+            seen_set.add(candidate)
+            seen.append(candidate)
+    return seen
+
+
+def extract_mailto_emails(mailto_hrefs: List[str]) -> List[str]:
+    """Emails found in `mailto:` href attributes -- see
+    `collection/site_collector.py`'s `_find_mailto_emails` for where
+    these come from (the href value itself, already stripped of the
+    `mailto:` scheme and any `?subject=`/`?body=` query string).
+
+    Exists because a real, common pattern defeats `extract_emails`
+    entirely: a page renders "Click Here" or an icon as the visible
+    link text specifically to deter naive text-scraping, while the
+    real address sits untouched in the href for any actual browser (or
+    person) to use. `extract_emails` only ever sees rendered text, so
+    it is structurally blind to this -- found via a real UK supplier
+    site (truckmasters.co.uk) whose contact page's visible text says
+    only "Email: Click Here" but whose href is
+    `mailto:mail@truckmasters.co.uk`.
+
+    Same junk-filtering discipline as `extract_emails`
+    (`_filter_email_candidate`), plus a shape check against the same
+    email regex -- an href value isn't guaranteed to be a syntactically
+    valid address just because it starts with `mailto:`."""
+    seen: List[str] = []
+    seen_set = set()
+    for href_value in mailto_hrefs:
+        if not _EMAIL_RE.fullmatch(href_value.strip()):
             continue
-        tld = domain.rsplit(".", 1)[-1]
-        if tld in _IMAGE_EXTENSION_TLDS:
-            continue
-        if local_part in _JUNK_LOCAL_PARTS:
-            continue
-        if domain in _JUNK_DOMAINS:
-            continue
-        if candidate not in seen_set:
+        candidate = _filter_email_candidate(href_value)
+        if candidate and candidate not in seen_set:
             seen_set.add(candidate)
             seen.append(candidate)
     return seen
@@ -262,7 +304,14 @@ def _classify_phone_type(parsed_number: "phonenumbers.PhoneNumber", context_text
         return "whatsapp"
     if any(kw in haystack for kw in _WECHAT_KEYWORDS):
         return "wechat"
+    return _number_type_to_phone_type(parsed_number)
 
+
+def _number_type_to_phone_type(parsed_number: "phonenumbers.PhoneNumber") -> str:
+    """The format-only half of `_classify_phone_type` (no context text
+    to check a whatsapp/wechat/fax label against) -- shared with
+    `extract_tel_phones`, which parses an isolated `tel:` href with no
+    surrounding page text to draw a label from."""
     number_type = phonenumbers.number_type(parsed_number)
     if number_type == phonenumbers.PhoneNumberType.MOBILE:
         return "mobile"
@@ -317,6 +366,39 @@ def extract_typed_phone_numbers(text: str, default_region: Optional[str] = None)
     return findings
 
 
+def extract_tel_phones(tel_hrefs: List[str], default_region: Optional[str] = None) -> List[PhoneFinding]:
+    """Phone numbers found in `tel:` href attributes -- see
+    `collection/site_collector.py`'s `_find_tel_phones` for where these
+    come from (the href value itself, already stripped of the `tel:`
+    scheme). Parsed individually via `phonenumbers.parse` rather than
+    `PhoneNumberMatcher`: a `tel:` value is already a single isolated
+    candidate, not free text to scan for matches within, and there is
+    no surrounding context to classify whatsapp/wechat/fax from (see
+    `_number_type_to_phone_type`, the context-free half of
+    `_classify_phone_type`).
+
+    Same `default_region` behaviour as `extract_phone_numbers` -- a
+    national-format `tel:` value (no `+countrycode`) needs the hint to
+    parse at all. Never raises, same defensive discipline as every
+    other function here."""
+    findings: List[PhoneFinding] = []
+    seen: set = set()
+    for href_value in tel_hrefs:
+        try:
+            parsed = phonenumbers.parse(href_value, default_region)
+            if not phonenumbers.is_valid_number(parsed):
+                continue
+            formatted = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+        except Exception:
+            continue
+        phone_type = _number_type_to_phone_type(parsed)
+        key = (formatted, phone_type)
+        if key not in seen:
+            seen.add(key)
+            findings.append(PhoneFinding(number=formatted, phone_type=phone_type))
+    return findings
+
+
 def country_name_to_region_code(country_name: Optional[str]) -> Optional[str]:
     """Best-effort ISO 3166-1 alpha-2 lookup for `extract_phone_numbers`'s
     `default_region` — e.g. "China" -> "CN". Returns `None` on any
@@ -361,14 +443,37 @@ def extract_contact_details(
     name/address extraction already apply. Found via a real
     calibration run: a bare nginx default page's own boilerplate text
     produced a syntactically-valid-looking fake email.
+
+    Also merges in `mailto:`/`tel:` href-attribute findings
+    (`extract_mailto_emails`/`extract_tel_phones`) when `page` carries
+    `mailto_emails`/`tel_phones` lists (via `getattr`, defaulting to
+    `[]` -- `scrapers.own_website_scraper.OwnWebsitePage` doesn't set
+    these, so it's unaffected). A page whose visible text obfuscates
+    its contact details behind "Click Here"-style link text but
+    exposes the real address/number in the href is otherwise invisible
+    to the text-only regex scan above -- see `extract_mailto_emails`'s
+    own docstring for a real example.
     """
     findings = []
     for page in pages:
         if parking_page_reason(page.text):
             continue
         emails = extract_emails(page.text)
+        for email in extract_mailto_emails(getattr(page, "mailto_emails", [])):
+            if email not in emails:
+                emails.append(email)
+
         phones = extract_phone_numbers(page.text, default_region=default_region)
         typed_phones = extract_typed_phone_numbers(page.text, default_region=default_region)
+        typed_seen = {(t.number, t.phone_type) for t in typed_phones}
+        for typed in extract_tel_phones(getattr(page, "tel_phones", []), default_region=default_region):
+            if typed.number not in phones:
+                phones.append(typed.number)
+            key = (typed.number, typed.phone_type)
+            if key not in typed_seen:
+                typed_seen.add(key)
+                typed_phones.append(typed)
+
         has_form = getattr(page, "has_contact_form", False)
         if emails or phones or has_form:
             findings.append(ContactFindings(

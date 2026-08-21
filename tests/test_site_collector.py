@@ -26,8 +26,10 @@ from collection.site_collector import (
     _extract_footer_text,
     _find_certificate_candidates,
     _find_download_links,
+    _find_mailto_emails,
     _find_relevant_links,
     _find_social_links,
+    _find_tel_phones,
     _has_contact_form,
     _prioritise_relevant_links,
 )
@@ -410,6 +412,42 @@ class TestExtractionHelpers:
         html = '<a href="catalogue.pdf">Catalog</a>'
         links = _find_download_links("https://acme.example.com/products/", html)
         assert links == ["https://acme.example.com/products/catalogue.pdf"]
+
+    def test_find_mailto_emails_extracts_address_from_href(self):
+        html = '<a href="mailto:sales@acme.example.com">Click Here</a>'
+        assert _find_mailto_emails(html) == ["sales@acme.example.com"]
+
+    def test_find_mailto_emails_strips_subject_query_string(self):
+        html = '<a href="mailto:sales@acme.example.com?subject=Enquiry">Email us</a>'
+        assert _find_mailto_emails(html) == ["sales@acme.example.com"]
+
+    def test_find_mailto_emails_deduplicates(self):
+        html = (
+            '<a href="mailto:sales@acme.example.com">Top</a>'
+            '<a href="mailto:sales@acme.example.com">Bottom</a>'
+        )
+        assert _find_mailto_emails(html) == ["sales@acme.example.com"]
+
+    def test_find_mailto_emails_empty_when_no_mailto_links(self):
+        html = '<a href="/about.html">About</a>'
+        assert _find_mailto_emails(html) == []
+
+    def test_find_tel_phones_extracts_number_from_href(self):
+        html = '<a href="tel:+441754880481">Call Us</a>'
+        assert _find_tel_phones(html) == ["+441754880481"]
+
+    def test_find_tel_phones_national_format_preserved_as_is(self):
+        """No parsing/validation here -- that's
+        verification.website_contact_extractor.extract_tel_phones's job
+        (it needs a default_region to interpret a national-format
+        number like this one). This function only pulls the raw href
+        value out, unchanged."""
+        html = '<a href="tel:01754880481">Call Us</a>'
+        assert _find_tel_phones(html) == ["01754880481"]
+
+    def test_find_tel_phones_empty_when_no_tel_links(self):
+        html = '<a href="/about.html">About</a>'
+        assert _find_tel_phones(html) == []
 
     def test_has_contact_form_true_for_real_contact_form(self):
         html = '<form><input type="email" name="email"><textarea name="message"></textarea></form>'

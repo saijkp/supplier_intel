@@ -32,6 +32,8 @@ class CollectedPage:
     download_links: List[str] = field(default_factory=list)
     footer_text: str = ""  # text of the page's <footer> element, if any -- see site_collector.py's _extract_footer_text
     facility_photo_urls: List[str] = field(default_factory=list)  # heuristic candidate factory/facility photos on this page -- see site_collector.py's _extract_facility_photo_urls; never a verdict, just a manual-review candidate list
+    mailto_emails: List[str] = field(default_factory=list)  # raw mailto: href values found on this page -- see site_collector.py's _find_mailto_emails; verification.website_contact_extractor.extract_contact_details reads this via getattr, so OwnWebsitePage (no such field) is unaffected
+    tel_phones: List[str] = field(default_factory=list)  # raw tel: href values found on this page -- see site_collector.py's _find_tel_phones; same getattr-based consumption as mailto_emails above
 
 
 @dataclass
