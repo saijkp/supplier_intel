@@ -467,10 +467,17 @@ def verify_facilities(force: bool, limit: int) -> None:
                    "the real target is an established dealer/distributor, not a raw manufacturer, "
                    "see discovery/query_builder.py's build_queries docstring for why this stays "
                    "opt-in rather than a global template change.")
+@click.option("--recover-dead-domains", is_flag=True, default=False,
+              help="Opt-in: when a candidate fails validation specifically because its domain is "
+                   "dead/unreachable (not a marketplace, trader, or name-mismatch rejection -- "
+                   "those stay as-is), search the company name once more and validate the top "
+                   "result through the SAME real gate -- zero special trust for a recovered "
+                   "candidate. Real extra SerpAPI+fetch+OpenAI cost per dead candidate.")
 def discover(
     product_arg: Optional[str], product_opt: Optional[str], category: Optional[str],
     country: Optional[str], source: str, max_candidates: int,
     domain_bias: Optional[str], require_uk_registration: bool, role_words: Optional[str],
+    recover_dead_domains: bool,
 ) -> None:
     """AI-assisted supplier discovery. Every accepted supplier traces to a
     real fetched website and that website's own text corroborating the
@@ -499,6 +506,7 @@ def discover(
     outcome = service.discover(
         product, category=category, country=country, max_candidates=max_candidates, source=source,
         domain_tld_bias=domain_bias, extra_role_words=role_words_list,
+        recover_dead_domains=recover_dead_domains,
     )
 
     if source == "1688":
@@ -652,7 +660,20 @@ def collect(supplier_id: Optional[int], pending: bool, limit: int, force: bool,
                    "('[name] scam', '[name] review', '[name] factory tour'), snippets only -- "
                    "never a Clean/Flagged judgment. Off by default: real per-row SerpAPI cost "
                    "on top of the collection cost every row already incurs.")
-def batch_upload(csv_path: str, output: Optional[str], plain: bool, search_reputation: bool) -> None:
+@click.option("--recover-dead-domains", is_flag=True, default=False,
+              help="Opt-in: when a row's domain turns out to be dead/unreachable, search the "
+                   "company name once more and validate the top result through the SAME real "
+                   "candidate_validator gate any fresh discovery candidate goes through -- zero "
+                   "special trust for a recovered row. Requires --recovery-product-term. Real "
+                   "extra SerpAPI+fetch+OpenAI cost per dead row.")
+@click.option("--recovery-product-term", default=None,
+              help="Required when --recover-dead-domains is set -- the product/category term "
+                   "candidate_validator's product-term gate checks a recovered candidate's page "
+                   "against (a CSV row has no product concept of its own to fall back on).")
+def batch_upload(
+    csv_path: str, output: Optional[str], plain: bool, search_reputation: bool,
+    recover_dead_domains: bool, recovery_product_term: Optional[str],
+) -> None:
     """Enrich a spreadsheet of companies through the exact same
     single-company enrichment path collect/discover already use --
     SupplierMatcher.resolve_and_store() then CollectionService.collect()
@@ -670,6 +691,10 @@ def batch_upload(csv_path: str, output: Optional[str], plain: bool, search_reput
     from batch.batch_service import BatchService
     from batch.csv_exporter import flatten_batch_results
     from batch.csv_parser import parse_csv
+
+    if recover_dead_domains and not recovery_product_term:
+        console.print("[red]X[/red] --recover-dead-domains requires --recovery-product-term.")
+        return
 
     with open(csv_path, "rb") as f:
         csv_bytes = f.read()
@@ -696,9 +721,18 @@ def batch_upload(csv_path: str, output: Optional[str], plain: bool, search_reput
             f"[yellow]--search-reputation enabled: 3 real SerpAPI searches per row "
             f"({len(parsed.rows)} row(s) -> up to {len(parsed.rows) * 3} searches).[/yellow]"
         )
+    if recover_dead_domains:
+        console.print(
+            f"[yellow]--recover-dead-domains enabled: up to 1 extra SerpAPI search + 2 fetch/"
+            f"validation attempts per row whose domain turns out dead (up to {len(parsed.rows)} "
+            f"row(s) could trigger this).[/yellow]"
+        )
 
     service = BatchService(repo=repo)
-    outcome = service.run_batch(parsed.rows, batch_job_id=job_id, search_reputation=search_reputation)
+    outcome = service.run_batch(
+        parsed.rows, batch_job_id=job_id, search_reputation=search_reputation,
+        recover_dead_domains=recover_dead_domains, recovery_product_term=recovery_product_term,
+    )
     repo.mark_pipeline_job_completed(job_id, stats=dataclasses.asdict(outcome))
 
     table = Table(show_header=False)
@@ -720,6 +754,8 @@ def batch_upload(csv_path: str, output: Optional[str], plain: bool, search_reput
     table.add_row("rows with new facility photo candidates", str(outcome.facility_photos_found))
     if search_reputation:
         table.add_row("rows with reputation snippets found", str(outcome.reputation_snippets_found))
+    if recover_dead_domains:
+        table.add_row("dead domains recovered", str(outcome.domains_recovered))
     console.print(table)
 
     rows = repo.get_batch_upload_rows(job_id)

@@ -432,6 +432,86 @@ class TestDefaultRegionFallback:
         assert supplier["primary_phone"] == "+441754880481"
 
 
+class TestPlaceholderEmailLogging:
+    """abc@xyz.com-style template defaults must never be stored as real
+    contact data (see verification.website_contact_extractor.
+    find_placeholder_emails), but must be visible for review rather
+    than silently vanishing -- recorded via field_provenance, the same
+    table this codebase already uses for "disagreement, not applied"
+    signals (batch_service.py's trusted-value guard)."""
+
+    def test_placeholder_email_is_not_stored_but_is_logged(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://acme.example.com/contact", text="Email us: abc@xyz.com", has_contact_form=False),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        outcome = service.collect(supplier_id)
+
+        assert outcome["contact_emails_added"] == 0
+        assert repo.get_supplier(supplier_id)["primary_email"] is None
+        provenance = repo.get_field_provenance(supplier_id, "rejected_placeholder_email")
+        assert len(provenance) == 1
+        assert provenance[0]["value"] == "abc@xyz.com"
+        assert provenance[0]["source_url"] == "https://acme.example.com/contact"
+        assert provenance[0]["source_tier"] == "own_domain"
+        assert provenance[0]["claim_type"] == "verifiable_fact"
+
+    def test_a_real_email_alongside_a_placeholder_is_still_stored(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(
+                    url="https://acme.example.com/contact",
+                    text="Sales: sales@acme.example.com. Template default: abc@xyz.com",
+                    has_contact_form=False,
+                ),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        service.collect(supplier_id)
+
+        assert repo.get_supplier(supplier_id)["primary_email"] == "sales@acme.example.com"
+        provenance = repo.get_field_provenance(supplier_id, "rejected_placeholder_email")
+        assert [p["value"] for p in provenance] == ["abc@xyz.com"]
+
+    def test_placeholder_found_via_mailto_href_is_also_logged(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(
+                    url="https://acme.example.com/contact", text="Email: Click Here",
+                    mailto_emails=["abc@xyz.com"], has_contact_form=False,
+                ),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        service.collect(supplier_id)
+
+        provenance = repo.get_field_provenance(supplier_id, "rejected_placeholder_email")
+        assert len(provenance) == 1
+        assert provenance[0]["value"] == "abc@xyz.com"
+        assert provenance[0]["extraction_method"] == "mailto_href"
+
+    def test_no_placeholder_writes_nothing(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://acme.example.com/contact", text="Sales: sales@acme.example.com", has_contact_form=False),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        service.collect(supplier_id)
+
+        assert repo.get_field_provenance(supplier_id, "rejected_placeholder_email") == []
+
+
 class TestCertificateDocuments:
     """SiteCollector already downloaded/saved certificate files during
     collect() -- CollectionService's job here is just to record what

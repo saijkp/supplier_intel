@@ -48,12 +48,18 @@ class FakeGoogleScraper:
 class FakeCandidateValidator:
     """`outcomes` maps domain -> ValidationResult; a domain with no
     entry defaults to "not validated" so a test only needs to specify
-    the domains it cares about."""
+    the domains it cares about. `recovery_result` (a ValidationResult
+    or None) is what .recover() returns -- recovery tests don't need a
+    real search+extract_candidates round trip, just a fixed outcome to
+    assert discover()'s own wiring around it (recover_calls records
+    every invocation for assertion)."""
 
-    def __init__(self, outcomes=None, raise_for_domain=None):
+    def __init__(self, outcomes=None, raise_for_domain=None, recovery_result=None):
         self._outcomes = outcomes or {}
         self._raise_for_domain = raise_for_domain
+        self._recovery_result = recovery_result
         self.calls = []
+        self.recover_calls = []
 
     def validate(self, candidate, product_term):
         self.calls.append((candidate.domain, product_term))
@@ -62,6 +68,10 @@ class FakeCandidateValidator:
         if candidate.domain in self._outcomes:
             return self._outcomes[candidate.domain]
         return ValidationResult(candidate, False, None, None, None, "not configured in test fake")
+
+    def recover(self, company_name, product_term, google_scraper, country=None, max_candidates=2):
+        self.recover_calls.append((company_name, product_term, country, max_candidates))
+        return self._recovery_result
 
 
 @pytest.fixture()
@@ -282,6 +292,90 @@ class TestDiscoverFaultIsolation:
         assert outcome.candidates_found == 2
         assert outcome.candidates_rejected == 1  # the exploding one
         assert outcome.candidates_validated == 1  # the good one still processed
+
+
+class TestDomainRecovery:
+    """recover_dead_domains=False (the default) must leave every
+    existing test above byte-identical -- these tests only exercise
+    the opt-in path. See discovery/candidate_validator.py's own
+    TestRecover for the real validate()-gate mechanics; these tests
+    are about discover()'s WIRING around it (which rejections trigger
+    it, no double-validation, correct bookkeeping)."""
+
+    def test_disabled_by_default_recover_is_never_called(self, repo):
+        results = [_search_result("https://deadsite.example.com/", title="Acme Trailer Co")]
+        from discovery.candidate_extractor import Candidate
+        candidate = Candidate(title="Acme Trailer Co", link="https://deadsite.example.com/", snippet="", domain="deadsite.example.com")
+        validator = FakeCandidateValidator(outcomes={
+            "deadsite.example.com": ValidationResult(candidate, False, None, None, None, "could not fetch candidate site: DNS failure"),
+        })
+        service = _service(repo, results, "deadsite.example.com", candidate_validator=validator)
+
+        service.discover("trailer axle")  # recover_dead_domains omitted -- defaults False
+
+        assert validator.recover_calls == []
+
+    def test_dead_domain_triggers_recovery_and_creates_the_recovered_supplier(self, repo):
+        from discovery.candidate_extractor import Candidate
+        dead_candidate = Candidate(title="Acme Trailer Co", link="https://deadsite.example.com/", snippet="", domain="deadsite.example.com")
+        recovered_candidate = Candidate(title="Acme Trailer Co", link="https://acmetrailer-real.com/", snippet="", domain="acmetrailer-real.com")
+        recovered_result = ValidationResult(
+            recovered_candidate, True, "Acme Trailer Co", "UK", 95.0,
+            "validated: name corroborated (score=95), product term found on page",
+        )
+        validator = FakeCandidateValidator(
+            outcomes={"deadsite.example.com": ValidationResult(dead_candidate, False, None, None, None, "could not fetch candidate site: DNS failure")},
+            recovery_result=recovered_result,
+        )
+        results = [_search_result("https://deadsite.example.com/", title="Acme Trailer Co")]
+        service = _service(repo, results, "deadsite.example.com", candidate_validator=validator)
+
+        outcome = service.discover("trailer axle", recover_dead_domains=True)
+
+        assert len(validator.recover_calls) == 1
+        assert validator.recover_calls[0][0] == "Acme Trailer Co"  # company_name = the dead candidate's title
+        assert validator.calls == [("deadsite.example.com", "trailer axle")]  # validate() called once, NOT twice for the recovered candidate
+        assert outcome.candidates_examined == 2  # the dead attempt + the recovered one, both real
+        assert outcome.candidates_rejected == 1
+        assert outcome.candidates_validated == 1
+        assert len(outcome.new_supplier_ids) == 1
+
+    @pytest.mark.parametrize("reason", [
+        "candidate domain is a known B2B marketplace host: alibaba.com",
+        "page self-identifies as a trading company/distributor (matched phrase: 'we are a distributor') -- excluded, not a manufacturer",
+        "fetched page text does not mention the searched term 'trailer axle'",
+        "extracted name 'Wrong Co' does not match the original search result (score=20)",
+    ])
+    def test_recovery_not_triggered_for_non_dead_domain_rejections(self, repo, reason):
+        from discovery.candidate_extractor import Candidate
+        candidate = Candidate(title="Acme Trailer Co", link="https://realsite.example.com/", snippet="", domain="realsite.example.com")
+        validator = FakeCandidateValidator(
+            outcomes={"realsite.example.com": ValidationResult(candidate, False, None, None, None, reason)},
+            recovery_result=None,
+        )
+        results = [_search_result("https://realsite.example.com/", title="Acme Trailer Co")]
+        service = _service(repo, results, "realsite.example.com", candidate_validator=validator)
+
+        service.discover("trailer axle", recover_dead_domains=True)
+
+        assert validator.recover_calls == []
+
+    def test_recovery_returning_none_leaves_the_original_rejection_in_place(self, repo):
+        from discovery.candidate_extractor import Candidate
+        candidate = Candidate(title="Acme Trailer Co", link="https://deadsite.example.com/", snippet="", domain="deadsite.example.com")
+        validator = FakeCandidateValidator(
+            outcomes={"deadsite.example.com": ValidationResult(candidate, False, None, None, None, "could not fetch candidate site: timeout")},
+            recovery_result=None,
+        )
+        results = [_search_result("https://deadsite.example.com/", title="Acme Trailer Co")]
+        service = _service(repo, results, "deadsite.example.com", candidate_validator=validator)
+
+        outcome = service.discover("trailer axle", recover_dead_domains=True)
+
+        assert len(validator.recover_calls) == 1
+        assert outcome.candidates_rejected == 1
+        assert outcome.candidates_validated == 0
+        assert outcome.new_supplier_ids == []
 
 
 class TestDiscoverMaxCandidates:

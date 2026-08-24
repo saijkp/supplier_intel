@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from batch.batch_service import BatchService
 from batch.csv_parser import ParsedRow, parse_csv
@@ -128,7 +128,10 @@ def run_collection_job(job_id: str, options: Dict[str, Any]) -> None:
         repo.mark_pipeline_job_failed(job_id, error=str(e))
 
 
-def run_batch_job(job_id: str, csv_bytes: bytes) -> None:
+def run_batch_job(
+    job_id: str, csv_bytes: bytes,
+    recover_dead_domains: bool = False, recovery_product_term: Optional[str] = None,
+) -> None:
     """The HTTP equivalent of `main.py batch-upload` -- parses the
     uploaded CSV (batch.csv_parser.parse_csv) and runs every row through
     BatchService.run_batch(), which is just SupplierMatcher.
@@ -153,7 +156,10 @@ def run_batch_job(job_id: str, csv_bytes: bytes) -> None:
         def _on_progress(outcome) -> None:
             repo.update_pipeline_job_progress(job_id, dataclasses.asdict(outcome))
 
-        outcome = service.run_batch(parsed.rows, batch_job_id=job_id, progress_callback=_on_progress)
+        outcome = service.run_batch(
+            parsed.rows, batch_job_id=job_id, progress_callback=_on_progress,
+            recover_dead_domains=recover_dead_domains, recovery_product_term=recovery_product_term,
+        )
 
         stats = dataclasses.asdict(outcome)
         stats["company_name_column"] = parsed.company_name_column
@@ -297,12 +303,14 @@ def run_discovery_job(job_id: str, options: Dict[str, Any]) -> None:
                 options["product"], target_count=target_count,
                 category=options.get("category"), country=options.get("country"),
                 max_multiplier=options.get("max_multiplier", 5), progress_callback=on_progress,
+                recover_dead_domains=options.get("recover_dead_domains", False),
             )
         else:
             outcome = service.discover(
                 options["product"], category=options.get("category"), country=options.get("country"),
                 max_candidates=options.get("max_candidates", 20), source=options.get("source", "serpapi"),
                 progress_callback=on_progress,
+                recover_dead_domains=options.get("recover_dead_domains", False),
             )
         repo.mark_pipeline_job_completed(job_id, stats=dataclasses.asdict(outcome))
     except Exception as e:

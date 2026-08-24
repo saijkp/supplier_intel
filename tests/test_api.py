@@ -103,8 +103,21 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api.app, "run_single_company_job", fake_run_single_company_job)
 
+    batch_job_calls = []
+
+    def fake_run_batch_job(job_id, csv_bytes, recover_dead_domains=False, recovery_product_term=None):
+        batch_job_calls.append({
+            "job_id": job_id, "recover_dead_domains": recover_dead_domains,
+            "recovery_product_term": recovery_product_term,
+        })
+        test_repo.mark_pipeline_job_running(job_id)
+        test_repo.mark_pipeline_job_completed(job_id, stats={"processed": 0})
+
+    monkeypatch.setattr(api.app, "run_batch_job", fake_run_batch_job)
+
     with TestClient(api.app.app) as test_client:
         test_client.repo = test_repo
+        test_client.batch_job_calls = batch_job_calls
         yield test_client
 
     api.app.app.dependency_overrides.clear()
@@ -394,6 +407,52 @@ class TestCollectionJobEndpoints:
     def test_requires_auth(self, client):
         response = client.post("/collection/jobs", json={"supplier_id": 5})
         assert response.status_code == 401
+
+
+class TestBatchUploadEndpoint:
+
+    _CSV = b"company_name,website\nAcme Co,https://acme.example.com\n"
+
+    def test_plain_upload_still_works(self, client):
+        response = client.post(
+            "/batch/upload", files={"file": ("suppliers.csv", self._CSV, "text/csv")}, headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        assert client.batch_job_calls[-1]["recover_dead_domains"] is False
+        assert client.batch_job_calls[-1]["recovery_product_term"] is None
+
+    def test_empty_file_is_rejected(self, client):
+        response = client.post(
+            "/batch/upload", files={"file": ("suppliers.csv", b"", "text/csv")}, headers=auth_headers(),
+        )
+        assert response.status_code == 422
+
+    def test_requires_auth(self, client):
+        response = client.post("/batch/upload", files={"file": ("suppliers.csv", self._CSV, "text/csv")})
+        assert response.status_code == 401
+
+    def test_recover_dead_domains_without_product_term_fails_closed(self, client):
+        response = client.post(
+            "/batch/upload", files={"file": ("suppliers.csv", self._CSV, "text/csv")},
+            data={"recover_dead_domains": "true"}, headers=auth_headers(),
+        )
+        assert response.status_code == 422
+        assert client.batch_job_calls == []
+
+    def test_recover_dead_domains_with_product_term_is_accepted_and_threaded_through(self, client):
+        response = client.post(
+            "/batch/upload", files={"file": ("suppliers.csv", self._CSV, "text/csv")},
+            data={"recover_dead_domains": "true", "recovery_product_term": "trailer axle"},
+            headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        job_id = response.json()["id"]
+        job = client.repo.get_pipeline_job(job_id)
+        assert job["options"]["recover_dead_domains"] is True
+        assert job["options"]["recovery_product_term"] == "trailer axle"
+        call = client.batch_job_calls[-1]
+        assert call["recover_dead_domains"] is True
+        assert call["recovery_product_term"] == "trailer axle"
 
 
 class TestContactsJobEndpoints:

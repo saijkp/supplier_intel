@@ -85,6 +85,8 @@ from verification.website_contact_extractor import (
     best_contact_method,
     country_name_to_region_code,
     extract_contact_details,
+    find_placeholder_emails,
+    find_placeholder_mailto_emails,
 )
 
 logger = logging.getLogger(__name__)
@@ -283,9 +285,38 @@ class CollectionService:
 
             if phone_rows:
                 stats["contact_phone_types_saved"] = self.repo.save_phone_numbers(supplier_id, phone_rows)
+
+            self._record_placeholder_emails(supplier_id, pages)
         except Exception as e:
             logger.error("collection: contact extraction failed for supplier #%s: %s", supplier_id, e)
         return stats
+
+    def _record_placeholder_emails(self, supplier_id: int, pages: Any) -> None:
+        """Records any abc@xyz.com/test@test.com-style template default
+        found on the supplier's own pages via field_provenance -- dropped
+        from primary_email/secondary_emails (never stored as if it were
+        real contact data, see verification.website_contact_extractor.
+        find_placeholder_emails), but visible for review rather than
+        silently vanishing. Own try/except so a write failure here never
+        fails the contact-extraction pass this is called from (already
+        wrapped in one, but this keeps the logging genuinely best-effort
+        even if that outer guard is ever removed)."""
+        try:
+            for page in pages:
+                for placeholder in find_placeholder_emails(page.text):
+                    self.repo.save_field_provenance(
+                        supplier_id=supplier_id, field_name="rejected_placeholder_email",
+                        value=placeholder, source_url=page.url, raw_snippet=None,
+                        extraction_method="regex", source_tier="own_domain", claim_type="verifiable_fact",
+                    )
+                for placeholder in find_placeholder_mailto_emails(getattr(page, "mailto_emails", [])):
+                    self.repo.save_field_provenance(
+                        supplier_id=supplier_id, field_name="rejected_placeholder_email",
+                        value=placeholder, source_url=page.url, raw_snippet=None,
+                        extraction_method="mailto_href", source_tier="own_domain", claim_type="verifiable_fact",
+                    )
+        except Exception as e:
+            logger.error("collection: recording placeholder emails failed for supplier #%s: %s", supplier_id, e)
 
     def _save_certificate_documents(self, supplier_id: int, certificate_documents: List[Any]) -> int:
         """Writes certificate_document_urls (Procurement Decision

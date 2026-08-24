@@ -498,12 +498,28 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
           <label class="label" for="findTargetCount">How many suppliers do you need? (optional)</label>
           <input class="input" id="findTargetCount" type="number" min="1" max="200" placeholder="e.g. 15">
         </div>
+        <div class="field hidden" id="findRecoverField">
+          <label class="check">
+            <input type="checkbox" id="findRecoverDeadDomains">
+            <span>Try to recover dead-domain candidates (1 extra paid search each)</span>
+          </label>
+        </div>
         <button class="btn btn-ghost btn-sm" id="btnFindBulkToggle" style="margin:8px 0">Have a list instead? &rarr;</button>
         <div class="field hidden" id="findBulkBlock">
           <label class="label" for="findBulkPaste">Paste a list (one company per line, name and/or website)</label>
           <textarea class="input" id="findBulkPaste" rows="5" placeholder="Acme Trailer Co, acmetrailer.com&#10;Beta Bearings Ltd&#10;gamma-axles.com"></textarea>
           <label class="label" for="findBulkFile" style="margin-top:10px">…or upload a CSV</label>
           <input class="input" id="findBulkFile" type="file" accept=".csv">
+          <div class="field" style="margin-top:10px">
+            <label class="check">
+              <input type="checkbox" id="findBulkRecoverDeadDomains">
+              <span>Try to recover dead-domain rows (1 extra paid search each)</span>
+            </label>
+          </div>
+          <div class="field hidden" id="findBulkRecoveryProductTermField">
+            <label class="label" for="findBulkRecoveryProductTerm">Product/category for validation (required)</label>
+            <input class="input" id="findBulkRecoveryProductTerm" placeholder="e.g. trailer axle">
+          </div>
         </div>
         <div id="findCostNote" class="hint" style="margin:10px 0"></div>
         <button class="btn btn-primary btn-block" id="btnFindGo">Go</button>
@@ -619,6 +635,16 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
             <div class="field">
               <label class="label" for="batchFile">CSV file</label>
               <input class="input" id="batchFile" type="file" accept=".csv">
+            </div>
+            <div class="field">
+              <label class="check">
+                <input type="checkbox" id="batchRecoverDeadDomains">
+                <span>Try to recover dead-domain rows (1 extra paid search each)</span>
+              </label>
+            </div>
+            <div class="field hidden" id="batchRecoveryProductTermField">
+              <label class="label" for="batchRecoveryProductTerm">Product/category for validation (required)</label>
+              <input class="input" id="batchRecoveryProductTerm" placeholder="e.g. trailer axle">
             </div>
             <button class="btn btn-primary btn-block" id="btnBatchUpload">Upload &amp; enrich</button>
             <div id="batchProgress" style="margin-top:12px"></div>
@@ -1158,7 +1184,9 @@ function findClassifyInput(text) {
 function findRenderMode() {
   const text = $("findInput").value.trim();
   const row = $("findModeRow");
-  $("findTargetCountField").classList.toggle("hidden", findLooksLikeUrl(text) || !text);
+  const isProductShaped = !findLooksLikeUrl(text) && !!text;
+  $("findTargetCountField").classList.toggle("hidden", !isProductShaped);
+  $("findRecoverField").classList.toggle("hidden", !isProductShaped);
   if (!text) { row.innerHTML = ""; findAmbiguousChoice = null; $("findCostNote").textContent = ""; return; }
   const c = findClassifyInput(text);
   if (c.kind === "url") {
@@ -1184,9 +1212,13 @@ document.addEventListener("click", (e) => {
 });
 $("findInput").addEventListener("input", findRenderMode);
 $("findTargetCount").addEventListener("input", findRenderMode);
+$("findRecoverDeadDomains").addEventListener("change", findRenderMode);
 
 function findRenderCostNote(c) {
   const host = $("findCostNote");
+  const recoverNote = $("findRecoverDeadDomains").checked
+    ? " Domain recovery is on: up to 1 extra search + 2 fetch/validation attempts for each candidate rejected specifically for a dead/unreachable domain."
+    : "";
   if (c.kind === "url") {
     host.textContent = "Cost: near-zero — one website visit, no paid search call.";
   } else if (c.kind === "company") {
@@ -1194,9 +1226,9 @@ function findRenderCostNote(c) {
   } else if (c.kind === "product" && c.targetCount) {
     const ceiling = c.targetCount * 5;
     host.textContent = `Cost: up to ${ceiling} candidates examined (target ${c.targetCount} × 5) — each costs at most a free website visit and ` +
-      `(only if it passes the free marketplace/name checks) one small AI call. Up to ~8 search queries across up to 2 rounds before a last-resort AI-knowledge fallback.`;
+      `(only if it passes the free marketplace/name checks) one small AI call. Up to ~8 search queries across up to 2 rounds before a last-resort AI-knowledge fallback.${recoverNote}`;
   } else if (c.kind === "product") {
-    host.textContent = "Cost: a real search plus a small AI check per candidate found — start small, or give a target count for a bounded run.";
+    host.textContent = `Cost: a real search plus a small AI check per candidate found — start small, or give a target count for a bounded run.${recoverNote}`;
   } else {
     host.textContent = "";
   }
@@ -1205,6 +1237,9 @@ function findRenderCostNote(c) {
 $("btnFindBulkToggle").addEventListener("click", () => {
   const nowVisible = $("findBulkBlock").classList.toggle("hidden") === false;
   $("btnFindBulkToggle").textContent = nowVisible ? "Search a single company/product instead ←" : "Have a list instead? →";
+});
+$("findBulkRecoverDeadDomains").addEventListener("change", () => {
+  $("findBulkRecoveryProductTermField").classList.toggle("hidden", !$("findBulkRecoverDeadDomains").checked);
 });
 
 /* ═══ Find: dispatch ═══════════════════════════════════════ */
@@ -1354,6 +1389,7 @@ $("btnFindGo").addEventListener("click", async () => {
     } else {
       const body = { product: text };
       if (c.targetCount) { body.target_count = c.targetCount; }
+      if ($("findRecoverDeadDomains").checked) { body.recover_dead_domains = true; }
       const job = await api("/discovery/jobs", { method: "POST", body: JSON.stringify(body) });
       pollFindDiscoveryJob(job.id);
     }
@@ -1382,6 +1418,14 @@ async function findSubmitBulk() {
   const pasted = $("findBulkPaste").value.trim();
   if (!file && !pasted) { alertBox($("findAlert"), 1, "Nothing to upload", "Paste a list or choose a CSV file."); return; }
 
+  const recoverDeadDomains = $("findBulkRecoverDeadDomains").checked;
+  const recoveryProductTerm = $("findBulkRecoveryProductTerm").value.trim();
+  if (recoverDeadDomains && !recoveryProductTerm) {
+    alertBox($("findAlert"), 1, "Product/category required",
+      "Enter a product/category term to validate recovered candidates against, or uncheck domain recovery.");
+    return;
+  }
+
   const btn = $("btnFindGo");
   btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Uploading`;
   alertBox($("findAlert"), 0);
@@ -1394,6 +1438,10 @@ async function findSubmitBulk() {
     } else {
       const blob = new Blob([findBuildCsvFromPastedList(pasted)], { type: "text/csv" });
       form.append("file", blob, "pasted.csv");
+    }
+    if (recoverDeadDomains) {
+      form.append("recover_dead_domains", "true");
+      form.append("recovery_product_term", recoveryProductTerm);
     }
     const res = await fetch(state.base + "/batch/upload", {
       method: "POST", headers: { "Authorization": "Bearer " + state.token }, body: form,
@@ -1574,9 +1622,21 @@ $("btnBulkFactoryFacts").addEventListener("click", () => triggerBulkJob($("btnBu
    application/json) using FormData so the browser sets the correct
    multipart boundary itself. Progress polls the same pipeline_jobs
    endpoint every other job type already uses. */
+$("batchRecoverDeadDomains").addEventListener("change", () => {
+  $("batchRecoveryProductTermField").classList.toggle("hidden", !$("batchRecoverDeadDomains").checked);
+});
+
 $("btnBatchUpload").addEventListener("click", async () => {
   const file = $("batchFile").files[0];
   if (!file) { alertBox($("discoverAlert"), 1, "No file selected", "Choose a CSV file first."); return; }
+
+  const recoverDeadDomains = $("batchRecoverDeadDomains").checked;
+  const recoveryProductTerm = $("batchRecoveryProductTerm").value.trim();
+  if (recoverDeadDomains && !recoveryProductTerm) {
+    alertBox($("discoverAlert"), 1, "Product/category required",
+      "Enter a product/category term to validate recovered candidates against, or uncheck domain recovery.");
+    return;
+  }
 
   const btn = $("btnBatchUpload");
   const original = btn.textContent;
@@ -1587,6 +1647,10 @@ $("btnBatchUpload").addEventListener("click", async () => {
   try {
     const form = new FormData();
     form.append("file", file);
+    if (recoverDeadDomains) {
+      form.append("recover_dead_domains", "true");
+      form.append("recovery_product_term", recoveryProductTerm);
+    }
     const res = await fetch(state.base + "/batch/upload", {
       method: "POST",
       headers: { "Authorization": "Bearer " + state.token },

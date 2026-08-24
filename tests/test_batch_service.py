@@ -21,6 +21,8 @@ from batch.batch_service import (
     _reject_reason_for_extracted_name,
 )
 from batch.csv_parser import ParsedRow
+from discovery.candidate_extractor import Candidate
+from discovery.candidate_validator import ValidationResult
 from scrapers.base_scraper import ScraperResult
 
 
@@ -237,6 +239,35 @@ class FakeGoogleScraper:
         return self.results_by_query.get(query, [])
 
 
+class FakeCandidateValidator:
+    """Stand-in for discovery.candidate_validator.CandidateValidator --
+    only recover() is used by BatchService. `recovery_result` (a
+    ValidationResult or None) is what recover() returns unconditionally;
+    these tests don't need a real search+extract_candidates+validate
+    round trip (that's covered by test_discovery_candidate_validator.py),
+    just a fixed outcome to assert BatchService's own wiring around it."""
+
+    def __init__(self, recovery_result=None, raises=False):
+        self._recovery_result = recovery_result
+        self._raises = raises
+        self.recover_calls: List[Dict[str, Any]] = []
+
+    def recover(self, company_name, product_term, google_scraper, country=None, max_candidates=2,
+                existing_country=None):
+        self.recover_calls.append({
+            "company_name": company_name, "product_term": product_term, "max_candidates": max_candidates,
+            "existing_country": existing_country,
+        })
+        if self._raises:
+            raise RuntimeError("recovery exploded")
+        return self._recovery_result
+
+
+def _recovered_result(domain, title="Acme Trailer Co"):
+    candidate = Candidate(title=title, link=f"https://{domain}/", snippet="", domain=domain)
+    return ValidationResult(candidate, True, title, None, 90.0, "validated: name corroborated (score=90)")
+
+
 def _reputation_result(title, link, snippet):
     return ScraperResult(
         source="google", source_id=link,
@@ -252,7 +283,8 @@ def _row(row_index=0, company_name=None, website=None, original_columns=None):
     )
 
 
-def _make_service(repo=None, matcher=None, collection_service=None, llm_client=None, google_scraper=None):
+def _make_service(repo=None, matcher=None, collection_service=None, llm_client=None, google_scraper=None,
+                   candidate_validator=None):
     repo = repo or FakeRepo()
     return BatchService(
         repo=repo,
@@ -260,6 +292,7 @@ def _make_service(repo=None, matcher=None, collection_service=None, llm_client=N
         collection_service=collection_service or FakeCollectionService(),
         llm_client=llm_client or FakeLLMClient(),
         google_scraper=google_scraper or FakeGoogleScraper(),
+        candidate_validator=candidate_validator,
     ), repo
 
 
@@ -1435,6 +1468,164 @@ class TestReputationSearch:
 
         saved = repo.get_reputation_snippets(supplier_id)
         assert len([s for s in saved if s["query_type"] == "scam"]) == 1
+
+
+class ScriptedCollection(FakeCollectionService):
+    """FakeCollectionService that fails collect() for any source_url in
+    `dead_urls`, succeeds for everything else -- lets a recovery test
+    script "the original domain is dead, the recovered one is not"
+    without needing call-order tricks."""
+
+    def __init__(self, dead_urls):
+        super().__init__()
+        self.dead_urls = set(dead_urls)
+
+    def collect(self, supplier_id, return_pages=False, source_url=None):
+        self.calls.append({"supplier_id": supplier_id, "return_pages": return_pages, "source_url": source_url})
+        if source_url in self.dead_urls:
+            return {"status": "failed", "pages_visited": 0, "error": "could not fetch candidate site", "pages": []}
+        return {"status": "success", "pages_visited": 1, "error": None, "pages": []}
+
+
+class TestDomainRecovery:
+    """recover_dead_domains is opt-in and off by default -- these tests
+    always pass it explicitly. A recovered candidate gets zero special
+    trust: recover() is the real candidate_validator gate (faked here to
+    a scripted outcome, exercised for real in
+    test_discovery_candidate_validator.py) -- these tests only assert
+    BatchService's own wiring around it."""
+
+    def test_disabled_by_default_recovery_never_attempted(self):
+        repo = FakeRepo()
+        collection = ScriptedCollection(dead_urls={"https://acme-dead.com"})
+        validator = FakeCandidateValidator(recovery_result=_recovered_result("acme-real.com"))
+        service, repo = _make_service(repo=repo, collection_service=collection, candidate_validator=validator)
+
+        outcome = service.run_batch(
+            [_row(company_name="Acme Co", website="https://acme-dead.com")], "job-1",
+        )
+
+        assert outcome.domains_recovered == 0
+        assert validator.recover_calls == []
+        assert len(collection.calls) == 1
+        assert outcome.failed == 1
+
+    def test_raises_when_enabled_without_recovery_product_term(self):
+        service, _ = _make_service()
+        with pytest.raises(ValueError):
+            service.run_batch(
+                [_row(company_name="Acme Co", website="https://acme.com")], "job-1",
+                recover_dead_domains=True,
+            )
+
+    def test_only_triggers_after_a_real_collect_failure(self):
+        repo = FakeRepo()
+        collection = ScriptedCollection(dead_urls=set())  # nothing dead
+        validator = FakeCandidateValidator(recovery_result=_recovered_result("acme-real.com"))
+        service, repo = _make_service(repo=repo, collection_service=collection, candidate_validator=validator)
+
+        service.run_batch(
+            [_row(company_name="Acme Co", website="https://acme.com")], "job-1",
+            recover_dead_domains=True, recovery_product_term="trailers",
+        )
+
+        assert validator.recover_calls == []
+
+    def test_successful_recovery_updates_domain_and_recollects(self):
+        repo = FakeRepo()
+        collection = ScriptedCollection(dead_urls={"https://acme-dead.com"})
+        validator = FakeCandidateValidator(recovery_result=_recovered_result("acme-real.com"))
+        service, repo = _make_service(repo=repo, collection_service=collection, candidate_validator=validator)
+
+        outcome = service.run_batch(
+            [_row(company_name="Acme Co", website="https://acme-dead.com")], "job-1",
+            recover_dead_domains=True, recovery_product_term="trailers",
+        )
+
+        assert outcome.domains_recovered == 1
+        assert outcome.succeeded == 1
+        assert len(collection.calls) == 2
+        assert collection.calls[0]["source_url"] == "https://acme-dead.com"
+        assert collection.calls[1]["source_url"] == "acme-real.com"
+        assert validator.recover_calls == [
+            {"company_name": "Acme Co", "product_term": "trailers", "max_candidates": 2, "existing_country": None},
+        ]
+        supplier_id = next(iter(repo.suppliers.keys()))
+        assert repo.suppliers[supplier_id]["domain"] == "acme-real.com"
+        assert repo.history_calls[-1]["changed_by"] == "batch_service"
+        row = next(iter(repo.rows.values()))
+        assert row["status"] == "success"
+
+    def test_placeholder_name_used_as_search_query_when_row_has_no_company_name(self):
+        repo = FakeRepo()
+        collection = ScriptedCollection(dead_urls={"https://acmetrailer-dead.com"})
+        validator = FakeCandidateValidator(recovery_result=_recovered_result("acmetrailer.com"))
+        service, repo = _make_service(repo=repo, collection_service=collection, candidate_validator=validator)
+
+        service.run_batch(
+            [_row(website="https://acmetrailer-dead.com")], "job-1",
+            recover_dead_domains=True, recovery_product_term="trailers",
+        )
+
+        assert validator.recover_calls[0]["company_name"] == "Acmetrailer Dead"
+
+    def test_existing_country_threaded_through_from_supplier_record(self):
+        """recover()'s own extra corroboration check (see
+        discovery.candidate_validator.CandidateValidator.recover's
+        docstring -- added after a real pilot false-matched a dead
+        domain onto an unrelated company) needs the supplier's on-file
+        country as a hint; batch_service must actually read and pass
+        it, not just default it away."""
+        repo = FakeRepo()
+        repo.create_golden_record({
+            "canonical_name": "Acme Co", "domain": "acme-dead.com", "country": "United Kingdom",
+        })
+        collection = ScriptedCollection(dead_urls={"https://acme-dead.com"})
+        validator = FakeCandidateValidator(recovery_result=_recovered_result("acme-real.com"))
+        service, repo = _make_service(repo=repo, collection_service=collection, candidate_validator=validator)
+
+        service.run_batch(
+            [_row(company_name="Acme Co", website="https://acme-dead.com")], "job-1",
+            recover_dead_domains=True, recovery_product_term="trailers",
+        )
+
+        assert validator.recover_calls[0]["existing_country"] == "United Kingdom"
+
+    def test_recovery_finding_nothing_leaves_row_failed_and_domain_unchanged(self):
+        repo = FakeRepo()
+        collection = ScriptedCollection(dead_urls={"https://acme-dead.com"})
+        validator = FakeCandidateValidator(recovery_result=None)
+        service, repo = _make_service(repo=repo, collection_service=collection, candidate_validator=validator)
+
+        outcome = service.run_batch(
+            [_row(company_name="Acme Co", website="https://acme-dead.com")], "job-1",
+            recover_dead_domains=True, recovery_product_term="trailers",
+        )
+
+        assert outcome.domains_recovered == 0
+        assert outcome.failed == 1
+        assert len(collection.calls) == 1  # no second collect attempted -- nothing recovered
+        supplier_id = next(iter(repo.suppliers.keys()))
+        assert repo.suppliers[supplier_id]["domain"] == "acme-dead.com"
+
+    def test_recovery_exception_does_not_abort_the_batch(self):
+        repo = FakeRepo()
+        collection = ScriptedCollection(dead_urls={"https://acme-dead.com"})
+        validator = FakeCandidateValidator(raises=True)
+        service, repo = _make_service(repo=repo, collection_service=collection, candidate_validator=validator)
+
+        outcome = service.run_batch(
+            [
+                _row(row_index=0, company_name="Acme Co", website="https://acme-dead.com"),
+                _row(row_index=1, company_name="Beta Co", website="https://beta.com"),
+            ],
+            "job-1", recover_dead_domains=True, recovery_product_term="trailers",
+        )
+
+        assert outcome.total_rows == 2
+        assert outcome.domains_recovered == 0
+        assert outcome.failed == 1  # the acme-dead.com row
+        assert outcome.succeeded == 1  # beta.com row unaffected by the other row's recovery blowing up
 
 
 class TestWithinBatchDedup:

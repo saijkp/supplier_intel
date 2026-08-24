@@ -420,12 +420,13 @@ class FakeDiscoveryService:
         FakeDiscoveryService.last_instance = self
 
     def discover(self, product, category=None, country=None, max_candidates=20, source="serpapi",
-                 progress_callback=None):
+                 progress_callback=None, recover_dead_domains=False):
         from discovery.discovery_service import DiscoveryOutcome
 
         self.last_discover_call = {
             "product": product, "category": category, "country": country,
             "max_candidates": max_candidates, "source": source,
+            "recover_dead_domains": recover_dead_domains,
         }
         if progress_callback:
             from discovery.discovery_service import DiscoveryProgressEvent
@@ -438,12 +439,13 @@ class FakeDiscoveryService:
                                  new_supplier_ids=[10, 11])
 
     def discover_to_target(self, product, target_count, category=None, country=None, max_multiplier=5,
-                            progress_callback=None):
+                            progress_callback=None, recover_dead_domains=False):
         from discovery.discovery_service import DiscoveryToTargetOutcome
 
         self.last_discover_to_target_call = {
             "product": product, "target_count": target_count, "category": category,
             "country": country, "max_multiplier": max_multiplier,
+            "recover_dead_domains": recover_dead_domains,
         }
         return DiscoveryToTargetOutcome(
             product=product, target_count=target_count, ceiling=target_count * max_multiplier,
@@ -454,7 +456,7 @@ class FakeDiscoveryService:
 
 class FailingFakeDiscoveryService(FakeDiscoveryService):
     def discover(self, product, category=None, country=None, max_candidates=20, source="serpapi",
-                 progress_callback=None):
+                 progress_callback=None, recover_dead_domains=False):
         raise RuntimeError("search API down")
 
 
@@ -472,7 +474,7 @@ class TestRunDiscoveryJob:
         call = FakeDiscoveryService.last_instance.last_discover_call
         assert call == {
             "product": "trailer axle", "category": "Axles", "country": "China",
-            "max_candidates": 15, "source": "serpapi",
+            "max_candidates": 15, "source": "serpapi", "recover_dead_domains": False,
         }
         job = repo.get_pipeline_job("job50")
         assert job["status"] == "completed"
@@ -487,7 +489,7 @@ class TestRunDiscoveryJob:
 
         assert FakeDiscoveryService.last_instance.last_discover_call == {
             "product": "trailer axle", "category": None, "country": None,
-            "max_candidates": 20, "source": "serpapi",
+            "max_candidates": 20, "source": "serpapi", "recover_dead_domains": False,
         }
 
     def test_source_llm_is_passed_through(self, repo, monkeypatch):
@@ -540,7 +542,7 @@ class TestRunDiscoveryJob:
         assert instance.last_discover_call is None  # discover() was NOT called
         assert instance.last_discover_to_target_call == {
             "product": "forklift", "target_count": 10, "category": None,
-            "country": None, "max_multiplier": 4,
+            "country": None, "max_multiplier": 4, "recover_dead_domains": False,
         }
         job = repo.get_pipeline_job("job55")
         assert job["status"] == "completed"
@@ -556,6 +558,24 @@ class TestRunDiscoveryJob:
         instance = FakeDiscoveryService.last_instance
         assert instance.last_discover_call is not None
         assert instance.last_discover_to_target_call is None
+
+    def test_recover_dead_domains_passed_through_to_discover(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "DiscoveryService", FakeDiscoveryService)
+
+        repo.create_pipeline_job(job_id="job57", query="[discovery] trailer axle",
+                                  options={"product": "trailer axle", "recover_dead_domains": True})
+        jobs_module.run_discovery_job("job57", {"product": "trailer axle", "recover_dead_domains": True})
+
+        assert FakeDiscoveryService.last_instance.last_discover_call["recover_dead_domains"] is True
+
+    def test_recover_dead_domains_passed_through_to_discover_to_target(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "DiscoveryService", FakeDiscoveryService)
+
+        repo.create_pipeline_job(job_id="job58", query="[discovery] forklift",
+                                  options={"product": "forklift", "target_count": 10, "recover_dead_domains": True})
+        jobs_module.run_discovery_job("job58", {"product": "forklift", "target_count": 10, "recover_dead_domains": True})
+
+        assert FakeDiscoveryService.last_instance.last_discover_to_target_call["recover_dead_domains"] is True
 
 
 class FakeCompanyWebsiteFinder:

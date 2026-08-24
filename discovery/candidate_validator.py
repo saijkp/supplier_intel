@@ -164,6 +164,67 @@ _SPELLING_VARIANTS: tuple = (("mould", "mold"),)
 _UK_PREFILTER_MATCH_THRESHOLD = _NAME_MATCH_THRESHOLD
 
 
+# recover()'s own corroboration check, on top of validate()'s existing
+# gate 5 -- see recover()'s own docstring for why gate 5 alone isn't
+# enough here. Found live: recovering "Apadrecoplastics" (a dead
+# domain) matched cleanly onto adrecoplastics.co.uk, the real site of
+# an unrelated company (Adreco Plastics, part of the STH Plastics
+# Group) -- gate 5 only checks the extracted name against the SAME
+# candidate's own SERP snippet (self-consistency), never against the
+# ORIGINAL name recover() was asked to find. Tested plain rapidfuzz
+# similarity (ratio/token_sort/token_set/partial_ratio) as a fix first:
+# "Apadrecoplastics" vs "Adreco Plastics" scores 90.3 on all four --
+# HIGHER than even uk_company_verification_service's own strict 85.0
+# bar -- so raw fuzzy similarity cannot tell this pair apart from a
+# genuine minor variant (e.g. "Beta Bearings Ltd" vs "Beta Bearing
+# Ltd" scores similarly). A word-token check does: the two names share
+# zero significant words after stripping corporate suffixes
+# ("apadrecoplastics" is one mashed token; "adreco"/"plastics" are
+# two, neither equal to it), while genuine variants keep at least one
+# shared distinctive word.
+_GENERIC_NAME_WORDS = frozenset({
+    "ltd", "limited", "inc", "incorporated", "llc", "co", "company",
+    "corp", "corporation", "group", "plc", "gmbh", "holdings",
+    "international", "the", "and",
+})
+
+_UK_COUNTRY_SYNONYMS = frozenset({
+    "uk", "united kingdom", "great britain", "england", "scotland",
+    "wales", "northern ireland",
+})
+
+
+def _distinctive_tokens(name: str) -> set:
+    words = re.findall(r"[a-z0-9]+", (name or "").lower())
+    return {w for w in words if len(w) >= 4 and w not in _GENERIC_NAME_WORDS}
+
+
+def _shares_distinctive_token(a: str, b: str) -> bool:
+    """True if `a` and `b` share at least one significant word, OR
+    either side has no significant words at all to compare (nothing
+    distinctive means no basis for a rejection -- don't invent one
+    from insufficient signal, same discipline as everywhere else in
+    this module)."""
+    tokens_a, tokens_b = _distinctive_tokens(a), _distinctive_tokens(b)
+    if not tokens_a or not tokens_b:
+        return True
+    return bool(tokens_a & tokens_b)
+
+
+def _countries_plausibly_match(a: str, b: str) -> bool:
+    """Exact-or-UK-synonym match only, deliberately not fuzzy --
+    country names are a small closed set (unlike company names), so
+    fuzzy similarity isn't needed and would reintroduce the same
+    unreliable-on-short-strings risk _shares_distinctive_token exists
+    to avoid."""
+    norm_a, norm_b = (a or "").strip().lower(), (b or "").strip().lower()
+    if not norm_a or not norm_b:
+        return True
+    if norm_a == norm_b:
+        return True
+    return norm_a in _UK_COUNTRY_SYNONYMS and norm_b in _UK_COUNTRY_SYNONYMS
+
+
 def _title_name_candidates(title: str) -> list[str]:
     """Every plausible company-name string worth trying against
     Companies House from a raw SERP title -- used ONLY for the pre-LLM
@@ -396,3 +457,93 @@ class CandidateValidator:
             candidate, True, extracted_name, extracted_country, score,
             f"{REASON_SUCCESS_PREFIX} (score={score:.0f}), product term found on page",
         )
+
+    def recover(
+        self, company_name: str, product_term: str, google_scraper: Any,
+        country: Optional[str] = None, max_candidates: int = 2,
+        existing_country: Optional[str] = None,
+    ) -> Optional[ValidationResult]:
+        """Opt-in recovery for a candidate that failed validate() SPECIFICALLY
+        because its domain was dead/unreachable -- NOT for a marketplace,
+        trader, name-mismatch, or term-missing rejection, all of which are
+        correct as given and have nothing to do with a wrong URL. Callers
+        are responsible for checking that distinction before calling this
+        (see discovery_service.py's own website_did_not_resolve predicate,
+        which checks exactly REASON_FETCH_EXCEPTION_PREFIX/
+        REASON_FETCH_UNSUCCESSFUL_PREFIX/REASON_EMPTY_PAGE).
+
+        Deliberately does NOT reuse scrapers.company_website_finder.
+        CompanyWebsiteFinder.find_website() -- that class bakes in its OWN
+        separate, weaker validation (no LLM extraction, no product-term
+        check, no trader check), so using it here would mean a recovered
+        candidate gets checked by a DIFFERENT, less rigorous gate than
+        every other candidate -- exactly the "special trust" this method
+        must not grant. Instead: search once, then run each resulting
+        candidate through THIS validator's own validate() -- the identical
+        gate, zero shortcuts.
+
+        validate() alone isn't sufficient here, though: its gate 5 only
+        checks the candidate against ITS OWN search snippet
+        (self-consistency), never against `company_name` -- the actual
+        original identity recover() is trying to find. A real, self-
+        consistent, unrelated company can and does pass that gate (see
+        _shares_distinctive_token's own docstring for the live case that
+        found this). Two additional checks run on top, in order, BEFORE
+        a validated candidate is accepted:
+        - _shares_distinctive_token(company_name, result.extracted_name):
+          mandatory. Plain rapidfuzz similarity was tested and rejected
+          as a fix (scores the known-bad pair HIGHER than the known-good
+          near-miss pair) -- see that function's docstring.
+        - _countries_plausibly_match(existing_country, result.extracted_country):
+          only when a caller supplies `existing_country` (batch_service.py
+          passes the supplier's on-file country when recovering an
+          existing supplier's dead domain; discovery_service.py has no
+          existing supplier yet, so this stays inactive there). A
+          different, cheap, independent signal for a different failure
+          class (same-name company in a different country) -- NOT a
+          Companies House cross-check: that was tested too and rejected,
+          since CH's own "no match" response for a genuinely-dead-domain
+          company under recovery is indistinguishable from a
+          genuinely-different company (it flagged the real Murray
+          Plastics recovery as no_clear_match right alongside the actual
+          false Apadrecoplastics match), so using it as a hard gate would
+          trade the one false positive for a new false negative.
+
+        Tries up to `max_candidates` search results (stopping at the
+        first that validates AND corroborates), reusing discovery.
+        candidate_extractor.extract_candidates() for the same
+        marketplace/directory-host filtering + dedup discover() itself
+        already relies on -- no new filtering logic. Returns the first
+        passing ValidationResult, or None if nothing recovered (caller
+        keeps the original dead-domain rejection as-is; this is a real
+        per-call SerpAPI cost, so callers must gate this behind an
+        explicit opt-in flag, never call it unconditionally)."""
+        from discovery.candidate_extractor import extract_candidates
+
+        query = f'"{company_name}" {country}' if country else f'"{company_name}"'
+        try:
+            results = google_scraper.scrape(query, max_results=10)
+        except Exception as e:
+            logger.warning("discovery: recovery search failed for %r: %s", company_name, e)
+            return None
+
+        for candidate in extract_candidates(results)[:max_candidates]:
+            result = self.validate(candidate, product_term)
+            if not result.validated:
+                continue
+            if not _shares_distinctive_token(company_name, result.extracted_name):
+                logger.info(
+                    "discovery: recovery candidate %s (%r) rejected -- no distinctive word "
+                    "overlap with original name %r", candidate.domain, result.extracted_name, company_name,
+                )
+                continue
+            if existing_country and result.extracted_country and not _countries_plausibly_match(
+                existing_country, result.extracted_country,
+            ):
+                logger.info(
+                    "discovery: recovery candidate %s rejected -- extracted country %r doesn't "
+                    "match on-file country %r", candidate.domain, result.extracted_country, existing_country,
+                )
+                continue
+            return result
+        return None

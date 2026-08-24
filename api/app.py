@@ -36,7 +36,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, Response
 
@@ -339,6 +339,19 @@ def create_collection_job(
 async def create_batch_upload_job(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    recover_dead_domains: bool = Form(
+        False,
+        description="Opt-in: for a row whose domain turns out to be dead/unreachable, search the "
+                    "company name once more and validate the top result through the SAME real "
+                    "candidate_validator gate (zero special trust). Requires recovery_product_term. "
+                    "Real extra SerpAPI+fetch+OpenAI cost per dead row.",
+    ),
+    recovery_product_term: Optional[str] = Form(
+        None,
+        description="Required when recover_dead_domains is true -- the product/category term "
+                    "candidate_validator's product-term gate checks a recovered candidate's page "
+                    "against (a CSV row has no product concept of its own to fall back on).",
+    ),
     repo: SupplierRepository = Depends(get_repo),
 ) -> PipelineJobResponse:
     """CSV batch upload -- one job per uploaded file, processed row by
@@ -355,12 +368,24 @@ async def create_batch_upload_job(
     csv_bytes = await file.read()
     if not csv_bytes:
         raise HTTPException(status_code=422, detail="Uploaded file is empty.")
+    if recover_dead_domains and not recovery_product_term:
+        raise HTTPException(
+            status_code=422,
+            detail="recovery_product_term is required when recover_dead_domains is true.",
+        )
     job_id = str(uuid.uuid4())
     repo.create_pipeline_job(
         job_id=job_id, query=f"[batch] {file.filename or 'upload.csv'}",
-        options={"filename": file.filename},
+        options={
+            "filename": file.filename,
+            "recover_dead_domains": recover_dead_domains,
+            "recovery_product_term": recovery_product_term,
+        },
     )
-    background_tasks.add_task(run_batch_job, job_id, csv_bytes)
+    background_tasks.add_task(
+        run_batch_job, job_id, csv_bytes,
+        recover_dead_domains=recover_dead_domains, recovery_product_term=recovery_product_term,
+    )
     job = repo.get_pipeline_job(job_id)
     return _to_job_response(job)
 

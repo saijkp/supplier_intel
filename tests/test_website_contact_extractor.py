@@ -73,6 +73,75 @@ class TestJunkFiltering:
         assert extract_emails("sales@sentry.io") == []
 
 
+class TestPlaceholderEmailFiltering:
+    """abc@xyz.com, test@test.com, example@example.com, and similar
+    template defaults -- never a real business's own contact, but a
+    different category from _JUNK_DOMAINS' third-party-tooling
+    artifacts (Sentry/Wix/GoDaddy) or _JUNK_LOCAL_PARTS' real
+    functioning automated addresses (noreply@). See
+    find_placeholder_emails for the counterpart that surfaces these
+    for logging rather than just silently dropping them."""
+
+    def test_abc_at_xyz_is_excluded(self):
+        assert extract_emails("Contact: abc@xyz.com") == []
+
+    def test_test_at_test_is_excluded(self):
+        assert extract_emails("test@test.com") == []
+
+    def test_example_at_example_is_excluded(self):
+        assert extract_emails("example@example.com") == []
+
+    def test_placeholder_local_part_excluded_even_on_an_unlisted_domain(self):
+        """The local part alone is enough -- "test@realcompany.com" is
+        exactly as much a placeholder as "test@test.com", and checking
+        only a fixed domain list would miss it."""
+        assert extract_emails("test@realcompany.com") == []
+        assert extract_emails("sample@acmetrailer.com") == []
+
+    def test_placeholder_domain_excluded_regardless_of_local_part(self):
+        assert extract_emails("sales@placeholder.com") == []
+        assert extract_emails("info@yourwebsite.com") == []
+
+    def test_real_address_is_not_caught_by_the_placeholder_filter(self):
+        assert extract_emails("Contact us at sales@acmetrailer.com") == ["sales@acmetrailer.com"]
+
+
+class TestFindPlaceholderEmails:
+
+    def test_finds_what_extract_emails_silently_dropped(self):
+        from verification.website_contact_extractor import find_placeholder_emails
+        text = "Contact: abc@xyz.com"
+        assert extract_emails(text) == []
+        assert find_placeholder_emails(text) == ["abc@xyz.com"]
+
+    def test_does_not_surface_routine_junk_domain_rejections(self):
+        """A different, older category (third-party tooling artifacts)
+        -- not what this function exists to surface."""
+        from verification.website_contact_extractor import find_placeholder_emails
+        assert find_placeholder_emails("sales@sentry.io") == []
+
+    def test_does_not_surface_system_address_rejections(self):
+        from verification.website_contact_extractor import find_placeholder_emails
+        assert find_placeholder_emails("noreply@acme.com") == []
+
+    def test_does_not_surface_image_extension_false_positives(self):
+        from verification.website_contact_extractor import find_placeholder_emails
+        assert find_placeholder_emails("srcset=\"photo@2x.png\"") == []
+
+    def test_real_accepted_email_is_not_surfaced_either(self):
+        from verification.website_contact_extractor import find_placeholder_emails
+        assert find_placeholder_emails("sales@acmetrailer.com") == []
+
+    def test_no_placeholder_returns_empty_list(self):
+        from verification.website_contact_extractor import find_placeholder_emails
+        assert find_placeholder_emails("We manufacture trailer components.") == []
+
+    def test_mailto_counterpart_finds_the_same_pattern(self):
+        from verification.website_contact_extractor import find_placeholder_mailto_emails
+        assert find_placeholder_mailto_emails(["abc@xyz.com"]) == ["abc@xyz.com"]
+        assert find_placeholder_mailto_emails(["sales@acmetrailer.com"]) == []
+
+
 class TestObfuscatedEmails:
     """Found via a real calibration run: "info[at]ap-bochum.de" was
     missed entirely before this."""

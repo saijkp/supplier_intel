@@ -225,11 +225,12 @@ class DiscoveryService:
         domain_tld_bias: Optional[str] = None, extra_role_words: Optional[List[str]] = None,
         target_count: Optional[int] = None,
         progress_callback: Optional[Callable[[DiscoveryProgressEvent], None]] = None,
+        recover_dead_domains: bool = False,
     ) -> DiscoveryOutcome:
-        """`target_count` and `progress_callback` are both additive,
-        default-None/unset -- every existing caller (main.py discover,
-        sourcing.sourcing_agent.SourcingAgentService, every existing
-        test) is unaffected.
+        """`target_count`, `progress_callback`, and `recover_dead_domains`
+        are all additive, default-None/False/unset -- every existing
+        caller (main.py discover, sourcing.sourcing_agent.
+        SourcingAgentService, every existing test) is unaffected.
 
         `target_count`, when given, is an early-stop on VALIDATION, not
         on candidate collection: the raw-candidate-gathering loop below
@@ -243,7 +244,14 @@ class DiscoveryService:
         `progress_callback`, when given, is fired once per candidate
         (see _process_candidate) with a DiscoveryProgressEvent -- the
         first per-candidate-detail progress signal this codebase emits
-        anywhere (see DiscoveryProgressEvent's own docstring)."""
+        anywhere (see DiscoveryProgressEvent's own docstring).
+
+        `recover_dead_domains`, when True, gives a candidate that failed
+        validation SPECIFICALLY for a dead/unreachable domain one real
+        retry via candidate_validator.CandidateValidator.recover() --
+        never for a marketplace/trader/name-mismatch/term-missing
+        rejection, those stay as-is. A real extra SerpAPI+fetch+LLM cost
+        per dead candidate -- opt-in, never on by default."""
         if source not in _VALID_SOURCES:
             raise ValueError(f"unknown discovery source {source!r} -- expected one of {_VALID_SOURCES}")
 
@@ -259,7 +267,7 @@ class DiscoveryService:
             for candidate in all_candidates:
                 self._process_candidate(
                     candidate, product, country, outcome, raw_source=raw_source,
-                    progress_callback=progress_callback,
+                    progress_callback=progress_callback, recover_dead_domains=recover_dead_domains,
                 )
                 if target_count is not None and outcome.candidates_validated >= target_count:
                     break
@@ -302,7 +310,7 @@ class DiscoveryService:
         for candidate in all_candidates:
             self._process_candidate(
                 candidate, product, country, outcome, raw_source="discovery",
-                progress_callback=progress_callback,
+                progress_callback=progress_callback, recover_dead_domains=recover_dead_domains,
             )
             if target_count is not None and outcome.candidates_validated >= target_count:
                 break
@@ -321,6 +329,7 @@ class DiscoveryService:
         extra_role_words: Optional[List[str]] = None, max_multiplier: int = 5,
         allow_llm_fallback: bool = True,
         progress_callback: Optional[Callable[[DiscoveryProgressEvent], None]] = None,
+        recover_dead_domains: bool = False,
     ) -> DiscoveryToTargetOutcome:
         """Round-based "keep going until N validated suppliers are
         found, but stop well before unbounded spend" orchestrator built
@@ -385,6 +394,7 @@ class DiscoveryService:
             application=application, key_specifications=key_specifications,
             domain_tld_bias=domain_tld_bias, source="serpapi",
             target_count=target_count, progress_callback=_stamped_callback(1),
+            recover_dead_domains=recover_dead_domains,
         )
         result.rounds_run = 1
         _merge(outcome1)
@@ -407,6 +417,7 @@ class DiscoveryService:
             application=application, key_specifications=key_specifications,
             domain_tld_bias=domain_tld_bias, source="serpapi", extra_role_words=role_words,
             target_count=target_count - result.candidates_validated, progress_callback=_stamped_callback(2),
+            recover_dead_domains=recover_dead_domains,
         )
         result.rounds_run = 2
         _merge(outcome2)
@@ -424,7 +435,7 @@ class DiscoveryService:
         outcome3 = self.discover(
             product, category=category, country=country, max_candidates=remaining,
             source="llm", target_count=target_count - result.candidates_validated,
-            progress_callback=_stamped_callback(3),
+            progress_callback=_stamped_callback(3), recover_dead_domains=recover_dead_domains,
         )
         result.rounds_run = 3
         result.used_llm_fallback = True
@@ -508,6 +519,7 @@ class DiscoveryService:
         self, candidate, product: str, country: Optional[str], outcome: DiscoveryOutcome,
         raw_source: str = "discovery",
         progress_callback: Optional[Callable[[DiscoveryProgressEvent], None]] = None,
+        recover_dead_domains: bool = False,
     ) -> None:
         outcome.candidates_examined += 1
         try:
@@ -527,28 +539,80 @@ class DiscoveryService:
             )
             return
 
-        # Website resolved = a fetch was actually attempted and didn't
-        # fail (validate() gates 2-3) -- reason-text-matched, since "the
-        # site fetched" isn't otherwise exposed on ValidationResult. A
-        # marketplace-host rejection (gate 2) never even attempts a
-        # fetch, so it must be excluded here too, same as an actual
-        # fetch failure -- otherwise a never-fetched candidate would be
-        # miscounted as resolved. Content matched = reached and passed
-        # the product-term gate (gate 6): `validation.validated` already
-        # covers a full success without any string-matching (the
-        # actually-contracted field, unlike reason's exact wording --
-        # callers/tests are free to use any reason text alongside
-        # validated=True); the trader-prefix check only exists for the
-        # one case that boolean can't distinguish -- a candidate that
-        # reached and passed gate 6 but was then rejected at gate 7
-        # (trader self-declaration).
+        is_dead_domain = self._record_validation_outcome(
+            candidate, validation, product, country, outcome, raw_source, progress_callback,
+        )
+
+        # Recovery: ONLY for a dead/unreachable domain (never marketplace,
+        # trader, name-mismatch, or term-missing -- those rejections are
+        # correct as given). Opt-in (real per-candidate SerpAPI cost), and
+        # explicitly one level deep -- recover_dead_domains=False on the
+        # recursive call below so a recovered candidate that's ALSO dead
+        # doesn't chain into a third search. The recovered candidate gets
+        # its own raw_source_data row and progress event (via
+        # _record_validation_outcome directly, NOT a recursive
+        # _process_candidate call -- recover() already ran validate()
+        # once internally to know it passed; calling _process_candidate
+        # here would call validate() a SECOND time on the same candidate,
+        # paying for the LLM call twice for nothing) rather than
+        # overwriting the original's -- "full evidence trail either way"
+        # applies to the original dead-domain attempt too, not just
+        # accepted/rejected candidates. candidates_examined is bumped
+        # manually here since _record_validation_outcome doesn't do that
+        # itself (only _process_candidate's own top does, once per real
+        # validate() call it makes).
+        if is_dead_domain and recover_dead_domains:
+            recovery = self.candidate_validator.recover(
+                candidate.title, product, self.google_scraper, country=country, max_candidates=2,
+            )
+            if recovery is not None:
+                outcome.candidates_examined += 1
+                self._record_validation_outcome(
+                    recovery.candidate, recovery, product, country, outcome, raw_source, progress_callback,
+                )
+
+    def _record_validation_outcome(
+        self, candidate, validation, product: str, country: Optional[str],
+        outcome: DiscoveryOutcome, raw_source: str,
+        progress_callback: Optional[Callable[[DiscoveryProgressEvent], None]],
+    ) -> bool:
+        """Turns one real (candidate, ValidationResult) pair into
+        raw_source_data + (if validated) resolve_and_store + a progress
+        event -- the shared tail every candidate goes through exactly
+        once, whether it's the original candidate or one found via
+        recover() (_process_candidate calls this, never validate() a
+        second time for the same result). Returns True if this candidate
+        was rejected SPECIFICALLY for a dead/unreachable domain -- the
+        only case recovery applies to (not marketplace/trader/name-
+        mismatch/term-missing, which are correct as given).
+
+        Website resolved = a fetch was actually attempted and didn't
+        fail (validate() gates 2-3) -- reason-text-matched, since "the
+        site fetched" isn't otherwise exposed on ValidationResult. A
+        marketplace-host rejection (gate 2) never even attempts a
+        fetch, so it must be excluded here too, same as an actual
+        fetch failure -- otherwise a never-fetched candidate would be
+        miscounted as resolved. Content matched = reached and passed
+        the product-term gate (gate 6): `validation.validated` already
+        covers a full success without any string-matching (the
+        actually-contracted field, unlike reason's exact wording --
+        callers/tests are free to use any reason text alongside
+        validated=True); the trader-prefix check only exists for the
+        one case that boolean can't distinguish -- a candidate that
+        reached and passed gate 6 but was then rejected at gate 7
+        (trader self-declaration)."""
         reason = validation.reason
-        website_did_not_resolve = (
-            reason.startswith(REASON_MARKETPLACE_HOST_PREFIX)
-            or reason.startswith(REASON_FETCH_EXCEPTION_PREFIX)
+        # Recovery-eligible: a real fetch never even succeeded. Deliberately
+        # excludes REASON_MARKETPLACE_HOST_PREFIX -- a marketplace-host
+        # rejection is a policy exclusion, not a wrong-URL problem; a fresh
+        # search would just find the same (correctly excluded) marketplace
+        # listing again.
+        is_dead_domain = (
+            reason.startswith(REASON_FETCH_EXCEPTION_PREFIX)
             or reason.startswith(REASON_FETCH_UNSUCCESSFUL_PREFIX)
             or reason == REASON_EMPTY_PAGE
         )
+        website_did_not_resolve = is_dead_domain or reason.startswith(REASON_MARKETPLACE_HOST_PREFIX)
         if not website_did_not_resolve:
             outcome.website_resolved += 1
             if validation.validated or reason.startswith(REASON_TRADER_PREFIX):
@@ -573,7 +637,7 @@ class DiscoveryService:
                 extracted_name=validation.extracted_name, status="rejected", reason=validation.reason,
                 round_examined=outcome.candidates_examined, round_validated=outcome.candidates_validated,
             )
-            return
+            return is_dead_domain
 
         outcome.candidates_validated += 1
         supplier_data = {
@@ -605,7 +669,7 @@ class DiscoveryService:
                 reason=f"validated, but saving the candidate failed: {e}",
                 round_examined=outcome.candidates_examined, round_validated=outcome.candidates_validated,
             )
-            return
+            return False
 
         action = result.get("action")
         supplier_id = result.get("supplier_id") or result.get("new_supplier_id")
@@ -623,6 +687,14 @@ class DiscoveryService:
             outcome.new_supplier_ids.append(supplier_id)
             if action == "review_queued":
                 outcome.review_queued_supplier_ids.append(supplier_id)
+
+        self._fire_progress(
+            progress_callback, domain=candidate.domain, candidate_title=candidate.title,
+            extracted_name=validation.extracted_name,
+            status="duplicate" if action == "merged" else "validated", reason=validation.reason,
+            round_examined=outcome.candidates_examined, round_validated=outcome.candidates_validated,
+        )
+        return False
 
         self._fire_progress(
             progress_callback, domain=candidate.domain, candidate_title=candidate.title,

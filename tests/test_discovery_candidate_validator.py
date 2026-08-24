@@ -17,7 +17,10 @@ from discovery.candidate_extractor import Candidate
 from discovery.candidate_validator import (
     CandidateValidator,
     _core_product_term,
+    _countries_plausibly_match,
+    _distinctive_tokens,
     _mentions_product_term,
+    _shares_distinctive_token,
 )
 
 
@@ -422,3 +425,229 @@ class TestMarketplaceHostExclusion:
 
         assert fetcher.calls == ["alibabatrading.com"]  # fetch WAS attempted -- not a marketplace host
         assert result.validated is True
+
+
+class FakeGoogleScraper:
+    """Mirrors tests/test_discovery_service.py's own FakeGoogleScraper
+    convention -- a fixed result set, recording every query for
+    assertion."""
+
+    def __init__(self, results=None, raise_error=None):
+        self._results = results if results is not None else []
+        self._raise_error = raise_error
+        self.queries = []
+
+    def scrape(self, query, max_results=20, **kwargs):
+        self.queries.append(query)
+        if self._raise_error:
+            raise self._raise_error
+        return self._results
+
+
+def _search_result(link, title="", snippet=""):
+    return SimpleNamespace(success=True, raw_data={"link": link, "title": title, "snippet": snippet})
+
+
+class TestRecover:
+    """recover() must go through the SAME validate() gate as any other
+    candidate -- zero shortcuts, zero special trust. See
+    discovery_service.py's own _process_candidate for the caller-side
+    rule this exists to serve: only called for a dead/unreachable
+    domain, never marketplace/trader/name-mismatch/term-missing."""
+
+    def test_recovers_a_real_top_result(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Welcome to Acme Trailer Co, manufacturer of trailer axle assemblies.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": "UK"})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+        scraper = FakeGoogleScraper(results=[_search_result("https://acmetrailer.com/", "Acme Trailer Co")])
+
+        result = validator.recover("Acme Trailer Co", "trailer axle", scraper, country="UK")
+
+        assert result is not None
+        assert result.validated is True
+        assert result.candidate.domain == "acmetrailer.com"
+        assert scraper.queries == ['"Acme Trailer Co" UK']
+
+    def test_query_omits_country_when_not_given(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(text="Acme Trailer Co trailer axle manufacturer.")])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+        scraper = FakeGoogleScraper(results=[_search_result("https://acmetrailer.com/", "Acme Trailer Co")])
+
+        validator.recover("Acme Trailer Co", "trailer axle", scraper)
+
+        assert scraper.queries == ['"Acme Trailer Co"']
+
+    def test_returns_none_when_no_search_results(self):
+        fetcher = FakeWebsiteFetcher()
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=FakeLLMClient())
+        scraper = FakeGoogleScraper(results=[])
+
+        result = validator.recover("Nonexistent Co", "trailer axle", scraper)
+
+        assert result is None
+        assert fetcher.calls == []  # never even attempted a fetch -- nothing to try
+
+    def test_returns_none_when_search_itself_errors(self):
+        validator = CandidateValidator(website_fetcher=FakeWebsiteFetcher(), llm_client=FakeLLMClient())
+        scraper = FakeGoogleScraper(raise_error=RuntimeError("SerpAPI down"))
+
+        result = validator.recover("Acme Trailer Co", "trailer axle", scraper)  # must not raise
+
+        assert result is None
+
+    def test_tries_a_second_candidate_only_if_the_first_fails(self):
+        """max_candidates=2 (the default cap this method is called with
+        throughout the codebase) -- the second result is only fetched
+        if the first one doesn't validate, not unconditionally."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(text="Unrelated content, no company name here.")])
+        llm = FakeLLMClient(response=None)  # first candidate: LLM extraction fails -> not validated
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+        scraper = FakeGoogleScraper(results=[
+            _search_result("https://wrongsite.example.com/", "Wrong Site"),
+            _search_result("https://acmetrailer.com/", "Acme Trailer Co"),
+        ])
+
+        result = validator.recover("Acme Trailer Co", "trailer axle", scraper)
+
+        assert result is None  # both fail with this fetcher/llm combo
+        assert fetcher.calls == ["wrongsite.example.com", "acmetrailer.com"]  # both were tried
+
+    def test_stops_after_first_success_never_tries_a_third(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Welcome to Acme Trailer Co, manufacturer of trailer axle assemblies.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+        scraper = FakeGoogleScraper(results=[
+            _search_result("https://acmetrailer.com/", "Acme Trailer Co"),
+            _search_result("https://another.example.com/", "Another Co"),
+            _search_result("https://third.example.com/", "Third Co"),
+        ])
+
+        result = validator.recover("Acme Trailer Co", "trailer axle", scraper, max_candidates=2)
+
+        assert result is not None
+        assert fetcher.calls == ["acmetrailer.com"]  # stopped after the first success
+
+    def test_recovered_candidate_still_fails_a_real_gate_if_it_should(self):
+        """The whole point: no special trust. A recovered top result
+        that doesn't actually mention the product term is rejected
+        exactly like any other candidate would be."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co sells garden furniture and patio sets.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+        scraper = FakeGoogleScraper(results=[_search_result("https://acmetrailer.com/", "Acme Trailer Co")])
+
+        result = validator.recover("Acme Trailer Co", "trailer axle", scraper)
+
+        assert result is None
+
+    def test_rejects_a_self_consistent_but_wrong_company(self):
+        """Real case found in a live pilot: recovering "Apadrecoplastics"
+        (a dead domain) matched cleanly onto adrecoplastics.co.uk -- the
+        real, self-consistent site of an unrelated company, Adreco
+        Plastics. validate()'s own gate 5 only checks the extracted name
+        against the SAME candidate's SERP snippet, which is trivially
+        self-consistent here -- the corroboration check against the
+        ORIGINAL company_name must be what catches this."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Welcome to Adreco Plastics, a UK injection moulding company.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Adreco Plastics", "country": "United Kingdom"})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+        scraper = FakeGoogleScraper(results=[_search_result("https://adrecoplastics.co.uk/", "Adreco Plastics")])
+
+        result = validator.recover("Apadrecoplastics", "injection moulding", scraper)
+
+        assert result is None
+
+    def test_accepts_a_genuine_near_miss_with_shared_distinctive_word(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Beta Bearing Ltd manufactures trailer axle bearings.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Beta Bearing Ltd", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+        scraper = FakeGoogleScraper(results=[_search_result("https://betabearing.example.com/", "Beta Bearing Ltd")])
+
+        result = validator.recover("Beta Bearings Ltd", "trailer axle", scraper)
+
+        assert result is not None
+        assert result.validated is True
+
+    def test_existing_country_mismatch_rejects_even_with_name_match(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co, based in China, manufactures trailer axles.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": "China"})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+        scraper = FakeGoogleScraper(results=[_search_result("https://acmetrailer.com/", "Acme Trailer Co")])
+
+        result = validator.recover("Acme Trailer Co", "trailer axle", scraper, existing_country="United Kingdom")
+
+        assert result is None
+
+    def test_existing_country_match_accepts(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co, based in the UK, manufactures trailer axles.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": "United Kingdom"})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+        scraper = FakeGoogleScraper(results=[_search_result("https://acmetrailer.com/", "Acme Trailer Co")])
+
+        result = validator.recover("Acme Trailer Co", "trailer axle", scraper, existing_country="United Kingdom")
+
+        assert result is not None
+
+    def test_no_existing_country_given_does_not_block(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co, based in China, manufactures trailer axles.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": "China"})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+        scraper = FakeGoogleScraper(results=[_search_result("https://acmetrailer.com/", "Acme Trailer Co")])
+
+        result = validator.recover("Acme Trailer Co", "trailer axle", scraper)  # no existing_country
+
+        assert result is not None
+
+
+class TestDistinctiveTokens:
+
+    def test_shares_a_common_significant_word(self):
+        assert _shares_distinctive_token("Beta Bearings Ltd", "Beta Bearing Ltd") is True
+
+    def test_no_shared_word_rejects(self):
+        assert _shares_distinctive_token("Apadrecoplastics", "Adreco Plastics") is False
+
+    def test_identical_names_share_tokens(self):
+        assert _shares_distinctive_token("Murray Plastics", "Murray Plastics") is True
+
+    def test_nothing_distinctive_on_either_side_does_not_block(self):
+        """Short/generic-only names (e.g. below the length-4 floor, or
+        entirely corporate-suffix words) leave nothing to compare --
+        that's insufficient signal for a rejection, not evidence of one."""
+        assert _shares_distinctive_token("ABC Ltd", "Co Inc") is True
+
+    def test_distinctive_tokens_strips_generic_corporate_words(self):
+        assert _distinctive_tokens("Acme Trailer Co Ltd") == {"acme", "trailer"}
+
+
+class TestCountriesPlausiblyMatch:
+
+    def test_exact_match(self):
+        assert _countries_plausibly_match("China", "China") is True
+
+    def test_uk_synonyms_match(self):
+        assert _countries_plausibly_match("England", "United Kingdom") is True
+
+    def test_different_countries_do_not_match(self):
+        assert _countries_plausibly_match("United Kingdom", "China") is False
+
+    def test_either_side_empty_does_not_block(self):
+        assert _countries_plausibly_match("", "China") is True
+        assert _countries_plausibly_match("United Kingdom", "") is True

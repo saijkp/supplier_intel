@@ -92,6 +92,22 @@ CURRENT canonical_name (i.e. after any name extraction earlier in this
 same row) as the query subject -- a still-placeholder domain-derived
 name would produce useless search results, so a supplier with no real
 name yet is skipped for this row (there will be a next run).
+
+Domain recovery (_attempt_domain_recovery): OPT-IN (run_batch's
+recover_dead_domains flag, off by default -- real per-row SerpAPI+fetch+
+LLM cost). Triggered only when this row's own collect() already failed
+(a dead/unreachable domain on file). Reuses discovery.candidate_validator.
+CandidateValidator.recover() -- the SAME real gate (real fetch, real LLM
+name extraction, real product-term check, real trader check) any fresh
+discovery candidate goes through; a recovered domain gets zero special
+trust. Requires an explicit recovery_product_term (a CSV row has no
+product concept of its own) -- run_batch fails closed (ValueError) if
+recovery is enabled without one, rather than skipping or weakening the
+product-term gate. On a successful recovery, the supplier's `domain`
+field is overwritten with the recovered one -- safe here specifically
+because it's this same row's own domain, just set moments earlier in
+this same operation, not a pre-existing trusted value from elsewhere --
+and collect() is re-attempted against the corrected domain.
 """
 
 from __future__ import annotations
@@ -105,6 +121,7 @@ from collection.collection_service import CollectionService
 from batch.csv_parser import ParsedRow
 from deduplication.domain_utils import extract_domain
 from deduplication.matcher import SupplierMatcher
+from discovery.candidate_validator import CandidateValidator
 from discovery.candidate_validator import SYSTEM_PROMPT as NAME_EXTRACTION_SYSTEM_PROMPT
 from llm.client import LLMClient
 from scrapers.google_search_scraper import GoogleSearchScraper
@@ -240,6 +257,7 @@ class BatchOutcome:
     factory_locations_conflicting: int = 0
     facility_photos_found: int = 0
     reputation_snippets_found: int = 0
+    domains_recovered: int = 0
 
 
 def _address_candidate_sources(pages: List[Any]) -> List[tuple]:
@@ -316,18 +334,40 @@ class BatchService:
         collection_service: Optional[CollectionService] = None,
         llm_client: Optional[LLMClient] = None,
         google_scraper: Optional[GoogleSearchScraper] = None,
+        candidate_validator: Optional[CandidateValidator] = None,
     ):
         self.repo = repo or SupplierRepository()
         self.matcher = matcher or SupplierMatcher(self.repo)
         self.collection_service = collection_service or CollectionService(repo=self.repo)
         self.llm_client = llm_client or LLMClient()
         self.google_scraper = google_scraper or GoogleSearchScraper()
+        if candidate_validator is not None:
+            self.candidate_validator = candidate_validator
+        else:
+            # Lazy, only-constructed-if-needed -- same OwnWebsiteScraper-backed
+            # convention discovery_service.py already uses for the identical
+            # purpose (CandidateValidator needs a lightweight .fetch(domain)
+            # object, not the heavier Playwright-based SiteCollector this
+            # class otherwise uses for a row's real collection).
+            from scrapers.own_website_scraper import OwnWebsiteScraper
+
+            self.candidate_validator = CandidateValidator(
+                website_fetcher=OwnWebsiteScraper(), llm_client=self.llm_client,
+            )
 
     def run_batch(
         self, rows: List[ParsedRow], batch_job_id: str,
         progress_callback: Optional[Callable[[BatchOutcome], None]] = None,
         search_reputation: bool = False,
+        recover_dead_domains: bool = False,
+        recovery_product_term: Optional[str] = None,
     ) -> BatchOutcome:
+        if recover_dead_domains and not recovery_product_term:
+            raise ValueError(
+                "recovery_product_term is required when recover_dead_domains=True -- "
+                "candidate_validator's product-term gate has no CSV-row product concept "
+                "to fall back on, and this must fail closed rather than skip that gate."
+            )
         outcome = BatchOutcome(total_rows=len(rows))
         # domain -> already-resolved supplier_id within THIS batch call --
         # see module docstring's "within-batch dedup" section.
@@ -411,6 +451,14 @@ class BatchService:
                 domain_outcomes[domain] = {"status": "failed", "error_message": str(e)}
                 self._report(progress_callback, outcome)
                 continue
+
+            if recover_dead_domains and collect_result.get("status") != "success":
+                recovered_result = self._attempt_domain_recovery(
+                    supplier_id, row, domain, recovery_product_term,
+                )
+                if recovered_result is not None:
+                    outcome.domains_recovered += 1
+                    collect_result = recovered_result
 
             if name_source == "inferred_from_domain":
                 extraction_outcome = self._attempt_name_extraction(supplier_id, collect_result, batch_row_id)
@@ -790,6 +838,64 @@ class BatchService:
             change_reason="candidate facility photo URLs found during collection",
         )
         return added
+
+    def _attempt_domain_recovery(
+        self, supplier_id: int, row: ParsedRow, domain: str, recovery_product_term: str,
+    ) -> Optional[Dict[str, Any]]:
+        """OPT-IN (see run_batch's recover_dead_domains flag), called only
+        after this row's own collect() already failed against `domain`.
+        Reuses discovery.candidate_validator.CandidateValidator.recover() --
+        the SAME real gate (real fetch, real LLM name extraction, real
+        product-term check, real trader check) any fresh discovery candidate
+        goes through, capped at 2 search results, stopping at the first that
+        validates. A recovered candidate gets zero special trust: nothing
+        here skips or weakens that gate.
+
+        Uses row.company_name if the CSV gave one, else the same domain-
+        derived placeholder name already computed for this row
+        (_placeholder_name_from_domain) -- not usable as a stored
+        canonical_name (see _attempt_reputation_search's own
+        expected_placeholder check), but perfectly usable as a search query.
+
+        Passes the supplier's own on-file country as recover()'s
+        existing_country hint, when set -- an extra, independent
+        corroboration signal recover() checks a recovered candidate
+        against (see that method's own docstring for why this exists:
+        a real pilot run false-matched a dead domain onto an unrelated,
+        similarly-named company; country corroboration catches a
+        different flavour of that same risk).
+
+        On a successful recovery: overwrites the supplier's `domain` field
+        with the recovered one -- safe here specifically because it's this
+        same row's own domain, set moments earlier in this very call, not a
+        pre-existing trusted value from elsewhere (the trusted-value guard
+        protects values set by a PRIOR run/source, not one this same
+        operation just created) -- then re-attempts collect() against the
+        corrected domain and returns that outcome.
+
+        Returns None (leaving the row's original failed collect_result as
+        the final outcome) if nothing recovered, the search itself errored,
+        or every candidate failed the gate."""
+        company_name = row.company_name or _placeholder_name_from_domain(domain)
+        supplier = self.repo.get_supplier(supplier_id)
+        existing_country = (supplier or {}).get("country")
+        try:
+            recovery = self.candidate_validator.recover(
+                company_name, recovery_product_term, self.google_scraper, max_candidates=2,
+                existing_country=existing_country,
+            )
+        except Exception as e:  # noqa: BLE001 -- one row's recovery failure must never abort the batch
+            logger.error("batch: domain recovery failed for supplier #%s (%r): %s", supplier_id, company_name, e)
+            return None
+        if recovery is None:
+            return None
+
+        recovered_domain = recovery.candidate.domain
+        self.repo.update_supplier_fields_with_history(
+            supplier_id, {"domain": recovered_domain}, changed_by="batch_service",
+            change_reason=f"domain recovery: {domain!r} unreachable, recovered as {recovered_domain!r}",
+        )
+        return self.collection_service.collect(supplier_id, return_pages=True, source_url=recovered_domain)
 
     def _attempt_reputation_search(self, supplier_id: int) -> int:
         """OPT-IN (see run_batch's search_reputation flag) criterion-D

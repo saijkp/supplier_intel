@@ -66,6 +66,26 @@ _JUNK_DOMAINS = {
     "godaddy.com", "yourcompany.com",
 }
 
+# A DIFFERENT category from the junk sets above -- not a third-party
+# tooling artifact (Sentry/Wix/GoDaddy leaking into scraped markup) or
+# a real functioning automated-system address (noreply@/postmaster@),
+# but a template DEFAULT someone left in place (abc@xyz.com,
+# test@test.com, example@example.com), never a real business's own
+# contact. Checked separately, and BEFORE the older junk sets below,
+# specifically so a placeholder rejection is distinguishable from
+# routine junk (see _filter_email_candidate's `reason` return) -- a
+# caller can then choose to record a placeholder find visibly (e.g.
+# via field_provenance), which isn't warranted for the older junk
+# categories. Local parts checked against ANY domain (not just a fixed
+# domain list) since "test@realcompany.com" is exactly as much a
+# placeholder as "test@test.com" -- only checking the domain half would
+# miss it.
+_PLACEHOLDER_LOCAL_PARTS = {"abc", "xyz", "test", "example", "sample", "demo", "foo", "bar", "placeholder", "yourname", "someone"}
+_PLACEHOLDER_DOMAINS = {
+    "xyz.com", "abc.com", "foo.com", "bar.com", "sample.com",
+    "placeholder.com", "yourwebsite.com", "website.com",
+}
+
 # Common ways a page written for humans (not scrapers) obfuscates an
 # email address to dodge naive scrapers -- checked case-insensitively,
 # as a text-level substitution BEFORE re-running the same strict
@@ -170,24 +190,35 @@ def _deobfuscate_email_markers(text: str) -> str:
     return text
 
 
-def _filter_email_candidate(match: str) -> Optional[str]:
-    """Shared junk/image-extension filter used by both `extract_emails`
-    (regex matches over page text) and `extract_mailto_emails` (already-
-    structured `mailto:` href values) -- same rejection rules either
-    way, so a junk address isn't trusted just because it came from an
-    href instead of free text."""
+def _filter_email_candidate(match: str) -> "tuple[Optional[str], Optional[str]]":
+    """Shared junk/image-extension/placeholder filter used by both
+    `extract_emails` (regex matches over page text) and
+    `extract_mailto_emails` (already-structured `mailto:` href values)
+    -- same rejection rules either way, so a junk address isn't trusted
+    just because it came from an href instead of free text.
+
+    Returns `(candidate_or_None, reason_or_None)` -- `reason` is one of
+    `"image_extension"`, `"system_address"`, `"junk_domain"`,
+    `"placeholder"`, or `None` (accepted). Callers that only care about
+    the accepted list (every existing caller) just ignore the second
+    element; `find_placeholder_emails`/`find_placeholder_mailto_emails`
+    exist specifically to surface the `"placeholder"` rejections for
+    logging (see their own docstrings) -- checked BEFORE the older junk
+    sets so a placeholder is never mis-classified as routine junk."""
     candidate = match.lower().strip(".")
     local_part, _, domain = candidate.partition("@")
     if not domain:
-        return None
+        return None, None
     tld = domain.rsplit(".", 1)[-1]
     if tld in _IMAGE_EXTENSION_TLDS:
-        return None
+        return None, "image_extension"
+    if local_part in _PLACEHOLDER_LOCAL_PARTS or domain in _PLACEHOLDER_DOMAINS:
+        return None, "placeholder"
     if local_part in _JUNK_LOCAL_PARTS:
-        return None
+        return None, "system_address"
     if domain in _JUNK_DOMAINS:
-        return None
-    return candidate
+        return None, "junk_domain"
+    return candidate, None
 
 
 def extract_emails(text: str) -> List[str]:
@@ -204,10 +235,34 @@ def extract_emails(text: str) -> List[str]:
     seen_set = set()
     candidates = _EMAIL_RE.findall(text) + _EMAIL_RE.findall(_deobfuscate_email_markers(text))
     for match in candidates:
-        candidate = _filter_email_candidate(match)
+        candidate, _reason = _filter_email_candidate(match)
         if candidate and candidate not in seen_set:
             seen_set.add(candidate)
             seen.append(candidate)
+    return seen
+
+
+def find_placeholder_emails(text: str) -> List[str]:
+    """Placeholder-pattern candidates (abc@xyz.com, test@test.com,
+    example@example.com, and similar template defaults) found in `text`
+    -- NOT accepted contacts, the opposite: what extract_emails silently
+    drops specifically because it matched a known placeholder pattern
+    (not an image-extension false-positive or the older junk-domain/
+    system-address categories, see _filter_email_candidate's own
+    docstring for why those stay unlogged). Exists so a caller can
+    record that a template default was found on a real supplier's page
+    rather than that signal just disappearing -- see
+    collection/collection_service.py's own use of this."""
+    seen: List[str] = []
+    seen_set = set()
+    candidates = _EMAIL_RE.findall(text) + _EMAIL_RE.findall(_deobfuscate_email_markers(text))
+    for match in candidates:
+        _candidate, reason = _filter_email_candidate(match)
+        if reason == "placeholder":
+            cleaned = match.lower().strip(".")
+            if cleaned not in seen_set:
+                seen_set.add(cleaned)
+                seen.append(cleaned)
     return seen
 
 
@@ -236,10 +291,29 @@ def extract_mailto_emails(mailto_hrefs: List[str]) -> List[str]:
     for href_value in mailto_hrefs:
         if not _EMAIL_RE.fullmatch(href_value.strip()):
             continue
-        candidate = _filter_email_candidate(href_value)
+        candidate, _reason = _filter_email_candidate(href_value)
         if candidate and candidate not in seen_set:
             seen_set.add(candidate)
             seen.append(candidate)
+    return seen
+
+
+def find_placeholder_mailto_emails(mailto_hrefs: List[str]) -> List[str]:
+    """The `mailto:`-href counterpart to find_placeholder_emails -- see
+    that function's own docstring. A placeholder can sit in an href
+    exactly as easily as in visible text (a template that was never
+    filled in properly)."""
+    seen: List[str] = []
+    seen_set = set()
+    for href_value in mailto_hrefs:
+        if not _EMAIL_RE.fullmatch(href_value.strip()):
+            continue
+        _candidate, reason = _filter_email_candidate(href_value)
+        if reason == "placeholder":
+            cleaned = href_value.lower().strip(".")
+            if cleaned not in seen_set:
+                seen_set.add(cleaned)
+                seen.append(cleaned)
     return seen
 
 

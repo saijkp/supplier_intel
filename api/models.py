@@ -302,6 +302,14 @@ class DiscoveryJobRequest(BaseModel):
         description="Only used when target_count is set -- same DEFAULT_MAX_MULTIPLIER=5 "
                      "convention as sourcing.sourcing_agent.SourcingAgentService.run().",
     )
+    recover_dead_domains: bool = Field(
+        default=False,
+        description="Opt-in: when a candidate fails validation specifically because its domain "
+                     "is dead/unreachable (not a marketplace, trader, or name-mismatch rejection "
+                     "-- those stay as-is), search the company name once more and validate the "
+                     "top result through the SAME real gate -- zero special trust for a recovered "
+                     "candidate. Real extra SerpAPI+fetch+OpenAI cost per dead candidate.",
+    )
 
 
 class SingleCompanyEnrichRequest(BaseModel):
