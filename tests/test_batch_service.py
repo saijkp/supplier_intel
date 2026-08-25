@@ -1628,6 +1628,98 @@ class TestDomainRecovery:
         assert outcome.succeeded == 1  # beta.com row unaffected by the other row's recovery blowing up
 
 
+class TestMarketplaceRootRejection:
+    """A marketplace ROOT (or any *.alibaba.com/made-in-china.com/
+    tradeindia.com/etc. subdomain) has no independently-verifiable
+    company identity -- found live: extract_domain() strips a URL's
+    path/listing-ID entirely, so 11 distinct supplied company names all
+    pointed at the same marketplace collapsed onto just 2 supplier
+    records via the ordinary domain-exact-match dedup tier, each merge
+    silently reporting "success" for the wrong company. These rows must
+    hard-fail before any resolve/dedup/collect attempt is ever made."""
+
+    @pytest.mark.parametrize("website", [
+        "https://www.made-in-china.com",
+        "https://www.alibaba.com/",
+        "http://tradeindia.com",
+        "https://ledmasters.en.alibaba.com/product/12345.html",  # a specific-looking
+        # LISTING subdomain is still excluded, not just the bare root --
+        # is_platform_subdomain() rejects any *.alibaba.com uniformly,
+        # matching discovery.candidate_validator's own gate 2 exactly
+        # (a marketplace storefront is a negative signal either way).
+    ])
+    def test_marketplace_url_hard_fails_before_any_resolve_attempt(self, website):
+        repo = FakeRepo()
+        matcher = FakeMatcher(repo)
+        collection = FakeCollectionService()
+        service, _ = _make_service(repo=repo, matcher=matcher, collection_service=collection)
+
+        outcome = service.run_batch(
+            [_row(company_name="Some Cable Co", website=website)], "job-1",
+        )
+
+        assert outcome.failed == 1
+        assert outcome.succeeded == 0
+        assert matcher.calls == []       # never even attempted dedup/resolve
+        assert collection.calls == []    # never attempted a fetch
+        row = next(iter(repo.rows.values()))
+        assert row["status"] == "failed"
+        assert "marketplace root URL" in row["error_message"]
+
+    def test_distinct_companies_on_the_same_marketplace_do_not_collapse(self):
+        """The exact live failure shape: multiple distinct supplied
+        names pointed at the same marketplace root must NOT merge into
+        one supplier record (or into each other at all) -- each is
+        independently, correctly rejected."""
+        repo = FakeRepo()
+        matcher = FakeMatcher(repo)
+        collection = FakeCollectionService()
+        service, _ = _make_service(repo=repo, matcher=matcher, collection_service=collection)
+
+        outcome = service.run_batch(
+            [
+                _row(row_index=0, company_name="Wuxi Speedy Cable Co", website="https://www.made-in-china.com"),
+                _row(row_index=1, company_name="Shenzhen Prime Wire Ltd", website="https://www.made-in-china.com/"),
+                _row(row_index=2, company_name="Global Brake Parts Trading", website="https://www.alibaba.com"),
+            ],
+            "job-1",
+        )
+
+        assert outcome.failed == 3
+        assert len(repo.suppliers) == 0  # no supplier record created for any of them
+        for row in repo.rows.values():
+            assert row["supplier_id"] is None
+
+    def test_placeholder_website_only_row_on_a_marketplace_root_also_rejected(self):
+        """Same gate applies to website-only rows (no company_name) --
+        a marketplace root has no derivable identity either way."""
+        repo = FakeRepo()
+        collection = FakeCollectionService()
+        service, _ = _make_service(repo=repo, collection_service=collection)
+
+        outcome = service.run_batch(
+            [_row(website="https://www.tradeindia.com")], "job-1",
+        )
+
+        assert outcome.failed == 1
+        assert outcome.placeholder_names_used == 0  # never even reached placeholder resolution
+        assert collection.calls == []
+
+    def test_ordinary_company_own_domain_is_unaffected(self):
+        """Regression guard: a normal supplier website (not a known
+        marketplace) must be completely unaffected by this gate."""
+        repo = FakeRepo()
+        collection = FakeCollectionService()
+        service, _ = _make_service(repo=repo, collection_service=collection)
+
+        outcome = service.run_batch(
+            [_row(company_name="Acme Cable Co", website="https://acmecable.com")], "job-1",
+        )
+
+        assert outcome.succeeded == 1
+        assert outcome.failed == 0
+
+
 class TestWithinBatchDedup:
 
     def test_second_row_same_domain_reuses_supplier_and_skips_second_collect(self):

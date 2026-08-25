@@ -39,6 +39,17 @@ Row handling:
   field_name="canonical_name_candidate" as a signal, not applied).
 - neither name nor website: needs_url (a row telling us nothing about
   the company is, at minimum, still missing a URL).
+- website resolves to a bare marketplace root or any *.alibaba.com/
+  made-in-china.com/tradeindia.com/etc. subdomain (deduplication.
+  domain_utils.PLATFORM_REGISTERED_DOMAINS): "failed", hard, before any
+  resolve/dedup/collect attempt -- a marketplace listing has no
+  independently-verifiable company identity, and extract_domain()
+  strips the URL's path/listing-ID entirely, so every row pointed at
+  the same marketplace would otherwise collapse onto the exact same
+  bare domain and merge via the ordinary domain-exact-match dedup tier
+  below (found live: 11 distinct supplied names collapsed onto 2
+  supplier records this way, each merge silently discarding a later
+  row's real name and reporting "success").
 
 Within-batch dedup: rows are resolved in order, and a domain already
 resolved earlier in the SAME batch reuses that supplier_id rather than
@@ -119,7 +130,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from collection.collection_service import CollectionService
 from batch.csv_parser import ParsedRow
-from deduplication.domain_utils import extract_domain
+from deduplication.domain_utils import extract_domain, is_platform_subdomain
 from deduplication.matcher import SupplierMatcher
 from discovery.candidate_validator import CandidateValidator
 from discovery.candidate_validator import SYSTEM_PROMPT as NAME_EXTRACTION_SYSTEM_PROMPT
@@ -395,6 +406,30 @@ class BatchService:
                 outcome.needs_url += 1
                 self.repo.update_batch_upload_row(batch_row_id, {
                     "status": "needs_url", "error_message": "website did not parse to a usable domain",
+                })
+                self._report(progress_callback, outcome)
+                continue
+
+            if is_platform_subdomain(domain):
+                # A marketplace ROOT (or any *.alibaba.com/etc. subdomain --
+                # see is_platform_subdomain's own docstring) has no company-
+                # specific identity to verify against: extract_domain() also
+                # strips the URL's path/listing-ID entirely, so every row
+                # pointed at the same marketplace collapses onto the exact
+                # same bare domain -- found live: 11 distinct supplied
+                # company names on made-in-china.com/alibaba.com/
+                # tradeindia.com collapsed onto just 2 supplier records via
+                # the ordinary domain-exact-match dedup tier below, each
+                # merge silently discarding the later row's own real name
+                # and reporting "success" as if it verified that company.
+                # Hard-fail here, before any resolve/dedup/collect
+                # attempt -- discovery's own candidate_validator.validate()
+                # already gates this the same way (gate 2); batch upload's
+                # plain company_name+website path had no equivalent check.
+                outcome.failed += 1
+                self.repo.update_batch_upload_row(batch_row_id, {
+                    "status": "failed",
+                    "error_message": f"marketplace root URL ({domain}) -- not a specific listing, cannot verify",
                 })
                 self._report(progress_callback, outcome)
                 continue
