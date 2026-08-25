@@ -563,7 +563,7 @@ class DiscoveryService:
         # validate() call it makes).
         if is_dead_domain and recover_dead_domains:
             recovery = self.candidate_validator.recover(
-                candidate.title, product, self.google_scraper, country=country, max_candidates=2,
+                candidate.title, product, self.google_scraper, country=country,
             )
             if recovery is not None:
                 outcome.candidates_examined += 1

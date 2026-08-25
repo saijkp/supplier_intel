@@ -916,7 +916,7 @@ class BatchService:
         existing_country = (supplier or {}).get("country")
         try:
             recovery = self.candidate_validator.recover(
-                company_name, recovery_product_term, self.google_scraper, max_candidates=2,
+                company_name, recovery_product_term, self.google_scraper,
                 existing_country=existing_country,
             )
         except Exception as e:  # noqa: BLE001 -- one row's recovery failure must never abort the batch

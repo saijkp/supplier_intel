@@ -468,7 +468,10 @@ class TestRecover:
         assert result is not None
         assert result.validated is True
         assert result.candidate.domain == "acmetrailer.com"
-        assert scraper.queries == ['"Acme Trailer Co" UK']
+        assert len(scraper.queries) == 1
+        assert scraper.queries[0].startswith('"Acme Trailer Co" UK ')
+        assert "-site:yell.com" in scraper.queries[0]  # a directory exclusion is actually applied
+        assert "-site:alibaba.com" in scraper.queries[0]  # PLATFORM_REGISTERED_DOMAINS reused, not duplicated
 
     def test_query_omits_country_when_not_given(self):
         fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(text="Acme Trailer Co trailer axle manufacturer.")])
@@ -478,7 +481,7 @@ class TestRecover:
 
         validator.recover("Acme Trailer Co", "trailer axle", scraper)
 
-        assert scraper.queries == ['"Acme Trailer Co"']
+        assert scraper.queries[0].startswith('"Acme Trailer Co" -site:')
 
     def test_returns_none_when_no_search_results(self):
         fetcher = FakeWebsiteFetcher()
@@ -499,9 +502,9 @@ class TestRecover:
         assert result is None
 
     def test_tries_a_second_candidate_only_if_the_first_fails(self):
-        """max_candidates=2 (the default cap this method is called with
-        throughout the codebase) -- the second result is only fetched
-        if the first one doesn't validate, not unconditionally."""
+        """A result is only fetched if an earlier one didn't validate,
+        not unconditionally -- proven here with exactly 2 results
+        available regardless of the default max_candidates cap."""
         fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(text="Unrelated content, no company name here.")])
         llm = FakeLLMClient(response=None)  # first candidate: LLM extraction fails -> not validated
         validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
@@ -514,6 +517,24 @@ class TestRecover:
 
         assert result is None  # both fail with this fetcher/llm combo
         assert fetcher.calls == ["wrongsite.example.com", "acmetrailer.com"]  # both were tried
+
+    def test_default_max_candidates_is_5(self):
+        """Raised from an original 2 -- a live pilot found 2 too tight
+        to reach a real company site past several listing-site results
+        for a common UK business name (see _RECOVERY_EXCLUDED_HOSTS'
+        own docstring). Neither discovery_service.py nor batch_service.py
+        override this anymore -- both now rely on this default."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(text="Unrelated content, no company name here.")])
+        llm = FakeLLMClient(response=None)  # every candidate fails to extract a name -> never validates
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+        scraper = FakeGoogleScraper(results=[
+            _search_result(f"https://site{i}.example.com/", f"Site {i}") for i in range(6)
+        ])
+
+        result = validator.recover("Acme Trailer Co", "trailer axle", scraper)
+
+        assert result is None
+        assert len(fetcher.calls) == 5  # the default cap, not all 6 available results
 
     def test_stops_after_first_success_never_tries_a_third(self):
         fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
@@ -635,6 +656,28 @@ class TestDistinctiveTokens:
 
     def test_distinctive_tokens_strips_generic_corporate_words(self):
         assert _distinctive_tokens("Acme Trailer Co Ltd") == {"acme", "trailer"}
+
+    def test_shared_industry_vocabulary_word_alone_does_not_count(self):
+        """Real second false match found live: recovering "Ability
+        Handling" (a dead domain) matched onto the real site of "Grant
+        Handling" -- a completely unrelated company -- because both
+        names include "Handling", which this check treated as proof of
+        identity before it was added to _GENERIC_NAME_WORDS alongside
+        the legal suffixes. Same failure MODE as the original
+        Apadrecoplastics/Adreco Plastics case: a word common enough
+        within one product category to appear in many unrelated
+        companies' names proves nothing about identity."""
+        assert _shares_distinctive_token("Ability Handling", "Grant Handling") is False
+
+    def test_distinctive_tokens_strips_industry_vocabulary_too(self):
+        assert _distinctive_tokens("Global Material Handling") == {"global"}
+        assert _distinctive_tokens("Mitsubishi Forklift Trucks UK") == {"mitsubishi"}
+
+    def test_genuine_company_name_overlap_still_passes_alongside_industry_words(self):
+        """The stoplist only strips the generic word -- a genuinely
+        shared, distinctive company-name word right next to it still
+        counts, same as it always has for corporate suffixes."""
+        assert _shares_distinctive_token("Acme Forklift Trucks", "Acme Forklifts Ltd") is True
 
 
 class TestCountriesPlausiblyMatch:

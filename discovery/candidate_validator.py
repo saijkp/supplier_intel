@@ -84,7 +84,7 @@ from typing import Any, Optional
 
 from rapidfuzz import fuzz
 
-from deduplication.domain_utils import is_platform_subdomain
+from deduplication.domain_utils import PLATFORM_REGISTERED_DOMAINS, is_platform_subdomain
 from deduplication.name_utils import normalise_company_name
 from discovery.candidate_extractor import Candidate
 from llm.client import LLMClient
@@ -186,6 +186,32 @@ _GENERIC_NAME_WORDS = frozenset({
     "ltd", "limited", "inc", "incorporated", "llc", "co", "company",
     "corp", "corporation", "group", "plc", "gmbh", "holdings",
     "international", "the", "and",
+    # Industry-vocabulary, not legal suffixes -- same failure MODE as
+    # the corporate suffixes above (a word so common within one product
+    # category that sharing it proves nothing), found live in a second
+    # real false match: recovering "Ability Handling" (a dead domain)
+    # matched onto the real site of "Grant Handling" -- a completely
+    # unrelated company -- because both names include "Handling", which
+    # _shares_distinctive_token treated as proof of identity since it
+    # wasn't on this list yet. A 2+-shared-words requirement was
+    # considered and rejected as the general fix instead of a stoplist:
+    # it would have regressed the ALREADY-passing "Beta Bearings Ltd"
+    # vs "Beta Bearing Ltd" near-miss case above (verified empirically
+    # -- those two names share exactly ONE distinctive word, "beta",
+    # since "bearings"/"bearing" don't stem-match as exact tokens), so
+    # it trades one false-accept risk for a guaranteed false-reject on
+    # a case already proven to matter. Curated, not exhaustive --
+    # extended as a real collision is found, same discipline as
+    # _SPELLING_VARIANTS/_TRADER_SELF_DECLARATION_PHRASES elsewhere in
+    # this module. Confirmed via the real Lift Truck category dataset
+    # that produced the Ability/Grant Handling collision: "handling",
+    # "forklift(s)", "truck(s)", "lift(s)" and "equipment" all recur
+    # across multiple DISTINCT real companies; "plant"/"machinery"/
+    # "material(s)" likewise. Plurals listed separately -- this
+    # tokeniser does no stemming, so "forklift" and "forklifts" are
+    # different tokens.
+    "handling", "forklift", "forklifts", "truck", "trucks", "lift", "lifts",
+    "equipment", "plant", "machinery", "material", "materials",
 })
 
 _UK_COUNTRY_SYNONYMS = frozenset({
@@ -312,6 +338,41 @@ REASON_TERM_MISSING_PREFIX = "fetched page text does not mention the searched te
 REASON_TRADER_PREFIX = "page self-identifies as a trading company/distributor"   # gate 7
 REASON_SUCCESS_PREFIX = "validated: name corroborated"                           # every gate passed
 REASON_UK_NOT_REGISTERED_PREFIX = "no confirmed active UK Companies House registration"  # gate 3.5, opt-in
+
+# recover()'s own search-query exclusions -- general business-listing
+# directories/aggregators, not the B2B sourcing marketplaces
+# PLATFORM_REGISTERED_DOMAINS already covers (reused directly below,
+# not duplicated). Found live: a small pilot recovering 5 real dead-
+# domain candidates found only 1/5 -- the other 4's ACTUAL replacement
+# domains were independently already known (found manually earlier the
+# same night) but never appeared among the top search results at all;
+# the log showed the validator spending real fetch attempts on
+# machinerytrader.fr and zoominfo.com instead. Excluding these at the
+# SEARCH level (Google's own -site: syntax) rather than post-filtering
+# means a wasted slot in the (still-bounded) max_candidates window
+# never gets spent on a listing that was never going to validate
+# anyway -- more of the real search-result budget reaches genuine
+# company-site candidates instead. Curated, not exhaustive; extended
+# as a real listing site is found crowding out a real recovery, same
+# discipline as _SPELLING_VARIANTS/_TRADER_SELF_DECLARATION_PHRASES.
+_RECOVERY_DIRECTORY_EXCLUSIONS: tuple = (
+    "yell.com", "zoominfo.com", "machinerytrader.com", "machinerytrader.fr",
+    "thomasnet.com", "europages.com", "europages.co.uk", "kompass.com",
+    "cylex-uk.co.uk", "thomsonlocal.com", "192.com", "scoot.co.uk",
+    "checkatrade.com", "trustpilot.com", "facebook.com", "linkedin.com",
+    "yelp.com", "indeed.com", "glassdoor.com", "crunchbase.com",
+    "bloomberg.com", "opencorporates.com", "wikipedia.org", "dnb.com",
+)
+# Marketplace + directory exclusions combined -- the full -site: list
+# recover()'s own search query applies. sorted(), not just tuple():
+# PLATFORM_REGISTERED_DOMAINS is a set, whose iteration order isn't
+# guaranteed stable across processes -- a non-deterministic query
+# string would make recover()'s own query-construction tests flaky.
+# PLATFORM_REGISTERED_DOMAINS is ALSO checked again downstream by
+# validate()'s own gate 2 (defence in depth, same as validate() already
+# does for the plain discover() path) -- this exclusion just means a
+# validate() call is never wasted on one in the first place.
+_RECOVERY_EXCLUDED_HOSTS: tuple = tuple(sorted(PLATFORM_REGISTERED_DOMAINS)) + _RECOVERY_DIRECTORY_EXCLUSIONS
 
 SYSTEM_PROMPT = """You are reading the text of a company website. Extract ONLY what is explicitly stated in the text below -- never guess, infer, or fill in based on typical industry patterns or the domain name.
 
@@ -460,7 +521,7 @@ class CandidateValidator:
 
     def recover(
         self, company_name: str, product_term: str, google_scraper: Any,
-        country: Optional[str] = None, max_candidates: int = 2,
+        country: Optional[str] = None, max_candidates: int = 5,
         existing_country: Optional[str] = None,
     ) -> Optional[ValidationResult]:
         """Opt-in recovery for a candidate that failed validate() SPECIFICALLY
@@ -517,12 +578,30 @@ class CandidateValidator:
         passing ValidationResult, or None if nothing recovered (caller
         keeps the original dead-domain rejection as-is; this is a real
         per-call SerpAPI cost, so callers must gate this behind an
-        explicit opt-in flag, never call it unconditionally)."""
+        explicit opt-in flag, never call it unconditionally).
+
+        The search query itself excludes _RECOVERY_EXCLUDED_HOSTS via
+        Google's own -site: syntax (marketplace hosts + general
+        business-listing directories/aggregators -- yell.com,
+        zoominfo.com, etc., see that constant's own docstring for the
+        live pilot that found this mattering) -- a listing site was
+        never going to validate anyway, so excluding it at the search
+        level means the (still-bounded) max_candidates window is spent
+        on candidates that could actually recover the real company,
+        not wasted fetch/LLM attempts on a directory. max_candidates
+        defaults to 5, up from an original 2 -- the same live pilot
+        found 2 too tight to reach a real company site past several
+        listing-site results for a common UK business name; max_results
+        widened to match (15, from 10) so the wider candidate window
+        has enough raw search results to draw from even after
+        exclusions remove some."""
         from discovery.candidate_extractor import extract_candidates
 
-        query = f'"{company_name}" {country}' if country else f'"{company_name}"'
+        base_query = f'"{company_name}" {country}' if country else f'"{company_name}"'
+        exclusions = " ".join(f"-site:{host}" for host in _RECOVERY_EXCLUDED_HOSTS)
+        query = f"{base_query} {exclusions}"
         try:
-            results = google_scraper.scrape(query, max_results=10)
+            results = google_scraper.scrape(query, max_results=15)
         except Exception as e:
             logger.warning("discovery: recovery search failed for %r: %s", company_name, e)
             return None
