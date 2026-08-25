@@ -1127,6 +1127,7 @@ function supplierCard(s, i) {
           <button class="btn btn-ghost btn-sm" data-reverify-id="${s.id}">Reverify</button>
           <button class="btn btn-ghost btn-sm" data-contacts-id="${s.id}">Find contacts (Apollo)</button>
           <button class="btn btn-ghost btn-sm" data-factory-facts-id="${s.id}">Extract factory facts</button>
+          <button class="btn btn-ghost btn-sm" data-view-audit-id="${s.id}" data-view-audit-name="${esc(s.canonical_name)}">View in Audit</button>
         </div>
       </div>
     </article>`;
@@ -1547,6 +1548,7 @@ document.addEventListener("click", (e) => {
   const reverifyBtn = e.target.closest("[data-reverify-id]");
   const contactsBtn = e.target.closest("[data-contacts-id]");
   const factoryFactsBtn = e.target.closest("[data-factory-facts-id]");
+  const viewAuditBtn = e.target.closest("[data-view-audit-id]");
   if (collectBtn) {
     triggerSupplierJob(collectBtn, "/collection/jobs", { supplier_id: Number(collectBtn.dataset.collectId) });
   } else if (verifyBtn) {
@@ -1557,6 +1559,13 @@ document.addEventListener("click", (e) => {
     triggerSupplierJob(contactsBtn, "/contacts/jobs", { supplier_id: Number(contactsBtn.dataset.contactsId) });
   } else if (factoryFactsBtn) {
     triggerSupplierJob(factoryFactsBtn, "/factory-facts/jobs", { supplier_id: Number(factoryFactsBtn.dataset.factoryFactsId) });
+  } else if (viewAuditBtn) {
+    // Same target dialog auditSupplierCard()'s own cards open
+    // (openAuditDetail -> GET /audit/suppliers/{id}) -- that endpoint
+    // is keyed purely by supplier_id, no roster/category restriction,
+    // so this works for any supplier a search surfaces, not just ones
+    // already on a curated audit roster.
+    openAuditDetail(viewAuditBtn.dataset.viewAuditId, viewAuditBtn.dataset.viewAuditName);
   }
 });
 
