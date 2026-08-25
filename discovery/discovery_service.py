@@ -82,7 +82,7 @@ class DiscoveryOutcome:
     candidates_generated: int = 0  # llm source only -- raw (name, website) pairs the model proposed before any filtering; 0 for serpapi
     candidates_found: int = 0
     candidates_examined: int = 0  # candidates actually run through _process_candidate (fetch+validate attempted) -- distinct from candidates_found (raw search hits collected before any target_count early-stop); this is what actually counts against a discover_to_target() cost ceiling
-    candidates_validated: int = 0
+    candidates_validated: int = 0  # DISTINCT companies validated -- always == len(new_supplier_ids) by construction (see _record_validation_outcome), never inflated by a candidate that re-validates and merges (same-run repeat across discover_to_target()'s rounds, or a match against a pre-existing supplier) -- that's candidates_duplicate's job, not this one
     candidates_rejected: int = 0
     candidates_duplicate: int = 0  # validated AND auto-merged into an existing supplier -- no new row
     new_supplier_ids: List[int] = field(default_factory=list)  # a genuinely new row, whether outright ("created") or pending human review ("review_queued")
@@ -639,7 +639,6 @@ class DiscoveryService:
             )
             return is_dead_domain
 
-        outcome.candidates_validated += 1
         supplier_data = {
             "canonical_name": validation.extracted_name,
             "domain": candidate.domain,
@@ -679,12 +678,27 @@ class DiscoveryService:
             # Auto-merged into an existing record -- no new row, real
             # dedup, matches config.settings.DEDUP_AUTO_MERGE_THRESHOLD's
             # own semantics exactly as SupplierMatcher already defines them.
+            # Deliberately NOT counted in candidates_validated: a merge --
+            # whether into a supplier that already existed before this run,
+            # or one this SAME run already created in an earlier round --
+            # is zero new distinct companies found. Found live: discover_to_
+            # target()'s round 2 (role-word-broadened queries) can re-surface
+            # a domain round 1 already validated and created; re-validating
+            # it (a real second fetch+LLM call) and merging it back into
+            # itself was inflating "N validated" past the true distinct-
+            # company count -- a live run showed "8 validated" for only 4
+            # actual distinct companies.
             outcome.candidates_duplicate += 1
         elif supplier_id is not None:
             # "created" or "review_queued" -- both genuinely create a new
             # row (create_golden_record), review_queued just also flags it
             # for human dedup review against a close-but-not-auto-merge match.
+            # candidates_validated increments ONLY here, in lockstep with
+            # new_supplier_ids -- see that field's own comment: "N
+            # validated" must mean N distinct real companies this run
+            # actually added.
             outcome.new_supplier_ids.append(supplier_id)
+            outcome.candidates_validated += 1
             if action == "review_queued":
                 outcome.review_queued_supplier_ids.append(supplier_id)
 
@@ -695,13 +709,6 @@ class DiscoveryService:
             round_examined=outcome.candidates_examined, round_validated=outcome.candidates_validated,
         )
         return False
-
-        self._fire_progress(
-            progress_callback, domain=candidate.domain, candidate_title=candidate.title,
-            extracted_name=validation.extracted_name,
-            status="duplicate" if action == "merged" else "validated", reason=validation.reason,
-            round_examined=outcome.candidates_examined, round_validated=outcome.candidates_validated,
-        )
 
     def backfill_product_keywords(self) -> dict:
         """One-off repair for suppliers `discover()` created before this

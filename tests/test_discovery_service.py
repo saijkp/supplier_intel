@@ -245,7 +245,10 @@ class TestDiscoverDeduplication:
 
         outcome = service.discover("trailer axle", country="China")
 
-        assert outcome.candidates_validated == 1
+        # Merged into an ALREADY-existing supplier -- zero new distinct
+        # companies found this run, so candidates_validated must stay 0,
+        # not 1 (see that field's own comment on DiscoveryOutcome).
+        assert outcome.candidates_validated == 0
         assert outcome.candidates_duplicate == 1
         from storage.database import connection_scope
         with connection_scope(repo.db_path) as conn:
@@ -615,6 +618,48 @@ class TestDiscoverToTarget:
         assert outcome.rounds_run == 2
         assert outcome.candidates_validated == 2
         assert outcome.reached_target is True
+
+    def test_same_domain_revalidated_across_rounds_does_not_inflate_candidates_validated(self, repo):
+        """The exact bug found live: round 2's role-word-broadened query
+        can re-surface a domain round 1 already validated and created --
+        a real, independent SerpAPI hit (extract_candidates already
+        dedupes WITHIN one round; this is the ACROSS-rounds case it
+        can't catch). Re-validating it (a real second fetch+LLM call)
+        merges it back into the very supplier round 1 just created --
+        zero new distinct companies, but candidates_validated was
+        summing every successful validate() pass, inflating past the
+        true distinct-company count (a live run showed "8 validated"
+        for only 4 actual distinct companies)."""
+        from discovery.candidate_extractor import Candidate
+
+        def make_outcome(domain, name):
+            candidate = Candidate(title=name, link=f"https://{domain}/", snippet="", domain=domain)
+            return ValidationResult(candidate, True, name, "UK", 90.0, "validated: name corroborated (score=90), product term found on page")
+
+        base_results = [_search_result("https://sharedco.example.com/", title="Shared Co")]
+        role_word_results = [_search_result("https://sharedco.example.com/", title="Shared Co")]
+
+        def scrape(query, max_results=20, **kwargs):
+            if "dealer" in query:
+                return role_word_results
+            return base_results
+
+        google_scraper = FakeGoogleScraper()
+        google_scraper.scrape = scrape
+        validator = FakeCandidateValidator(outcomes={
+            "sharedco.example.com": make_outcome("sharedco.example.com", "Shared Co"),
+        })
+        service = DiscoveryService(
+            repo=repo, google_scraper=google_scraper, website_fetcher=SimpleNamespace(),
+            candidate_validator=validator, matcher=SupplierMatcher(repo),
+        )
+
+        outcome = service.discover_to_target("forklift", target_count=2, max_multiplier=10, allow_llm_fallback=False)
+
+        assert outcome.rounds_run == 2
+        assert len(outcome.new_supplier_ids) == 1  # one real company, found twice
+        assert outcome.candidates_duplicate == 1   # round 2's re-hit correctly recorded as a merge
+        assert outcome.candidates_validated == 1   # NOT 2 -- must match new_supplier_ids, not raw validate() passes
 
     def test_no_round_2_when_round_1_found_zero_raw_candidates(self, repo):
         google_scraper = FakeGoogleScraper(results=[])
