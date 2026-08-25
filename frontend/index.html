@@ -1245,12 +1245,28 @@ $("findBulkRecoverDeadDomains").addEventListener("change", () => {
 
 /* ═══ Find: dispatch ═══════════════════════════════════════ */
 function findEventRow(ev) {
-  const badgeClass = ev.status === "validated" ? "mfr" : ev.status === "duplicate" ? "warn" : "trader";
+  // ev.badge (see discovery.discovery_service._classify_reason_badge)
+  // distinguishes WHY a candidate was rejected -- in particular
+  // "fetch_failed" (dead/unreachable domain, a crawl problem) isn't
+  // evidence the company itself is wrong, unlike a genuine content-
+  // based rejection (marketplace/trader/term-missing/name-mismatch).
+  // Same "warn" (not "trader"/red) bucket badges() already uses for
+  // collection_status==="failed" -- a fetch problem, not a verdict.
+  let badgeClass, badgeLabel;
+  if (ev.status === "validated") {
+    badgeClass = "mfr"; badgeLabel = "validated";
+  } else if (ev.status === "duplicate") {
+    badgeClass = "warn"; badgeLabel = "duplicate";
+  } else if (ev.badge === "fetch_failed") {
+    badgeClass = "warn"; badgeLabel = "unreachable";
+  } else {
+    badgeClass = "trader"; badgeLabel = "rejected";
+  }
   const label = ev.extracted_name || ev.candidate_title || ev.domain;
   return `<div style="padding:8px 0;border-bottom:1px solid var(--rule)">
     <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
       <strong>${esc(label)}</strong>
-      <span class="badge ${badgeClass}">${esc(ev.status)}${ev.round > 1 ? ` · round ${ev.round}` : ""}</span>
+      <span class="badge ${badgeClass}">${esc(badgeLabel)}${ev.round > 1 ? ` · round ${ev.round}` : ""}</span>
     </div>
     <div class="hint" style="margin-top:2px">${esc(ev.domain)} — ${esc(ev.reason)}</div>
   </div>`;
