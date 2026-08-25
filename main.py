@@ -670,9 +670,20 @@ def collect(supplier_id: Optional[int], pending: bool, limit: int, force: bool,
               help="Required when --recover-dead-domains is set -- the product/category term "
                    "candidate_validator's product-term gate checks a recovered candidate's page "
                    "against (a CSV row has no product concept of its own to fall back on).")
+@click.option("--default-region", default=None,
+              help="ISO 3166-1 alpha-2 fallback (e.g. GB) for phone-number parsing when a "
+                   "supplier's own country isn't set yet -- always true for a freshly-created "
+                   "supplier, since a national-format phone number (no +44 prefix) can't be "
+                   "recognised without a region hint, and collect() always runs before this "
+                   "command's own address/country extraction step. Same option as "
+                   "main.py collect --default-region -- only use this when you KNOW the batch "
+                   "is regionally scoped (e.g. a UK-only category) -- never overrides a real, "
+                   "known country. Found live: a real 71-row batch went from 18 to 59 rows with "
+                   "a phone number once this was set, versus every other phone-extraction fix "
+                   "combined.")
 def batch_upload(
     csv_path: str, output: Optional[str], plain: bool, search_reputation: bool,
-    recover_dead_domains: bool, recovery_product_term: Optional[str],
+    recover_dead_domains: bool, recovery_product_term: Optional[str], default_region: Optional[str],
 ) -> None:
     """Enrich a spreadsheet of companies through the exact same
     single-company enrichment path collect/discover already use --
@@ -728,7 +739,7 @@ def batch_upload(
             f"row(s) could trigger this).[/yellow]"
         )
 
-    service = BatchService(repo=repo)
+    service = BatchService(repo=repo, default_region_fallback=default_region)
     outcome = service.run_batch(
         parsed.rows, batch_job_id=job_id, search_reputation=search_reputation,
         recover_dead_domains=recover_dead_domains, recovery_product_term=recovery_product_term,

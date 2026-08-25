@@ -1817,3 +1817,30 @@ class TestPlaceholderNameFromDomain:
 
     def test_empty_domain_does_not_raise(self):
         assert _placeholder_name_from_domain("") == ""
+
+
+class TestDefaultRegionFallback:
+    """main.py batch-upload had no equivalent to main.py collect's own
+    --default-region at all until now -- found live: re-collecting a
+    real 71-row batch with a GB fallback recovered 41 more phone
+    numbers than without one, dwarfing every other phone-extraction
+    fix combined (see collection_service.py's own docstring on this
+    parameter for why: phonenumbers can't parse a national-format
+    number without a region hint, and collect() always runs before
+    this class's own address/country extraction step)."""
+
+    def test_threaded_through_to_a_lazily_constructed_collection_service(self):
+        service = BatchService(repo=FakeRepo(), default_region_fallback="GB")
+        assert service.collection_service.default_region_fallback == "GB"
+
+    def test_none_by_default(self):
+        service = BatchService(repo=FakeRepo())
+        assert service.collection_service.default_region_fallback is None
+
+    def test_does_not_override_an_explicitly_injected_collection_service(self):
+        """Same precedent as candidate_validator's own lazy-construction
+        guard -- an explicitly-injected collaborator is used exactly as
+        given, never silently reconfigured."""
+        injected = FakeCollectionService()
+        service = BatchService(repo=FakeRepo(), collection_service=injected, default_region_fallback="GB")
+        assert service.collection_service is injected

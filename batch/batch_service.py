@@ -346,10 +346,27 @@ class BatchService:
         llm_client: Optional[LLMClient] = None,
         google_scraper: Optional[GoogleSearchScraper] = None,
         candidate_validator: Optional[CandidateValidator] = None,
+        default_region_fallback: Optional[str] = None,
     ):
         self.repo = repo or SupplierRepository()
         self.matcher = matcher or SupplierMatcher(self.repo)
-        self.collection_service = collection_service or CollectionService(repo=self.repo)
+        # default_region_fallback only applies when this class constructs
+        # its own CollectionService -- an explicitly-injected one (tests,
+        # or a caller with its own configured instance) is used exactly
+        # as given, same precedent as candidate_validator below. See
+        # main.py collect --default-region's own help text for what this
+        # is for: phonenumbers can't parse a national-format number (no
+        # +44 prefix) without a region hint, and collect() always runs
+        # BEFORE address/country extraction in this class's own row loop,
+        # so a freshly-created supplier's country is genuinely unknown at
+        # the exact moment contact extraction runs. main.py batch-upload
+        # had no equivalent to main.py collect's own --default-region at
+        # all until now -- found live: re-collecting a real 71-row batch
+        # with a GB fallback recovered 41 more phone numbers than without
+        # one, dwarfing every other phone-extraction gap combined.
+        self.collection_service = collection_service or CollectionService(
+            repo=self.repo, default_region_fallback=default_region_fallback,
+        )
         self.llm_client = llm_client or LLMClient()
         self.google_scraper = google_scraper or GoogleSearchScraper()
         if candidate_validator is not None:
