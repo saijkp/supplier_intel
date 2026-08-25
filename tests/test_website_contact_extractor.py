@@ -348,6 +348,26 @@ class TestExtractTelPhones:
     def test_empty_list_returns_empty(self):
         assert extract_tel_phones([]) == []
 
+    def test_url_encoded_href_is_decoded_before_parsing(self):
+        """Real gap found live: BeautifulSoup returns an href attribute
+        exactly as written in the HTML source, with no decoding of its
+        own -- a real site's tel: href had its number's spaces percent-
+        encoded (tel:0808%20100%203430), which phonenumbers.parse()
+        rejected outright before this fix, silently, even though the
+        decoded number is a perfectly ordinary valid UK number."""
+        findings = extract_tel_phones(["0808%20100%203430"], default_region="GB")
+        assert findings == [PhoneFinding(number="+448081003430", phone_type="other")]
+
+    def test_url_encoded_and_plain_forms_of_the_same_number_deduplicate(self):
+        findings = extract_tel_phones(["0808%20100%203430", "08081003430"], default_region="GB")
+        assert len(findings) == 1
+
+    def test_unparseable_href_is_logged_not_silently_dropped(self, caplog):
+        with caplog.at_level("WARNING"):
+            findings = extract_tel_phones(["not-a-real-number-at-all"])
+        assert findings == []
+        assert any("not-a-real-number-at-all" in record.message for record in caplog.records)
+
 
 class TestCountryNameToRegionCode:
 

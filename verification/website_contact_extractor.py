@@ -39,10 +39,14 @@ it, and it is the first thing this module's own tests check.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import re
+import urllib.parse
 from typing import List, Optional
 
 import phonenumbers
+
+logger = logging.getLogger(__name__)
 
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 
@@ -451,19 +455,45 @@ def extract_tel_phones(tel_hrefs: List[str], default_region: Optional[str] = Non
     `_number_type_to_phone_type`, the context-free half of
     `_classify_phone_type`).
 
+    `href_value` is URL-decoded before parsing -- BeautifulSoup returns
+    an href attribute exactly as it appears in the HTML source, with no
+    decoding of its own, and a real site can (and does) write a tel:
+    href with the number's spaces percent-encoded, e.g.
+    `tel:0808%20100%203430`. Found live: phonenumbers.parse() rejects
+    that string outright ("did not seem to be a phone number") --
+    silently, before this fix, since the exception was swallowed with
+    no log line -- even though `0808 100 3430` (its decoded form) is a
+    perfectly ordinary, valid UK number. Confirmed via a real batch:
+    every row whose ONLY phone evidence was a percent-encoded tel: href
+    showed no phone at all, despite the number being genuinely present
+    and clickable on the live page.
+
     Same `default_region` behaviour as `extract_phone_numbers` -- a
     national-format `tel:` value (no `+countrycode`) needs the hint to
     parse at all. Never raises, same defensive discipline as every
-    other function here."""
+    other function here -- a genuinely unparseable value (garbage, a
+    non-numeric tel: href) is still skipped, but now logged rather than
+    silently dropped, so a real, different extraction gap doesn't
+    masquerade as "no phone was ever there."
+    """
     findings: List[PhoneFinding] = []
     seen: set = set()
     for href_value in tel_hrefs:
+        decoded_value = urllib.parse.unquote(href_value)
         try:
-            parsed = phonenumbers.parse(href_value, default_region)
+            parsed = phonenumbers.parse(decoded_value, default_region)
             if not phonenumbers.is_valid_number(parsed):
+                logger.info(
+                    "website_contact_extractor: tel: href %r (decoded: %r) parsed but is not a valid number",
+                    href_value, decoded_value,
+                )
                 continue
             formatted = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                "website_contact_extractor: could not parse tel: href %r (decoded: %r): %s",
+                href_value, decoded_value, e,
+            )
             continue
         phone_type = _number_type_to_phone_type(parsed)
         key = (formatted, phone_type)
