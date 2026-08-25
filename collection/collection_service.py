@@ -62,6 +62,21 @@ supplier_phone_numbers, not just the first one -- suppliers.primary_phone
 still only ever holds one number (unchanged, gap-fill-only, for
 backward compatibility with every existing caller), but nothing found
 is silently discarded anymore.
+
+Off-domain redirect protection (_collect_one): SiteCollector follows
+whatever a page actually redirects to, including a redirect to a
+COMPLETELY different registered domain (found live: a supplier's own
+domain redirected to an unrelated company's site; every collected page,
+and the contact info extracted from them, genuinely belonged to that
+other company, while suppliers.domain silently kept the original value
+-- nothing compared the two). Every fetched page is checked against the
+supplier's own domain-on-file (deduplication.domain_utils.domains_match,
+same www/scheme-insensitive comparison batch/tracker_exporter.py's own
+Website Note already uses); only on-domain pages ever reach contact/
+address/name extraction, an off-domain page is recorded via
+field_provenance (field_name="off_domain_redirect", never silently
+dropped or silently trusted), and a collection where EVERY page
+redirected off-domain is reported as failed, not success.
 """
 
 from __future__ import annotations
@@ -80,6 +95,7 @@ from config.settings import (
     COLLECTION_MAX_CONCURRENT_JOBS,
     COLLECTION_PARALLEL_WORKERS,
 )
+from deduplication.domain_utils import domains_match, extract_domain
 from storage.repository import SupplierRepository
 from verification.website_contact_extractor import (
     best_contact_method,
@@ -185,31 +201,89 @@ class CollectionService:
                 outcome["pages"] = []
             return outcome
 
+        # Split fetched pages by whether they actually landed on the
+        # EXPECTED domain (the one on file for this supplier) -- a page
+        # can redirect somewhere else entirely mid-fetch (found live:
+        # a supplier's own domain redirected to a completely unrelated
+        # company's site; every collected page, and the contact info
+        # extracted from them, ended up genuinely belonging to that
+        # OTHER company, while suppliers.domain still read the original,
+        # unrelated-looking-fine value -- nothing anywhere compared the
+        # two). domains_match() is the same www/scheme-insensitive
+        # comparison batch/tracker_exporter.py's own Website Note
+        # already uses for the analogous "crawled domain vs stored
+        # domain" question -- deliberately NOT a stricter registered-
+        # domain-only check, so a same-company subdomain move (e.g.
+        # www.X -> shop.X) isn't wrongly flagged either.
+        on_domain_pages: List[Any] = []
+        off_domain_pages: List[Any] = []
+        if result.success and result.pages:
+            for page in result.pages:
+                if domains_match(domain, extract_domain(page.url)):
+                    on_domain_pages.append(page)
+                else:
+                    off_domain_pages.append(page)
+        else:
+            on_domain_pages = result.pages
+
+        if off_domain_pages:
+            self._record_off_domain_pages(supplier_id, domain, off_domain_pages)
+
+        # Every page redirected off-domain -- nothing here can be
+        # trusted as this supplier's own site, regardless of what
+        # SiteCollector itself reported. Hard-fail, same "nothing
+        # genuinely verified" discipline as batch_service.py's
+        # marketplace-root gate.
+        success = result.success and bool(on_domain_pages)
+        status = "success" if success else "failed"
+        error = result.error
+        if result.success and not on_domain_pages and off_domain_pages:
+            off_domains = sorted({extract_domain(p.url) for p in off_domain_pages if extract_domain(p.url)})
+            error = f"resolved entirely to a different domain than expected ({', '.join(off_domains)}) -- not verifying against unrelated site content"
+
         completed_at = datetime.now(timezone.utc).isoformat()
-        status = "success" if result.success else "failed"
         self.repo.record_collection_run(
             supplier_id=supplier_id, status=status, pages_visited=len(result.pages),
             artifacts_dir=result.artifacts_dir, proxy_provider=result.proxy_provider,
-            error_message=result.error, started_at=started_at, completed_at=completed_at,
+            error_message=error, started_at=started_at, completed_at=completed_at,
         )
 
         contact_stats = {"contact_emails_added": 0, "contact_phones_added": 0, "contact_forms_recorded": 0}
-        if result.success and result.pages:
-            contact_stats = self._extract_and_save_contact_details(supplier_id, supplier.get("country"), result.pages)
+        if success and on_domain_pages:
+            contact_stats = self._extract_and_save_contact_details(supplier_id, supplier.get("country"), on_domain_pages)
 
         certificates_saved = 0
-        if result.success and result.certificate_documents:
+        if success and result.certificate_documents:
             certificates_saved = self._save_certificate_documents(supplier_id, result.certificate_documents)
 
         outcome = {
             "supplier_id": supplier_id, "status": status,
-            "pages_visited": len(result.pages), "error": result.error,
+            "pages_visited": len(on_domain_pages), "error": error,
             "certificates_saved": certificates_saved, "resolved_url": result.resolved_url,
             **contact_stats,
         }
         if return_pages:
-            outcome["pages"] = result.pages
+            outcome["pages"] = on_domain_pages
         return outcome
+
+    def _record_off_domain_pages(self, supplier_id: int, expected_domain: str, off_domain_pages: List[Any]) -> None:
+        """Visible, never-silent record of a page that redirected away
+        from the supplier's own expected domain -- see _collect_one's
+        own comment for the live case this exists for. Same
+        field_provenance mechanism this codebase already uses for every
+        other "disagreement, not applied" signal (canonical_name_candidate,
+        address_candidate, rejected_placeholder_email) -- a human
+        reviewing this supplier can see exactly what was found and where,
+        without it silently vanishing or silently being trusted."""
+        try:
+            for page in off_domain_pages:
+                self.repo.save_field_provenance(
+                    supplier_id=supplier_id, field_name="off_domain_redirect", value=extract_domain(page.url),
+                    source_url=page.url, raw_snippet=None, extraction_method="redirect",
+                    source_tier="other", claim_type="verifiable_fact",
+                )
+        except Exception as e:
+            logger.error("collection: recording off-domain pages failed for supplier #%s: %s", supplier_id, e)
 
     def _extract_and_save_contact_details(
         self, supplier_id: int, country: Optional[str], pages: Any,

@@ -512,6 +512,104 @@ class TestPlaceholderEmailLogging:
         assert repo.get_field_provenance(supplier_id, "rejected_placeholder_email") == []
 
 
+class TestOffDomainRedirectProtection:
+    """A fetched page can redirect to a COMPLETELY different registered
+    domain -- found live: a supplier's own domain redirected to an
+    unrelated company's site, and every collected page (plus the
+    contact info extracted from them) genuinely belonged to that OTHER
+    company, while suppliers.domain silently kept the original value.
+    Nothing anywhere compared the two. Same www/scheme-insensitive
+    domains_match() comparison batch/tracker_exporter.py's own Website
+    Note already uses -- a same-company www/scheme variant is NOT
+    flagged, only a genuinely different registered host."""
+
+    def test_every_page_off_domain_reports_failed_not_success(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://unrelated.example.com/", text="Totally Different Company Ltd", has_contact_form=False),
+                CollectedPage(url="https://unrelated.example.com/contact", text="Contact: wrong@unrelated.example.com", has_contact_form=False),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        outcome = service.collect(supplier_id, return_pages=True)
+
+        assert outcome["status"] == "failed"
+        assert "unrelated.example.com" in outcome["error"]
+        assert outcome["pages"] == []
+        assert outcome["pages_visited"] == 0
+
+        after = repo.get_supplier(supplier_id)
+        assert after["primary_email"] is None
+        assert after["contact_source_pages"] is None
+        assert after["domain"] == "acme.example.com"  # unchanged despite the redirect
+
+    def test_off_domain_pages_recorded_via_field_provenance_not_silently_dropped(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://unrelated.example.com/", text="Totally Different Company Ltd", has_contact_form=False),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        service.collect(supplier_id)
+
+        provenance = repo.get_field_provenance(supplier_id, "off_domain_redirect")
+        assert len(provenance) == 1
+        assert provenance[0]["value"] == "unrelated.example.com"
+        assert provenance[0]["source_url"] == "https://unrelated.example.com/"
+        assert provenance[0]["source_tier"] == "other"
+        assert provenance[0]["claim_type"] == "verifiable_fact"
+
+    def test_partial_off_domain_page_is_filtered_but_on_domain_evidence_still_applies(self, repo):
+        """Not all-or-nothing: a homepage that DOES stay on-domain, plus
+        one internal link that happens to redirect elsewhere (e.g. a
+        third-party contact-form/booking widget), must still yield the
+        genuinely on-domain contact info -- the off-domain page is
+        excluded, not the whole collection."""
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://acme.example.com/", text="Welcome to Acme", has_contact_form=False),
+                CollectedPage(url="https://acme.example.com/contact", text="Email: sales@acme.example.com", has_contact_form=False),
+                CollectedPage(url="https://booking.thirdpartywidget.example/", text="Book a call: wrong@thirdparty.example", has_contact_form=False),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        outcome = service.collect(supplier_id, return_pages=True)
+
+        assert outcome["status"] == "success"
+        assert outcome["pages_visited"] == 2
+        assert {p.url for p in outcome["pages"]} == {"https://acme.example.com/", "https://acme.example.com/contact"}
+
+        after = repo.get_supplier(supplier_id)
+        assert after["primary_email"] == "sales@acme.example.com"
+        provenance = repo.get_field_provenance(supplier_id, "off_domain_redirect")
+        assert [p["value"] for p in provenance] == ["booking.thirdpartywidget.example"]
+
+    def test_same_company_www_variant_is_not_flagged_as_off_domain(self, repo):
+        """Regression guard: site_collector.py deliberately follows a
+        plain-domain -> www redirect as the SAME company (see that
+        module's own comment on resolved_url) -- this must stay
+        unaffected by the off-domain check."""
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://www.acme.example.com/", text="Email: sales@acme.example.com", has_contact_form=False),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        outcome = service.collect(supplier_id)
+
+        assert outcome["status"] == "success"
+        assert repo.get_supplier(supplier_id)["primary_email"] == "sales@acme.example.com"
+        assert repo.get_field_provenance(supplier_id, "off_domain_redirect") == []
+
+
 class TestCertificateDocuments:
     """SiteCollector already downloaded/saved certificate files during
     collect() -- CollectionService's job here is just to record what
