@@ -34,6 +34,31 @@ this sourcing domain skews heavily toward Chinese manufacturers (see
 this codebase's own supplier data), and a Mandarin-phrased prompt
 genuinely surfaces different recall from the same underlying model than
 an English one does, not a translation of it.
+
+SYSTEM_PROMPT's rule 5 was rewritten after a real, reproducible finding:
+the original wording ("It is completely fine to return an empty list
+... an empty list is far better than a guess") caused gpt-4o-mini at
+temperature=0 to return an empty array even for well-documented terms
+it demonstrably has real, correct knowledge of -- confirmed via direct
+ablation (rules 1-4 alone reliably returned real companies like Dexter
+Axle/AL-KO for "trailer axle"; adding the original rule 5 back flipped
+the exact same prompt to "[]", discarding that same knowledge). Praising
+the empty-list outcome as "far better than a guess" right before
+generation appears to have anchored the model toward it as the safe
+default, not just a permitted fallback for genuine uncertainty. The
+rewritten rule keeps the same substantive constraint (no synthesizing a
+plausible-sounding company from a pattern, no padding for its own sake)
+without ranking silence above a real, confident answer. Verified
+two-sided before shipping: well-documented terms (trailer axle,
+structural adhesive) return real companies again; a genuinely
+thin-knowledge/fabricated-sounding term (a made-up "nano-ceramic
+coating" category) still returns an honest empty list, not a padded one
+-- the fix moved the failure mode back to "sometimes includes a
+reseller among real manufacturers" (etrailer.com alongside Dexter Axle/
+Lippert for "trailer axle dust cap"), which is exactly what the
+downstream trader-exclusion gate in candidate_validator.py exists to
+catch -- this module was never responsible for the manufacturer-vs-
+trader distinction, only for not inventing companies outright.
 """
 
 from __future__ import annotations
@@ -56,7 +81,7 @@ Rules, strictly enforced:
 2. Never invent a company name, website, or location. Every field must be something you actually know, not a plausible-sounding guess.
 3. A website is required for every company. If you don't know a company's real website, omit that company.
 4. Do not repeat the same company more than once in your answer.
-5. It is completely fine to return an empty list if you don't have confident matches -- an empty list is far better than a guess.
+5. Do not pad the list with uncertain or pattern-guessed companies just to have entries -- name only companies you are specifically, individually confident about. If a genuinely thin-knowledge product category leaves you with very few or zero such companies, that is an accurate answer; but always report every company you DO have real confidence in first.
 
 Return ONLY a JSON array (no other text, no markdown fences) of objects with exactly these keys:
 [
