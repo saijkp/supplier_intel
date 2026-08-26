@@ -520,6 +520,11 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
             <label class="label" for="findBulkRecoveryProductTerm">Product/category for validation (required)</label>
             <input class="input" id="findBulkRecoveryProductTerm" placeholder="e.g. trailer axle">
           </div>
+          <div class="field" style="margin-top:10px">
+            <label class="label" for="findBulkDefaultRegion">Country/region (optional -- helps phone-number parsing)</label>
+            <input class="input" id="findBulkDefaultRegion" placeholder="e.g. GB" maxlength="2" style="text-transform:uppercase">
+            <p class="hint">ISO 3166-1 country code. A plain local phone number (no country dialling code) can't be recognised without this. Only set it when you KNOW every row is from one country -- never guessed per-row.</p>
+          </div>
         </div>
         <div id="findCostNote" class="hint" style="margin:10px 0"></div>
         <button class="btn btn-primary btn-block" id="btnFindGo">Go</button>
@@ -645,6 +650,11 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
             <div class="field hidden" id="batchRecoveryProductTermField">
               <label class="label" for="batchRecoveryProductTerm">Product/category for validation (required)</label>
               <input class="input" id="batchRecoveryProductTerm" placeholder="e.g. trailer axle">
+            </div>
+            <div class="field">
+              <label class="label" for="batchDefaultRegion">Country/region (optional -- helps phone-number parsing)</label>
+              <input class="input" id="batchDefaultRegion" placeholder="e.g. GB" maxlength="2" style="text-transform:uppercase">
+              <p class="hint">ISO 3166-1 country code. A plain local phone number (no country dialling code) can't be recognised without this. Only set it when you KNOW every row is from one country -- never guessed per-row.</p>
             </div>
             <button class="btn btn-primary btn-block" id="btnBatchUpload">Upload &amp; enrich</button>
             <div id="batchProgress" style="margin-top:12px"></div>
@@ -1460,6 +1470,8 @@ async function findSubmitBulk() {
       form.append("recover_dead_domains", "true");
       form.append("recovery_product_term", recoveryProductTerm);
     }
+    const defaultRegion = $("findBulkDefaultRegion").value.trim();
+    if (defaultRegion) { form.append("default_region", defaultRegion); }
     const res = await fetch(state.base + "/batch/upload", {
       method: "POST", headers: { "Authorization": "Bearer " + state.token }, body: form,
     });
@@ -1676,6 +1688,8 @@ $("btnBatchUpload").addEventListener("click", async () => {
       form.append("recover_dead_domains", "true");
       form.append("recovery_product_term", recoveryProductTerm);
     }
+    const defaultRegion = $("batchDefaultRegion").value.trim();
+    if (defaultRegion) { form.append("default_region", defaultRegion); }
     const res = await fetch(state.base + "/batch/upload", {
       method: "POST",
       headers: { "Authorization": "Bearer " + state.token },

@@ -352,6 +352,15 @@ async def create_batch_upload_job(
                     "candidate_validator's product-term gate checks a recovered candidate's page "
                     "against (a CSV row has no product concept of its own to fall back on).",
     ),
+    default_region: Optional[str] = Form(
+        None,
+        description="ISO 3166-1 alpha-2 fallback (e.g. GB) for phone-number parsing when a "
+                    "supplier's own country isn't set yet -- always true for a freshly-created "
+                    "supplier, since a national-format phone number (no +44 prefix) can't be "
+                    "recognised without a region hint. Same option as main.py batch-upload "
+                    "--default-region -- only use this when you KNOW the batch is regionally "
+                    "scoped (e.g. a UK-only category); never overrides a real, known country.",
+    ),
     repo: SupplierRepository = Depends(get_repo),
 ) -> PipelineJobResponse:
     """CSV batch upload -- one job per uploaded file, processed row by
@@ -380,11 +389,13 @@ async def create_batch_upload_job(
             "filename": file.filename,
             "recover_dead_domains": recover_dead_domains,
             "recovery_product_term": recovery_product_term,
+            "default_region": default_region,
         },
     )
     background_tasks.add_task(
         run_batch_job, job_id, csv_bytes,
         recover_dead_domains=recover_dead_domains, recovery_product_term=recovery_product_term,
+        default_region=default_region,
     )
     job = repo.get_pipeline_job(job_id)
     return _to_job_response(job)

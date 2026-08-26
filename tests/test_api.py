@@ -105,10 +105,11 @@ def client(tmp_path, monkeypatch):
 
     batch_job_calls = []
 
-    def fake_run_batch_job(job_id, csv_bytes, recover_dead_domains=False, recovery_product_term=None):
+    def fake_run_batch_job(job_id, csv_bytes, recover_dead_domains=False, recovery_product_term=None,
+                            default_region=None):
         batch_job_calls.append({
             "job_id": job_id, "recover_dead_domains": recover_dead_domains,
-            "recovery_product_term": recovery_product_term,
+            "recovery_product_term": recovery_product_term, "default_region": default_region,
         })
         test_repo.mark_pipeline_job_running(job_id)
         test_repo.mark_pipeline_job_completed(job_id, stats={"processed": 0})
@@ -420,6 +421,7 @@ class TestBatchUploadEndpoint:
         assert response.status_code == 202
         assert client.batch_job_calls[-1]["recover_dead_domains"] is False
         assert client.batch_job_calls[-1]["recovery_product_term"] is None
+        assert client.batch_job_calls[-1]["default_region"] is None
 
     def test_empty_file_is_rejected(self, client):
         response = client.post(
@@ -453,6 +455,28 @@ class TestBatchUploadEndpoint:
         call = client.batch_job_calls[-1]
         assert call["recover_dead_domains"] is True
         assert call["recovery_product_term"] == "trailer axle"
+
+    def test_default_region_is_accepted_and_threaded_through(self, client):
+        response = client.post(
+            "/batch/upload", files={"file": ("suppliers.csv", self._CSV, "text/csv")},
+            data={"default_region": "GB"}, headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        job_id = response.json()["id"]
+        job = client.repo.get_pipeline_job(job_id)
+        assert job["options"]["default_region"] == "GB"
+        assert client.batch_job_calls[-1]["default_region"] == "GB"
+
+    def test_default_region_is_independent_of_recover_dead_domains(self, client):
+        """Not gated behind recover_dead_domains -- a plain upload with
+        only a region hint set must not be rejected the way an
+        unpaired recover_dead_domains would be."""
+        response = client.post(
+            "/batch/upload", files={"file": ("suppliers.csv", self._CSV, "text/csv")},
+            data={"default_region": "GB"}, headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        assert client.batch_job_calls[-1]["recover_dead_domains"] is False
 
 
 class TestContactsJobEndpoints:

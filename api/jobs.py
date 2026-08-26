@@ -131,6 +131,7 @@ def run_collection_job(job_id: str, options: Dict[str, Any]) -> None:
 def run_batch_job(
     job_id: str, csv_bytes: bytes,
     recover_dead_domains: bool = False, recovery_product_term: Optional[str] = None,
+    default_region: Optional[str] = None,
 ) -> None:
     """The HTTP equivalent of `main.py batch-upload` -- parses the
     uploaded CSV (batch.csv_parser.parse_csv) and runs every row through
@@ -146,12 +147,22 @@ def run_batch_job(
     scheduled as a background task (the request's UploadFile isn't
     guaranteed to stay valid past the request/response cycle), so this
     function itself never touches the HTTP layer at all.
+
+    `default_region`: same ISO 3166-1 alpha-2 fallback as
+    `main.py batch-upload --default-region` -- threaded straight to
+    BatchService's own `default_region_fallback` (which threads it to
+    CollectionService, which uses it ONLY when a supplier's own country
+    isn't resolved yet, never overriding a real known one). Until this
+    was wired, POST /batch/upload had no way to supply this at all --
+    a real 71-row batch went from 18/71 to 59/71 rows with a phone
+    number once a region hint was available, dwarfing every other
+    phone-extraction fix combined.
     """
     repo = SupplierRepository()
     repo.mark_pipeline_job_running(job_id)
     try:
         parsed = parse_csv(csv_bytes)
-        service = BatchService(repo=repo)
+        service = BatchService(repo=repo, default_region_fallback=default_region)
 
         def _on_progress(outcome) -> None:
             repo.update_pipeline_job_progress(job_id, dataclasses.asdict(outcome))
