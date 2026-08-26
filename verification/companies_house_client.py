@@ -69,6 +69,17 @@ class CompanyProfile:
     source_url: str = ""
 
 
+@dataclass
+class SicSearchMatch:
+    company_number: str
+    company_name: str
+    company_status: Optional[str] = None
+    sic_codes: List[str] = field(default_factory=list)
+    registered_office_address: Optional[str] = None
+    date_of_creation: Optional[str] = None
+    source_url: str = ""
+
+
 def _format_address(address: Dict[str, Any]) -> Optional[str]:
     """Companies House returns registered_office_address as separate
     fields (address_line_1, address_line_2, locality, region,
@@ -143,3 +154,87 @@ class CompaniesHouseClient:
             registered_office_address=_format_address(data.get("registered_office_address") or {}),
             source_url=f"{COMPANIES_HOUSE_PUBLIC_URL}/{company_number}",
         )
+
+    def search_by_sic_codes(
+        self, sic_codes: List[str], max_results: int = 100, company_status: str = "active",
+    ) -> List[SicSearchMatch]:
+        """Bulk search via GET /advanced-search/companies -- a genuinely
+        different capability from search_companies() above (free-text
+        name search, one candidate name at a time): given a set of UK
+        SIC 2007 codes, returns every real, currently-`company_status`
+        UK-registered company carrying ANY of them. Confirmed live:
+        `sic_codes` is comma-separated and ORs across codes (28220 alone
+        returns 913 active hits; 28220+46140 combined returns 5,563 --
+        a straightforward union, not an intersection), and each result
+        already includes registered_office_address + sic_codes inline
+        (no separate get_company_profile() call needed per hit).
+        Paginated internally via CH's own size/start_index, stopping at
+        `max_results` or whenever CH itself runs out of hits, whichever
+        comes first. Never raises for ordinary failures (no API key,
+        network error, no matches) -- returns an empty (or partial)
+        list, same contract as search_companies()/get_company_profile()
+        above; a mid-pagination failure returns whatever was already
+        collected rather than discarding it.
+
+        Existence and SIC classification only -- says nothing about
+        whether a company actually makes what a caller is searching
+        for. Confirmed live against this codebase's own 31 real,
+        already Companies-House-verified Material Handling suppliers:
+        only 4 carry SIC 28220 (the literal "manufacture of lifting/
+        handling equipment" code) at all -- most are registered under
+        wholesale/agent, rental, or repair codes instead. See
+        discovery/companies_house_sic_source.py, the caller that turns
+        a match here into an actual discovery candidate (still gated
+        by the same real fetch/name-match/product-term/trader checks
+        as any other candidate before ever being trusted).
+        """
+        if not self.api_key or not sic_codes:
+            return []
+
+        matches: List[SicSearchMatch] = []
+        start_index = 0
+        page_size = 100
+        sic_param = ",".join(sic_codes)
+
+        while len(matches) < max_results:
+            try:
+                response = self._client.get(
+                    f"{COMPANIES_HOUSE_BASE_URL}/advanced-search/companies",
+                    params={
+                        "sic_codes": sic_param,
+                        "company_status": company_status,
+                        "size": min(page_size, max_results - len(matches)),
+                        "start_index": start_index,
+                    },
+                    auth=(self.api_key, ""),
+                )
+                response.raise_for_status()
+                data = response.json()
+            except Exception as e:  # noqa: BLE001 -- never raise, see module docstring
+                logger.warning("companies_house: SIC search failed for %r: %s", sic_param, e)
+                break
+
+            items = data.get("items") or []
+            if not items:
+                break
+            for item in items:
+                company_number = item.get("company_number")
+                if not company_number:
+                    continue
+                matches.append(SicSearchMatch(
+                    company_number=company_number,
+                    company_name=item.get("company_name") or "",
+                    company_status=item.get("company_status"),
+                    sic_codes=list(item.get("sic_codes") or []),
+                    registered_office_address=_format_address(item.get("registered_office_address") or {}),
+                    date_of_creation=item.get("date_of_creation"),
+                    source_url=f"{COMPANIES_HOUSE_PUBLIC_URL}/{company_number}",
+                ))
+                if len(matches) >= max_results:
+                    break
+
+            start_index += len(items)
+            if start_index >= (data.get("hits") or 0):
+                break
+
+        return matches

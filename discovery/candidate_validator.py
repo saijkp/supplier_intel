@@ -133,6 +133,88 @@ def _find_trader_self_declaration(page_text: str) -> str | None:
     return None
 
 
+# Soft/indirect trader signals -- regex, not exact-phrase -- added after
+# a real brake-cable-batch failure: none of Auto & Trailer Spares
+# (autoandtrailer.com -- "expanded to become Irelands largest trailer
+# parts distributor"; "Are you a Retailer, Wholesaler or Manufacturer?
+# ... apply for a trade account") or Towing and Trailers
+# (towingandtrailers.com -- "One of UK's largest stockists of
+# Trailer-Parts"; "This range of parts covers trailers by most
+# manufacturers") tripped _TRADER_SELF_DECLARATION_PHRASES above -- both
+# are real, buyer-confirmed FAILs in that batch's own tracker, neither
+# ever writes the literal sentence "we are a distributor". Confirmed
+# live against both real fetched pages before adding these patterns
+# (not written from guesswork), and re-checked against the SAME
+# regression fixtures TestSelfDeclaredTraderExclusion already proves
+# matter ("trading partners" in passing, a genuine in-house
+# manufacturer) to confirm no new false positive there.
+#
+# Same precision-over-recall discipline as the phrase list above: every
+# pattern requires the page positioning ITSELF via a reseller-only noun
+# (distributor/stockist/wholesaler -- never bare "supplier", which a
+# genuine manufacturer routinely uses for its own output) or explicitly
+# admitting it carries OTHER manufacturers' output or trade-customer
+# structure -- never a bare mention of "distributor" alone, which a
+# genuine manufacturer can use describing its own downstream channel
+# ("sold through our network of distributors") without being one.
+#
+# A third real example (Custom Control Cables, cccables.com -- "F.A.S.T.
+# distributor" as a standalone trust-badge heading) is a real miss this
+# set does NOT catch: a single ambiguous example (an unclear brand/
+# program name, no "authorized"/"official" qualifier) isn't enough to
+# write a reliable general pattern from yet -- left for a future
+# collision, same discipline as everywhere else in this module.
+_TRADER_SOFT_SIGNAL_PATTERNS: tuple = (
+    # "become Ireland's largest trailer parts distributor"; "One of
+    # UK's largest stockists of Trailer-Parts" -- self-positioning via
+    # a reseller-only noun.
+    re.compile(
+        r"\b(largest|leading)\b(?:\s+\S+){0,4}?\s+(distributors?|stockists?|wholesalers?)\b",
+        re.I | re.DOTALL,
+    ),
+    # "we supply products from leading manufacturers"; "covers trailers
+    # by most manufacturers" -- explicitly carrying THIRD-PARTY
+    # manufacturers' output, not its own.
+    re.compile(
+        r"\b(from|by)\s+(most|all|leading|top|major|various|multiple|other)\s+manufacturers\b",
+        re.I | re.DOTALL,
+    ),
+    # "authorized distributor of Knott"; "official dealer for..." --
+    # explicit branded-distributor/dealer badge language. Deliberately
+    # SINGULAR only ("distributor", not "distributors") -- a genuine
+    # manufacturer describing its OWN downstream channel almost always
+    # uses the plural ("sold through our network of authorized
+    # distributors worldwide"), while a self-declaration is almost
+    # always singular ("we are AN authorized distributor of X").
+    # Confirmed live: the plural form false-positived on exactly that
+    # manufacturer-channel phrasing before this was narrowed.
+    re.compile(
+        r"\b(authou?rized|official|certified)\s+(distributor|dealer|reseller|stockist)\b",
+        re.I | re.DOTALL,
+    ),
+    # "Are you a Retailer, Wholesaler or Manufacturer? ... apply for a
+    # trade account" -- structural wholesale-to-trade page: the site is
+    # selling AT TRADE PRICES to other retailers/wholesalers (and
+    # sometimes manufacturers), not manufacturing itself.
+    re.compile(
+        r"trade\s+accounts?.{0,80}(retailer|wholesaler)|(retailer|wholesaler).{0,80}trade\s+accounts?",
+        re.I | re.DOTALL,
+    ),
+)
+
+
+def _find_trader_soft_signal(page_text: str) -> str | None:
+    """The first _TRADER_SOFT_SIGNAL_PATTERNS regex match found in
+    `page_text` (the matched excerpt itself, for the same kind of
+    reviewable REASON_TRADER_PREFIX detail _find_trader_self_declaration
+    provides), or None."""
+    for pattern in _TRADER_SOFT_SIGNAL_PATTERNS:
+        match = pattern.search(page_text)
+        if match:
+            return match.group(0)
+    return None
+
+
 # query_builder.py's own templates append a trailing role word to every
 # product term it builds a query from ("{product} manufacturer",
 # "{product} supplier", "{product} factory") -- gate 6 originally
@@ -418,7 +500,29 @@ class CandidateValidator:
         # category just because a key happens to be configured.
         self.companies_house_client = companies_house_client
 
-    def validate(self, candidate: Candidate, product_term: str) -> ValidationResult:
+    def validate(
+        self, candidate: Candidate, product_term: str, skip_soft_trader_signals: bool = False,
+    ) -> ValidationResult:
+        """`skip_soft_trader_signals`, when True, skips ONLY
+        _TRADER_SOFT_SIGNAL_PATTERNS (gate 7b) -- _TRADER_SELF_DECLARATION_PHRASES
+        (gate 7a: "we are a distributor", "we do not manufacture", etc.)
+        and every other gate still apply unchanged. Default False for
+        every existing caller (serpapi/llm discovery, recover()) --
+        opt-in only for discovery.companies_house_sic_source.py's
+        Material Handling candidates, where a real, multi-brand dealer
+        with its own depot/service operation IS the wanted supplier
+        type, not a disqualifying signal: this category's own confirmed
+        roster (data/source_files/material_handling_14/) was built on
+        UK Companies House registration alone, and real ground truth
+        from that roster's own stored companies_house_sic_codes shows
+        most of its confirmed suppliers are registered as wholesale/
+        rental/repair businesses, not SIC 28220 manufacturers. Applying
+        the soft-signal gate here rejected 3 of that roster's own real,
+        already-confirmed suppliers on exactly this kind of language
+        ("we stock forklifts from leading manufacturers") -- a real
+        false-reject for THIS category, even though the same language
+        is a correct reject for a category wanting direct manufacturers
+        only (Injection Moulding, Brake Cable)."""
         if is_platform_subdomain(candidate.domain):
             # Checked before any fetch -- a marketplace storefront is a
             # negative signal (this is not an independent company
@@ -512,6 +616,14 @@ class CandidateValidator:
                 candidate, False, extracted_name, extracted_country, score,
                 f"{REASON_TRADER_PREFIX} (matched phrase: "
                 f"'{self_declared_trader}') -- excluded, not a manufacturer",
+            )
+
+        soft_trader_signal = None if skip_soft_trader_signals else _find_trader_soft_signal(page_text)
+        if soft_trader_signal:
+            return ValidationResult(
+                candidate, False, extracted_name, extracted_country, score,
+                f"{REASON_TRADER_PREFIX} (matched soft signal: "
+                f"'{soft_trader_signal}') -- excluded, not a manufacturer",
             )
 
         return ValidationResult(

@@ -79,6 +79,12 @@ SOURCE_QUALITY_WEIGHTS: Dict[str, int] = {
     "alibaba": 35,                    # self-service marketplace listing
     "china_1688": 35,
     "indiamart": 35,
+    "companies-house-sic": 40,        # discovery.companies_house_sic_source -- real UK government registry
+                                       # existence/registration proof (higher than a bare search hit), but
+                                       # the WEBSITE itself is still only a best-effort name-search + text-match
+                                       # (scrapers.company_website_finder), the same uncertainty every other
+                                       # source's domain-finding step carries -- so not scored as high as a
+                                       # curated structured directory (45+), just above the unclassified default.
     "google": 25,                     # generic web search hit -- weakest identity signal from a real search
     "llm-discovery": 20,              # discovery.llm_candidate_source -- an LLM's own claim about a company,
                                        # independently gated by the same real-fetch/content-match validation

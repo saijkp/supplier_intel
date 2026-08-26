@@ -63,13 +63,14 @@ from discovery.candidate_validator import (
     REASON_UK_NOT_REGISTERED_PREFIX,
     CandidateValidator,
 )
+from discovery.companies_house_sic_source import CompaniesHouseSicSource
 from discovery.llm_candidate_source import LLMCandidateSource
 from discovery.query_builder import build_queries
 from storage.repository import SupplierRepository
 
 logger = logging.getLogger(__name__)
 
-_VALID_SOURCES = ("serpapi", "llm", "1688")
+_VALID_SOURCES = ("serpapi", "llm", "1688", "companies_house_sic")
 
 # discover_to_target()'s round-2 default -- broadened past manufacturer-only
 # phrasing, see query_builder.py's own extra_role_words docstring and
@@ -177,6 +178,7 @@ class DiscoveryService:
         llm_candidate_source: Optional[LLMCandidateSource] = None,
         china_1688_scraper: Optional[Any] = None,
         companies_house_client: Optional[Any] = None,
+        companies_house_sic_source: Optional[CompaniesHouseSicSource] = None,
     ):
         self.repo = repo or SupplierRepository()
         if google_scraper is not None:
@@ -217,6 +219,14 @@ class DiscoveryService:
             from scrapers.scraper_1688 import China1688Scraper
 
             self.china_1688_scraper = China1688Scraper()
+        # Reuses the SAME companies_house_client instance as gate 3.5
+        # above when one was explicitly passed (one API key, one client)
+        # -- otherwise CompaniesHouseSicSource constructs its own real
+        # client lazily, same "safe to construct without credentials"
+        # discipline as every other integration in this codebase.
+        self.companies_house_sic_source = companies_house_sic_source or CompaniesHouseSicSource(
+            companies_house_client=companies_house_client,
+        )
 
     def discover(
         self, product: str, category: Optional[str] = None, country: Optional[str] = None,
@@ -226,11 +236,25 @@ class DiscoveryService:
         target_count: Optional[int] = None,
         progress_callback: Optional[Callable[[DiscoveryProgressEvent], None]] = None,
         recover_dead_domains: bool = False,
+        sic_codes: Optional[List[str]] = None,
     ) -> DiscoveryOutcome:
-        """`target_count`, `progress_callback`, and `recover_dead_domains`
-        are all additive, default-None/False/unset -- every existing
-        caller (main.py discover, sourcing.sourcing_agent.
+        """`target_count`, `progress_callback`, `recover_dead_domains`,
+        and `sic_codes` are all additive, default-None/False/unset --
+        every existing caller (main.py discover, sourcing.sourcing_agent.
         SourcingAgentService, every existing test) is unaffected.
+
+        `sic_codes`, required when `source="companies_house_sic"` (see
+        discovery/companies_house_sic_source.py's own docstring), is a
+        list of UK SIC 2007 codes ORed together in one real Companies
+        House bulk search -- every real match is then a candidate whose
+        website still needs finding (real SerpAPI cost) and validating
+        (real fetch + OpenAI cost), same as any other source. Candidates
+        from this source skip ONLY the soft-signal trader gate (a real,
+        multi-brand dealer is the wanted supplier type for a category
+        sourced this way, not a disqualifying one -- see
+        candidate_validator.CandidateValidator.validate()'s own
+        `skip_soft_trader_signals` docstring); the hard self-declaration
+        phrase list and every other gate still apply unchanged.
 
         `target_count`, when given, is an early-stop on VALIDATION, not
         on candidate collection: the raw-candidate-gathering loop below
@@ -268,6 +292,30 @@ class DiscoveryService:
                 self._process_candidate(
                     candidate, product, country, outcome, raw_source=raw_source,
                     progress_callback=progress_callback, recover_dead_domains=recover_dead_domains,
+                )
+                if target_count is not None and outcome.candidates_validated >= target_count:
+                    break
+            self.repo.record_discovery_run(
+                product_query=product, category=category, country=country,
+                candidates_found=outcome.candidates_found, candidates_validated=outcome.candidates_validated,
+                candidates_rejected=outcome.candidates_rejected, candidates_duplicate=outcome.candidates_duplicate,
+            )
+            return outcome
+
+        if source == "companies_house_sic":
+            if not sic_codes:
+                raise ValueError("source='companies_house_sic' requires sic_codes")
+            all_candidates, generation_stats = self.companies_house_sic_source.find_candidates(
+                sic_codes, max_candidates=max_candidates,
+            )
+            outcome.candidates_generated = generation_stats.companies_found
+            raw_source = "companies-house-sic"
+            outcome.candidates_found = len(all_candidates)
+            for candidate in all_candidates:
+                self._process_candidate(
+                    candidate, product, country, outcome, raw_source=raw_source,
+                    progress_callback=progress_callback, recover_dead_domains=recover_dead_domains,
+                    skip_soft_trader_signals=True,
                 )
                 if target_count is not None and outcome.candidates_validated >= target_count:
                     break
@@ -520,10 +568,13 @@ class DiscoveryService:
         raw_source: str = "discovery",
         progress_callback: Optional[Callable[[DiscoveryProgressEvent], None]] = None,
         recover_dead_domains: bool = False,
+        skip_soft_trader_signals: bool = False,
     ) -> None:
         outcome.candidates_examined += 1
         try:
-            validation = self.candidate_validator.validate(candidate, product)
+            validation = self.candidate_validator.validate(
+                candidate, product, skip_soft_trader_signals=skip_soft_trader_signals,
+            )
         except Exception as e:  # noqa: BLE001 -- one candidate's failure must never abort the whole discovery run
             logger.error("discovery: validation failed for %s: %s", candidate.domain, e)
             self.repo.save_raw(

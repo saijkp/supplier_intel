@@ -61,7 +61,7 @@ class FakeCandidateValidator:
         self.calls = []
         self.recover_calls = []
 
-    def validate(self, candidate, product_term):
+    def validate(self, candidate, product_term, skip_soft_trader_signals=False):
         self.calls.append((candidate.domain, product_term))
         if self._raise_for_domain and candidate.domain == self._raise_for_domain:
             raise RuntimeError("validator exploded")
@@ -736,6 +736,22 @@ class FakeLLMCandidateSource:
         return self._candidates, self._stats
 
 
+class FakeCompaniesHouseSicSource:
+    """Mirrors FakeLLMCandidateSource's convention exactly."""
+
+    def __init__(self, candidates=None, stats=None):
+        from discovery.companies_house_sic_source import SicGenerationStats
+        self._candidates = candidates or []
+        self._stats = stats or SicGenerationStats(
+            companies_found=len(self._candidates), deduplicated=len(self._candidates),
+        )
+        self.calls = []
+
+    def find_candidates(self, sic_codes, max_candidates=20):
+        self.calls.append((sic_codes, max_candidates))
+        return self._candidates, self._stats
+
+
 class TestDiscoverLLMSource:
     """source='llm' must flow through the exact same
     CandidateValidator/SupplierMatcher pipeline as source='serpapi'
@@ -797,6 +813,7 @@ class TestDiscoverLLMSource:
         assert supplier["canonical_name"] == "Acme Trailer Co"
         assert supplier["domain"] == "acmetrailer.com"
 
+
     def test_source_llm_rejected_candidate_is_not_stored_but_is_recorded(self, repo):
         """The critical requirement: an LLM-proposed candidate whose
         site doesn't resolve or doesn't corroborate must be dropped,
@@ -840,6 +857,94 @@ class TestDiscoverLLMSource:
         )
         with pytest.raises(ValueError):
             service.discover("trailer axle", source="bogus")
+
+
+class TestDiscoverCompaniesHouseSicSource:
+    """source='companies_house_sic' must flow through the exact same
+    CandidateValidator/SupplierMatcher pipeline as source='serpapi',
+    but with skip_soft_trader_signals=True (see
+    discovery/companies_house_sic_source.py's own docstring for why)."""
+
+    def _sic_service(self, repo, candidates, validated_domain, extracted_name="Acme Handling Ltd", extracted_country="United Kingdom", **overrides):
+        sic_source = overrides.get("companies_house_sic_source") or FakeCompaniesHouseSicSource(candidates=candidates)
+        validator = overrides.get("candidate_validator")
+        if validator is None:
+            validator = FakeCandidateValidator(outcomes={
+                validated_domain: ValidationResult(
+                    candidates[0], True, extracted_name, extracted_country, 95.0, "validated: name corroborated",
+                ),
+            })
+        return DiscoveryService(
+            repo=repo, google_scraper=FakeGoogleScraper(results=[]), website_fetcher=SimpleNamespace(),
+            candidate_validator=validator, matcher=overrides.get("matcher") or SupplierMatcher(repo),
+            companies_house_sic_source=sic_source,
+        )
+
+    def test_requires_sic_codes(self, repo):
+        from discovery.candidate_extractor import Candidate
+        candidate = Candidate(title="Acme Handling Ltd", link="https://acmehandling.co.uk", snippet="CH #123", domain="acmehandling.co.uk")
+        service = self._sic_service(repo, [candidate], "acmehandling.co.uk")
+        with pytest.raises(ValueError, match="requires sic_codes"):
+            service.discover("material handling equipment", source="companies_house_sic")
+
+    def test_uses_companies_house_sic_source_not_google_scraper(self, repo):
+        from discovery.candidate_extractor import Candidate
+        candidate = Candidate(title="Acme Handling Ltd", link="https://acmehandling.co.uk", snippet="CH #123", domain="acmehandling.co.uk")
+        google_scraper = FakeGoogleScraper(results=[])
+        sic_source = FakeCompaniesHouseSicSource(candidates=[candidate])
+        service = self._sic_service(repo, [candidate], "acmehandling.co.uk", companies_house_sic_source=sic_source)
+        service.google_scraper = google_scraper
+
+        service.discover("material handling equipment", source="companies_house_sic", sic_codes=["28220", "46140"])
+
+        assert sic_source.calls == [(["28220", "46140"], 20)]
+        assert google_scraper.queries == []
+
+    def test_writes_raw_source_data_with_companies_house_sic_provenance(self, repo):
+        from discovery.candidate_extractor import Candidate
+        candidate = Candidate(title="Acme Handling Ltd", link="https://acmehandling.co.uk", snippet="CH #123", domain="acmehandling.co.uk")
+        service = self._sic_service(repo, [candidate], "acmehandling.co.uk")
+
+        service.discover("material handling equipment", source="companies_house_sic", sic_codes=["28220"])
+
+        from storage.database import connection_scope
+        with connection_scope(repo.db_path) as conn:
+            discovery_rows = conn.execute("SELECT * FROM raw_source_data WHERE source = 'discovery'").fetchall()
+            sic_rows = conn.execute("SELECT * FROM raw_source_data WHERE source = 'companies-house-sic'").fetchall()
+        assert discovery_rows == []
+        assert len(sic_rows) == 1
+        assert sic_rows[0]["golden_record_id"] is not None
+
+    def test_still_creates_a_supplier_via_the_same_validator_and_matcher(self, repo):
+        from discovery.candidate_extractor import Candidate
+        candidate = Candidate(title="Acme Handling Ltd", link="https://acmehandling.co.uk", snippet="CH #123", domain="acmehandling.co.uk")
+        service = self._sic_service(repo, [candidate], "acmehandling.co.uk")
+
+        outcome = service.discover("material handling equipment", source="companies_house_sic", sic_codes=["28220"])
+
+        assert len(outcome.new_supplier_ids) == 1
+        supplier = repo.get_supplier(outcome.new_supplier_ids[0])
+        assert supplier["canonical_name"] == "Acme Handling Ltd"
+        assert supplier["domain"] == "acmehandling.co.uk"
+
+    def test_validator_is_called_with_skip_soft_trader_signals_true(self, repo):
+        from discovery.candidate_extractor import Candidate
+        candidate = Candidate(title="Acme Handling Ltd", link="https://acmehandling.co.uk", snippet="CH #123", domain="acmehandling.co.uk")
+
+        class RecordingValidator:
+            def __init__(self):
+                self.calls = []
+
+            def validate(self, candidate, product_term, skip_soft_trader_signals=False):
+                self.calls.append(skip_soft_trader_signals)
+                return ValidationResult(candidate, True, "Acme Handling Ltd", "United Kingdom", 95.0, "validated: name corroborated")
+
+        validator = RecordingValidator()
+        service = self._sic_service(repo, [candidate], "acmehandling.co.uk", candidate_validator=validator)
+
+        service.discover("material handling equipment", source="companies_house_sic", sic_codes=["28220"])
+
+        assert validator.calls == [True]
 
 
 class TestDiscoverResolutionCounters:

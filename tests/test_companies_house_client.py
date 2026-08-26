@@ -156,6 +156,131 @@ class TestGetCompanyProfile:
         assert profile.registered_office_address is None
 
 
+SIC_SEARCH_PAGE_1 = {
+    "hits": 3,
+    "items": [
+        {
+            "company_number": "01611229", "company_name": "MERCIA LIFTING GEAR LIMITED",
+            "company_status": "active", "sic_codes": ["28220"],
+            "registered_office_address": {"address_line_1": "1 Main St", "locality": "London", "postal_code": "EC1A 1AA"},
+            "date_of_creation": "1982-02-03",
+        },
+        {
+            "company_number": "07654321", "company_name": "OTHER LIFTING LTD",
+            "company_status": "active", "sic_codes": ["28220", "46690"],
+            "registered_office_address": {}, "date_of_creation": "2010-01-01",
+        },
+    ],
+}
+SIC_SEARCH_PAGE_2 = {
+    "hits": 3,
+    "items": [
+        {
+            "company_number": "09999999", "company_name": "THIRD LIFTING LTD",
+            "company_status": "active", "sic_codes": ["46140"],
+            "registered_office_address": {}, "date_of_creation": "2015-01-01",
+        },
+    ],
+}
+
+
+class PagingFakeHttpClient:
+    """Returns a different response per call, in order -- for testing
+    search_by_sic_codes()'s internal pagination loop."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = []
+
+    def get(self, url, params=None, auth=None):
+        self.calls.append({"url": url, "params": params, "auth": auth})
+        json_data = self._responses.pop(0) if self._responses else {"hits": 0, "items": []}
+        return FakeResponse(json_data)
+
+
+class TestSearchBySicCodes:
+
+    def test_no_api_key_returns_empty_list_without_a_call(self, monkeypatch):
+        monkeypatch.setattr("verification.companies_house_client.COMPANIES_HOUSE_API_KEY", None)
+        http_client = FakeHttpClient(json_data=SIC_SEARCH_PAGE_1)
+        client = CompaniesHouseClient(api_key=None, http_client=http_client)
+        assert client.search_by_sic_codes(["28220"]) == []
+        assert http_client.calls == []
+
+    def test_no_sic_codes_returns_empty_list_without_a_call(self):
+        http_client = FakeHttpClient(json_data=SIC_SEARCH_PAGE_1)
+        client = CompaniesHouseClient(api_key="test-key", http_client=http_client)
+        assert client.search_by_sic_codes([]) == []
+        assert http_client.calls == []
+
+    def test_parses_matches_including_sic_codes_and_address(self):
+        http_client = FakeHttpClient(json_data=SIC_SEARCH_PAGE_1)
+        client = CompaniesHouseClient(api_key="test-key", http_client=http_client)
+        matches = client.search_by_sic_codes(["28220"], max_results=2)
+        assert len(matches) == 2
+        assert matches[0].company_number == "01611229"
+        assert matches[0].company_name == "MERCIA LIFTING GEAR LIMITED"
+        assert matches[0].sic_codes == ["28220"]
+        assert matches[0].registered_office_address == "1 Main St, London, EC1A 1AA"
+        assert matches[0].source_url == "https://find-and-update.company-information.service.gov.uk/company/01611229"
+
+    def test_sic_codes_are_joined_comma_separated_in_the_request(self):
+        http_client = FakeHttpClient(json_data=SIC_SEARCH_PAGE_1)
+        client = CompaniesHouseClient(api_key="test-key", http_client=http_client)
+        client.search_by_sic_codes(["28220", "46140"], max_results=2)
+        assert http_client.calls[0]["params"]["sic_codes"] == "28220,46140"
+
+    def test_company_status_defaults_to_active(self):
+        http_client = FakeHttpClient(json_data=SIC_SEARCH_PAGE_1)
+        client = CompaniesHouseClient(api_key="test-key", http_client=http_client)
+        client.search_by_sic_codes(["28220"], max_results=2)
+        assert http_client.calls[0]["params"]["company_status"] == "active"
+
+    def test_stops_at_max_results_even_with_more_hits_available(self):
+        http_client = FakeHttpClient(json_data=SIC_SEARCH_PAGE_1)
+        client = CompaniesHouseClient(api_key="test-key", http_client=http_client)
+        matches = client.search_by_sic_codes(["28220"], max_results=1)
+        assert len(matches) == 1
+
+    def test_paginates_across_multiple_pages_up_to_max_results(self):
+        http_client = PagingFakeHttpClient([SIC_SEARCH_PAGE_1, SIC_SEARCH_PAGE_2])
+        client = CompaniesHouseClient(api_key="test-key", http_client=http_client)
+        matches = client.search_by_sic_codes(["28220", "46140"], max_results=3)
+        assert len(matches) == 3
+        assert [m.company_number for m in matches] == ["01611229", "07654321", "09999999"]
+        assert len(http_client.calls) == 2
+        assert http_client.calls[1]["params"]["start_index"] == 2
+
+    def test_no_results_returns_empty_list(self):
+        http_client = FakeHttpClient(json_data={"hits": 0, "items": []})
+        client = CompaniesHouseClient(api_key="test-key", http_client=http_client)
+        assert client.search_by_sic_codes(["99999"]) == []
+
+    def test_network_error_mid_pagination_returns_whatever_was_collected(self):
+        http_client = PagingFakeHttpClient([SIC_SEARCH_PAGE_1])
+
+        original_get = http_client.get
+        call_count = {"n": 0}
+
+        def flaky_get(url, params=None, auth=None):
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise RuntimeError("connection failed")
+            return original_get(url, params=params, auth=auth)
+
+        http_client.get = flaky_get
+        client = CompaniesHouseClient(api_key="test-key", http_client=http_client)
+        matches = client.search_by_sic_codes(["28220"], max_results=3)
+        assert len(matches) == 2  # page 1 collected before the failure, not discarded
+
+    def test_item_without_a_company_number_is_skipped(self):
+        http_client = FakeHttpClient(json_data={
+            "hits": 1, "items": [{"company_name": "No Number Ltd", "sic_codes": ["28220"]}],
+        })
+        client = CompaniesHouseClient(api_key="test-key", http_client=http_client)
+        assert client.search_by_sic_codes(["28220"]) == []
+
+
 class TestFormatAddress:
 
     def test_joins_present_parts_with_commas(self):

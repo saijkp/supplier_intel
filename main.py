@@ -426,19 +426,35 @@ def verify_facilities(force: bool, limit: int) -> None:
                    "(--product \"jockey wheel\" --source llm --limit 100) works as written.")
 @click.option("--category", default=None, help="Optional product category, recorded on discovery_runs.")
 @click.option("--country", default=None, help="Optional country to qualify the search (e.g. China).")
-@click.option("--source", type=click.Choice(["serpapi", "llm", "1688"]), default="serpapi", show_default=True,
-              help="serpapi (default): candidates from real SerpAPI search hits. llm: candidates "
-                   "gpt-4o-mini proposes from its own knowledge (discovery/llm_candidate_source.py), "
-                   "costing OpenAI calls instead of SerpAPI ones -- still gated by the exact same "
-                   "real-fetch/content-match validation before anything is stored, see that module's "
-                   "docstring for why this doesn't weaken the anti-hallucination guarantee. 1688: "
-                   "China1688Scraper (Apify-backed, real cost per product) -- a Mandarin search term "
-                   "is expected (pass the term itself, this CLI does not translate it). Currently "
-                   "diagnostic-only: fetches real "
-                   "listings and writes them to raw_source_data as evidence, but does NOT validate "
-                   "or create supplier rows yet -- see DiscoveryService._discover_1688's own "
-                   "docstring for why (1688 gives no independent company-website field to validate "
-                   "against, only marketplace-hosted URLs).")
+@click.option(
+    "--source", type=click.Choice(["serpapi", "llm", "1688", "companies_house_sic"]),
+    default="serpapi", show_default=True,
+    help="serpapi (default): candidates from real SerpAPI search hits. llm: candidates "
+         "gpt-4o-mini proposes from its own knowledge (discovery/llm_candidate_source.py), "
+         "costing OpenAI calls instead of SerpAPI ones -- still gated by the exact same "
+         "real-fetch/content-match validation before anything is stored, see that module's "
+         "docstring for why this doesn't weaken the anti-hallucination guarantee. 1688: "
+         "China1688Scraper (Apify-backed, real cost per product) -- a Mandarin search term "
+         "is expected (pass the term itself, this CLI does not translate it). Currently "
+         "diagnostic-only: fetches real "
+         "listings and writes them to raw_source_data as evidence, but does NOT validate "
+         "or create supplier rows yet -- see DiscoveryService._discover_1688's own "
+         "docstring for why (1688 gives no independent company-website field to validate "
+         "against, only marketplace-hosted URLs). companies_house_sic: bulk UK Companies "
+         "House SIC-code search (--sic-codes, required with this source) -- free existence/"
+         "registration lookup, but each real company still costs one SerpAPI search "
+         "(finding a website CH doesn't provide) plus a real fetch+OpenAI validation call "
+         "for any that resolve, same real per-candidate cost as serpapi/llm. UK-only -- only "
+         "makes sense for a genuinely UK-scoped category. See "
+         "discovery/companies_house_sic_source.py's own docstring for why this source's "
+         "candidates skip the soft-signal (but not the hard self-declaration) trader gate.")
+@click.option(
+    "--sic-codes", default=None,
+    help="Comma-separated UK SIC 2007 codes (e.g. \"28220,46140,46690,77120,77320,77390,"
+         "33170,33200\" for Material Handling) -- required with --source companies_house_sic, "
+         "ignored otherwise. ORed together in one real Companies House search. See "
+         "discovery/companies_house_sic_source.py's own docstring for why a category's real "
+         "SIC footprint is usually broader than its single \"cleanest\" manufacturing code.")
 @click.option("--limit", "max_candidates", default=20, show_default=True,
               help="Stop after this many candidate companies. Each one costs a paid SerpAPI "
                    "search (--source serpapi) or an OpenAI call (--source llm) plus, for "
@@ -475,7 +491,7 @@ def verify_facilities(force: bool, limit: int) -> None:
                    "candidate. Real extra SerpAPI+fetch+OpenAI cost per dead candidate.")
 def discover(
     product_arg: Optional[str], product_opt: Optional[str], category: Optional[str],
-    country: Optional[str], source: str, max_candidates: int,
+    country: Optional[str], source: str, sic_codes: Optional[str], max_candidates: int,
     domain_bias: Optional[str], require_uk_registration: bool, role_words: Optional[str],
     recover_dead_domains: bool,
 ) -> None:
@@ -494,6 +510,11 @@ def discover(
         console.print("[yellow]Give a product, either as PRODUCT or --product.[/yellow]")
         return
 
+    sic_codes_list = [c.strip() for c in sic_codes.split(",") if c.strip()] if sic_codes else None
+    if source == "companies_house_sic" and not sic_codes_list:
+        console.print("[yellow]--source companies_house_sic requires --sic-codes.[/yellow]")
+        return
+
     companies_house_client = None
     if require_uk_registration:
         from verification.companies_house_client import CompaniesHouseClient
@@ -506,7 +527,7 @@ def discover(
     outcome = service.discover(
         product, category=category, country=country, max_candidates=max_candidates, source=source,
         domain_tld_bias=domain_bias, extra_role_words=role_words_list,
-        recover_dead_domains=recover_dead_domains,
+        recover_dead_domains=recover_dead_domains, sic_codes=sic_codes_list,
     )
 
     if source == "1688":
@@ -527,6 +548,15 @@ def discover(
     table.add_column("Count", justify="right", style="magenta")
     if source == "llm":
         table.add_row("generated", str(outcome.candidates_generated))
+        table.add_row("website resolved", str(outcome.website_resolved))
+        table.add_row("content matched", str(outcome.content_matched))
+        table.add_row("deduplicated (merged into existing supplier)", str(outcome.candidates_duplicate))
+        table.add_row("inserted (new suppliers created)", str(len(outcome.new_supplier_ids)))
+        table.add_row("  (queued for dedup review)", str(len(outcome.review_queued_supplier_ids)))
+        table.add_row("rejected", str(outcome.candidates_rejected))
+    elif source == "companies_house_sic":
+        table.add_row("Companies House SIC hits", str(outcome.candidates_generated))
+        table.add_row("website found for", str(outcome.candidates_found))
         table.add_row("website resolved", str(outcome.website_resolved))
         table.add_row("content matched", str(outcome.content_matched))
         table.add_row("deduplicated (merged into existing supplier)", str(outcome.candidates_duplicate))
