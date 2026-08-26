@@ -71,6 +71,14 @@ from reports.coverage import BOM_CATEGORIES, _haystack, _matches
 # produce is pre-listed here).
 SOURCE_QUALITY_WEIGHTS: Dict[str, int] = {
     "trade": 90,                      # importyeti/panjiva/volza -- real customs shipment records
+    "linde-oem-dealer-network": 70,   # discovery.linde_dealer_import -- Linde's OWN published authorized-
+                                       # dealer network, not a third party's curated list of it. A company
+                                       # exhibiting at a trade show (automechanika_2026, 65) only had to pay
+                                       # for a booth; being on the OEM's own authorized network implies an
+                                       # ongoing, OEM-vetted sales/service relationship for that product line
+                                       # -- stronger primary-source evidence than any third-party-curated
+                                       # directory, though still self-reported by the OEM rather than an
+                                       # independent record of completed trade (trade, 90).
     "automechanika_2026": 65,         # curated trade-show exhibitor registration
     "shanghai_expo": 60,              # curated exhibition directory
     "hktdc": 55,                      # HKTDC's own vetted trade directory

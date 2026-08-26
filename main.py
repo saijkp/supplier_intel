@@ -573,6 +573,43 @@ def discover(
     console.print(table)
 
 
+@cli.command("import-linde-dealers")
+@click.option("--limit", default=None, type=int,
+              help="Cap how many dealers to process (small-test-first, then the full "
+                   "~370). Applied after fetching Linde's real list, so a small test "
+                   "still sees a representative real slice.")
+def import_linde_dealers(limit: Optional[int]) -> None:
+    """Import Linde Material Handling's own published worldwide authorized-dealer
+    network (a real, static JSON file Linde serves directly -- no search interaction,
+    no per-dealer API calls needed). Bypasses the trader/product-term validation gate
+    entirely -- Linde's own network membership is stronger identity evidence than
+    either gate approximates -- but each listed website gets one real, lightweight
+    liveness check before entering the roster (not a full validate() pass). Goes
+    through the same dedup/merge engine every other source uses -- a dealer already on
+    file from a live search merges rather than duplicates. See
+    discovery/linde_dealer_import.py for the full design rationale."""
+    from deduplication.matcher import SupplierMatcher
+    from discovery.linde_dealer_import import import_linde_dealer_network
+
+    repo = SupplierRepository()
+    matcher = SupplierMatcher(repo)
+    console.print("Fetching Linde's real dealer network...")
+    stats = import_linde_dealer_network(repo, matcher, limit=limit)
+
+    table = Table(show_header=False)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Count", justify="right", style="magenta")
+    table.add_row("total dealers", str(stats.total_dealers))
+    table.add_row("no website listed (imported anyway)", str(stats.no_website))
+    table.add_row("linde-owned domain (imported without a domain)", str(stats.linde_owned_domain))
+    table.add_row("website live", str(stats.website_live))
+    table.add_row("website dead (skipped)", str(stats.website_dead))
+    if stats.static_import:
+        for key, value in stats.static_import.as_dict().items():
+            table.add_row(key.replace("_", " "), str(value))
+    console.print(table)
+
+
 @cli.command("backfill-discovery-keywords")
 def backfill_discovery_keywords() -> None:
     """One-off repair: suppliers `discover` created before it started
