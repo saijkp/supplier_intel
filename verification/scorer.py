@@ -84,6 +84,15 @@ SOURCE_QUALITY_WEIGHTS: Dict[str, int] = {
     "hktdc": 55,                      # HKTDC's own vetted trade directory
     "europages_eastern_europe": 50,   # curated regional B2B directory
     "global_directory": 45,           # generic curated regional directory (default source name)
+    "trade-show-exhibitor-fabtech": 42,  # discovery.fabtech_exhibitor_import -- real evidence of active
+                                       # industry participation (a genuine, paid exhibitor booth at a real
+                                       # trade show, self-reported company profile), but weaker than an
+                                       # OEM's own authorized-dealer network (linde-oem-dealer-network, 70:
+                                       # an ongoing vetted relationship, not just a booth) and weaker than a
+                                       # curated third-party directory (global_directory, 45: someone else
+                                       # independently vetted the listing). Still stronger than a bare
+                                       # registry-existence proof with no independent product/industry
+                                       # relevance signal (companies-house-sic, 40).
     "alibaba": 35,                    # self-service marketplace listing
     "china_1688": 35,
     "indiamart": 35,
