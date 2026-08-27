@@ -747,8 +747,8 @@ class FakeCompaniesHouseSicSource:
         )
         self.calls = []
 
-    def find_candidates(self, sic_codes, max_candidates=20):
-        self.calls.append((sic_codes, max_candidates))
+    def find_candidates(self, sic_codes, max_candidates=20, name_keywords=None):
+        self.calls.append((sic_codes, max_candidates, name_keywords))
         return self._candidates, self._stats
 
 
@@ -897,8 +897,21 @@ class TestDiscoverCompaniesHouseSicSource:
 
         service.discover("material handling equipment", source="companies_house_sic", sic_codes=["28220", "46140"])
 
-        assert sic_source.calls == [(["28220", "46140"], 20)]
+        assert sic_source.calls == [(["28220", "46140"], 20, None)]
         assert google_scraper.queries == []
+
+    def test_sic_name_keywords_is_passed_through_to_the_source(self, repo):
+        from discovery.candidate_extractor import Candidate
+        candidate = Candidate(title="Acme Handling Ltd", link="https://acmehandling.co.uk", snippet="CH #123", domain="acmehandling.co.uk")
+        sic_source = FakeCompaniesHouseSicSource(candidates=[candidate])
+        service = self._sic_service(repo, [candidate], "acmehandling.co.uk", companies_house_sic_source=sic_source)
+
+        service.discover(
+            "material handling equipment", source="companies_house_sic",
+            sic_codes=["28220"], sic_name_keywords=["forklift", "handling"],
+        )
+
+        assert sic_source.calls == [(["28220"], 20, ["forklift", "handling"])]
 
     def test_writes_raw_source_data_with_companies_house_sic_provenance(self, repo):
         from discovery.candidate_extractor import Candidate

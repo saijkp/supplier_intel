@@ -98,6 +98,31 @@ _NON_COMPANY_DOMAINS = {
     # OwnWebsiteScraper with a URL-parsing error before that fix.
     "tradekey.com", "dhgate.com", "ec21.com", "exportersindia.com",
     "go4worldbusiness.com",
+    # UK government digital-services domain -- covers
+    # find-and-update.company-information.service.gov.uk (Companies
+    # House's own public company-profile pages) and every other
+    # *.service.gov.uk government service, none of which is ever a
+    # private company's own site. Confirmed live via
+    # discovery.companies_house_sic_source.py: a real company-name
+    # search for a small UK company with no strong independent web
+    # presence surfaces ITS OWN Companies House profile page as the
+    # top result, which trivially "validates" (the profile page
+    # literally contains the company's own registered name) --
+    # downstream candidate_validator.py always correctly rejected the
+    # resulting candidate (a CH profile page never mentions a real
+    # product term), so no bad data was ever stored, but the shared
+    # bogus domain caused a WORSE, silent failure: multiple different,
+    # unrelated real companies all "resolving" to this exact same
+    # domain string tripped CompaniesHouseSicSource's own within-batch
+    # seen_domains dedup, silently dropping every occurrence after the
+    # first as a false "already seen" duplicate -- real candidates
+    # never got their own validation attempt at all. tldextract's own
+    # PSL entry for .gov.uk treats "service.gov.uk" as the registered
+    # domain (verified directly: extracting
+    # find-and-update.company-information.service.gov.uk gives
+    # domain="service", suffix="gov.uk"), so this one entry covers
+    # every *.service.gov.uk subdomain.
+    "service.gov.uk",
 }
 
 _DEFAULT_MIN_NAME_SIMILARITY = 55.0  # rapidfuzz partial_ratio is 0-100, not 0-1

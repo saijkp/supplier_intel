@@ -107,6 +107,73 @@ class TestFindCandidatesHappyPath:
         assert ch_client.calls == [(["28220", "46140"], 15, "active")]
 
 
+class TestNameKeywordsPreFilter:
+    """The free, pre-paid-call filter on Companies House's own returned
+    company name -- applied BEFORE any website lookup."""
+
+    def test_matching_keyword_passes_through(self):
+        ch_client = FakeCompaniesHouseClient(matches=[_match(company_name="Acme Forklift Services Ltd")])
+        finder = FakeWebsiteFinder(results={"Acme Forklift Services Ltd": _found(company_name="Acme Forklift Services Ltd")})
+        source = CompaniesHouseSicSource(companies_house_client=ch_client, website_finder=finder)
+
+        candidates, stats = source.find_candidates(["28220"], name_keywords=["forklift", "handling"])
+
+        assert len(candidates) == 1
+        assert stats.name_filtered == 0
+
+    def test_no_matching_keyword_is_dropped_before_any_website_lookup(self):
+        ch_client = FakeCompaniesHouseClient(matches=[_match(company_name="Highland Trains Ltd")])
+        finder = FakeWebsiteFinder()
+        source = CompaniesHouseSicSource(companies_house_client=ch_client, website_finder=finder)
+
+        candidates, stats = source.find_candidates(["46690"], name_keywords=["forklift", "handling"])
+
+        assert candidates == []
+        assert stats.name_filtered == 1
+        assert stats.companies_found == 1
+        assert finder.calls == []  # never spent a website lookup on the filtered-out match
+
+    def test_keyword_match_is_case_insensitive(self):
+        ch_client = FakeCompaniesHouseClient(matches=[_match(company_name="ACME FORKLIFT LTD")])
+        finder = FakeWebsiteFinder(results={"ACME FORKLIFT LTD": _found(company_name="ACME FORKLIFT LTD")})
+        source = CompaniesHouseSicSource(companies_house_client=ch_client, website_finder=finder)
+
+        candidates, stats = source.find_candidates(["28220"], name_keywords=["ForkLift"])
+
+        assert len(candidates) == 1
+        assert stats.name_filtered == 0
+
+    def test_no_keywords_given_filters_nothing(self):
+        """Opt-in: omitting name_keywords entirely must behave exactly
+        as before this feature existed."""
+        ch_client = FakeCompaniesHouseClient(matches=[_match(company_name="Highland Trains Ltd")])
+        finder = FakeWebsiteFinder(results={"Highland Trains Ltd": _found(company_name="Highland Trains Ltd")})
+        source = CompaniesHouseSicSource(companies_house_client=ch_client, website_finder=finder)
+
+        candidates, stats = source.find_candidates(["46690"], name_keywords=None)
+
+        assert len(candidates) == 1
+        assert stats.name_filtered == 0
+
+    def test_mixed_batch_only_matching_ones_reach_website_lookup(self):
+        matches = [
+            _match(company_name="Highland Trains Ltd", company_number="11111111"),
+            _match(company_name="Acme Forklift Ltd", company_number="22222222"),
+            _match(company_name="Pacific Aviation Consulting Ltd", company_number="33333333"),
+        ]
+        ch_client = FakeCompaniesHouseClient(matches=matches)
+        finder = FakeWebsiteFinder(results={"Acme Forklift Ltd": _found(company_name="Acme Forklift Ltd")})
+        source = CompaniesHouseSicSource(companies_house_client=ch_client, website_finder=finder)
+
+        candidates, stats = source.find_candidates(["46690"], name_keywords=["forklift", "handling"])
+
+        assert len(candidates) == 1
+        assert candidates[0].title == "Acme Forklift Ltd"
+        assert stats.name_filtered == 2
+        assert stats.companies_found == 3
+        assert finder.calls == [("Acme Forklift Ltd", "United Kingdom")]
+
+
 class TestFindCandidatesFiltering:
 
     def test_company_with_no_validated_website_is_dropped(self):

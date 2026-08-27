@@ -159,6 +159,25 @@ class TestExcludesNonCompanyDomains:
             result = finder.find_website("Acme Trailer Parts")
             assert result.domain is None, f"{domain} should have been excluded"
 
+    def test_companies_house_own_domain_is_skipped(self):
+        """Real bug this guards against: a small UK company with no
+        strong independent web presence surfaces ITS OWN Companies
+        House profile page as the top search result, which trivially
+        "validates" (the profile page literally contains the company's
+        own registered name) -- worse than just a wasted candidate,
+        MULTIPLE different real companies all "resolving" to this
+        exact same domain string tripped
+        discovery.companies_house_sic_source's own within-batch
+        seen_domains dedup, silently dropping every occurrence after
+        the first as a false duplicate."""
+        for domain in (
+            "find-and-update.company-information.service.gov.uk",
+            "www.tax.service.gov.uk",
+        ):
+            finder = _finder([FakeSearchResult(f"https://{domain}/company/12345678")])
+            result = finder.find_website("Acme Trailer Parts")
+            assert result.domain is None, f"{domain} should have been excluded"
+
     def test_all_results_excluded_reports_no_candidate_found(self):
         finder = _finder([
             FakeSearchResult("https://facebook.com/acme"),

@@ -83,6 +83,7 @@ class SicGenerationStats:
     discovery.candidate_validator -- mirrors
     discovery.llm_candidate_source.GenerationStats' own shape."""
     companies_found: int = 0    # real CH SIC search hits, before any website lookup
+    name_filtered: int = 0      # dropped by the optional name_keywords pre-filter, before any paid call
     no_website_found: int = 0   # CompanyWebsiteFinder found no validated domain at all
     deduplicated: int = 0       # unique candidates remaining after domain dedup
 
@@ -110,10 +111,48 @@ class CompaniesHouseSicSource:
 
     def find_candidates(
         self, sic_codes: List[str], max_candidates: int = 20,
+        name_keywords: Optional[List[str]] = None,
     ) -> Tuple[List[Candidate], SicGenerationStats]:
+        """`name_keywords`, when given, is a free pre-filter on the
+        company name Companies House itself returned -- applied BEFORE
+        any paid SerpAPI/OpenAI call, not a replacement for the real
+        downstream gates. A match whose name contains none of the
+        keywords (case-insensitive substring) is dropped without ever
+        spending a website lookup on it. Opt-in and category-agnostic
+        (same "no category awareness lives here" discipline as
+        sic_codes itself, see this module's own docstring) -- the
+        caller decides which keywords fit which category.
+
+        Real, quantified tradeoff, checked against this codebase's own
+        31 confirmed Material Handling suppliers before this was built
+        (data/source_files/material_handling_14/confirmed.csv): even a
+        generous keyword list (forklift/fork lift/fork truck/lift
+        truck/forktruck/lift/handling/plant/machinery/warehouse) would
+        wrongly exclude 8 of them (26%) -- Jungheinrich UK, Hiab,
+        Loadmac, Feeler UK (pure brand names) and Locators Ltd,
+        Sidetracker Engineering, Hiremec, Narrow Aisle Limited (generic
+        business names with no product-category word at all). This is
+        a structural ceiling of name-keyword filtering, not a tuning
+        problem -- no keyword list recovers a company whose legal name
+        simply doesn't mention what it does. Worth it only because the
+        alternative (every SIC hit reaching a paid call) was
+        overwhelmingly non-material-handling noise -- see this
+        module's own SIC-classification-breadth docstring section.
+        """
         stats = SicGenerationStats()
         matches = self.companies_house_client.search_by_sic_codes(sic_codes, max_results=max_candidates)
         stats.companies_found = len(matches)
+
+        if name_keywords:
+            keywords_lower = [kw.lower() for kw in name_keywords]
+            filtered_matches = []
+            for match in matches:
+                name_lower = match.company_name.lower()
+                if any(kw in name_lower for kw in keywords_lower):
+                    filtered_matches.append(match)
+                else:
+                    stats.name_filtered += 1
+            matches = filtered_matches
 
         seen_domains: set = set()
         candidates: List[Candidate] = []

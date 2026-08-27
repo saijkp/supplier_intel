@@ -455,6 +455,16 @@ def verify_facilities(force: bool, limit: int) -> None:
          "ignored otherwise. ORed together in one real Companies House search. See "
          "discovery/companies_house_sic_source.py's own docstring for why a category's real "
          "SIC footprint is usually broader than its single \"cleanest\" manufacturing code.")
+@click.option(
+    "--sic-name-keywords", default=None,
+    help="Comma-separated keywords (e.g. \"forklift,lift truck,handling,plant\") -- a free "
+         "pre-filter on the company name Companies House itself returned, before any paid "
+         "SerpAPI/OpenAI call. Only meaningful with --source companies_house_sic. See "
+         "discovery/companies_house_sic_source.py's find_candidates docstring for the real, "
+         "quantified false-negative tradeoff (checked against this codebase's own confirmed "
+         "suppliers) before using this on a new category -- a pure brand name or generic "
+         "business name with no product-category word in it will never pass this filter, "
+         "no matter how the keyword list is tuned.")
 @click.option("--limit", "max_candidates", default=20, show_default=True,
               help="Stop after this many candidate companies. Each one costs a paid SerpAPI "
                    "search (--source serpapi) or an OpenAI call (--source llm) plus, for "
@@ -491,9 +501,9 @@ def verify_facilities(force: bool, limit: int) -> None:
                    "candidate. Real extra SerpAPI+fetch+OpenAI cost per dead candidate.")
 def discover(
     product_arg: Optional[str], product_opt: Optional[str], category: Optional[str],
-    country: Optional[str], source: str, sic_codes: Optional[str], max_candidates: int,
-    domain_bias: Optional[str], require_uk_registration: bool, role_words: Optional[str],
-    recover_dead_domains: bool,
+    country: Optional[str], source: str, sic_codes: Optional[str], sic_name_keywords: Optional[str],
+    max_candidates: int, domain_bias: Optional[str], require_uk_registration: bool,
+    role_words: Optional[str], recover_dead_domains: bool,
 ) -> None:
     """AI-assisted supplier discovery. Every accepted supplier traces to a
     real fetched website and that website's own text corroborating the
@@ -514,6 +524,9 @@ def discover(
     if source == "companies_house_sic" and not sic_codes_list:
         console.print("[yellow]--source companies_house_sic requires --sic-codes.[/yellow]")
         return
+    sic_name_keywords_list = (
+        [k.strip() for k in sic_name_keywords.split(",") if k.strip()] if sic_name_keywords else None
+    )
 
     companies_house_client = None
     if require_uk_registration:
@@ -528,6 +541,7 @@ def discover(
         product, category=category, country=country, max_candidates=max_candidates, source=source,
         domain_tld_bias=domain_bias, extra_role_words=role_words_list,
         recover_dead_domains=recover_dead_domains, sic_codes=sic_codes_list,
+        sic_name_keywords=sic_name_keywords_list,
     )
 
     if source == "1688":

@@ -219,6 +219,47 @@ class TestMentionsProductTerm:
 
     def test_unqualified_term_with_no_spelling_variant_is_unaffected(self):
         assert _mentions_product_term("We manufacture trailer axle assemblies.", "trailer axle")
+
+    def test_material_handling_synonym_without_equipment_matches(self):
+        """Real case: Interroll, a genuine conveyor/warehouse-logistics
+        manufacturer, says "material handling" on its own page but
+        never attaches "equipment"."""
+        assert _mentions_product_term(
+            "Interroll is a global leader in material handling solutions for warehouses.",
+            "material handling equipment",
+        )
+
+    def test_handling_equipment_synonym_without_material_matches(self):
+        """Real case: Mercia Lifting Gear, a genuine lifting-equipment
+        manufacturer, says "handling equipment" but never attaches
+        "material"."""
+        assert _mentions_product_term(
+            "We supply a wide range of lifting and handling equipment for industrial use.",
+            "material handling equipment",
+        )
+
+    def test_full_compound_phrase_still_matches(self):
+        assert _mentions_product_term(
+            "We are a leading material handling equipment manufacturer.",
+            "material handling equipment",
+        )
+
+    def test_synonym_is_specific_to_the_curated_term_not_global(self):
+        """The synonym phrases are keyed to the exact core term --
+        "handling equipment" alone must not satisfy an unrelated term
+        that happens to share no relationship to material handling."""
+        assert not _mentions_product_term(
+            "We supply handling equipment for the postal industry.",
+            "trailer axle",
+        )
+
+    def test_unrelated_page_still_rejected_even_with_synonyms_available(self):
+        """Loosening this gate for a curated term must not turn it into
+        a rubber stamp -- a genuinely unrelated business still fails."""
+        assert not _mentions_product_term(
+            "We manufacture trailer axles and chassis components.",
+            "material handling equipment",
+        )
         assert not _mentions_product_term("We manufacture wheel bearings.", "trailer axle")
 
 

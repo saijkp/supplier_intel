@@ -241,6 +241,22 @@ _TRAILING_QUALIFIERS: tuple = ("manufacturer", "supplier", "factory")
 # that happens rather than guessed in advance.
 _SPELLING_VARIANTS: tuple = (("mould", "mold"),)
 
+# Curated multi-word synonym phrases for a core term -- same discipline
+# as _SPELLING_VARIANTS (only pairs a real rejection has actually
+# proven matter, not a general synonym dictionary guessed in advance).
+# Found live via two real, genuine Material Handling manufacturers
+# rejected on "material handling equipment" wording alone: Interroll
+# (a real conveyor/warehouse-logistics manufacturer) says "material
+# handling" on its own page, never "equipment" attached; Mercia
+# Lifting Gear (a real lifting-equipment manufacturer) says "handling
+# equipment", never "material" attached -- neither ever uses the full
+# compound phrase verbatim, the same "no real company repeats the
+# exact query phrasing" pattern _TRAILING_QUALIFIERS already
+# established for a trailing role word, just for an interior word here.
+_PRODUCT_TERM_SYNONYM_PHRASES: dict = {
+    "material handling equipment": ("material handling", "handling equipment"),
+}
+
 
 # Deliberately lower than uk_company_verification_service's
 # _CLEAN_MATCH_THRESHOLD (85) -- see that constant's `min_confidence`
@@ -398,7 +414,9 @@ def _core_product_term(product_term: str) -> str:
 def _mentions_product_term(page_text: str, product_term: str) -> bool:
     """True if `page_text` mentions the core product term (see
     _core_product_term), spelling-insensitive for known British/
-    American variants (see _SPELLING_VARIANTS)."""
+    American variants (see _SPELLING_VARIANTS) and matching a curated
+    multi-word synonym phrase (see _PRODUCT_TERM_SYNONYM_PHRASES) when
+    one is known for this exact core term."""
     core = _core_product_term(product_term).lower()
     haystack = (page_text or "").lower()
 
@@ -406,6 +424,7 @@ def _mentions_product_term(page_text: str, product_term: str) -> bool:
     for british, american in _SPELLING_VARIANTS:
         candidates.add(core.replace(british, american))
         candidates.add(core.replace(american, british))
+    candidates.update(_PRODUCT_TERM_SYNONYM_PHRASES.get(core, ()))
 
     return any(candidate in haystack for candidate in candidates)
 

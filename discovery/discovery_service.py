@@ -237,6 +237,7 @@ class DiscoveryService:
         progress_callback: Optional[Callable[[DiscoveryProgressEvent], None]] = None,
         recover_dead_domains: bool = False,
         sic_codes: Optional[List[str]] = None,
+        sic_name_keywords: Optional[List[str]] = None,
     ) -> DiscoveryOutcome:
         """`target_count`, `progress_callback`, `recover_dead_domains`,
         and `sic_codes` are all additive, default-None/False/unset --
@@ -255,6 +256,13 @@ class DiscoveryService:
         candidate_validator.CandidateValidator.validate()'s own
         `skip_soft_trader_signals` docstring); the hard self-declaration
         phrase list and every other gate still apply unchanged.
+        `sic_name_keywords`, also only meaningful with this source, is
+        passed straight through to CompaniesHouseSicSource.find_candidates'
+        own `name_keywords` -- a free pre-filter on the company name
+        Companies House itself returned, before any paid call. See that
+        method's own docstring for the real, quantified false-negative
+        tradeoff (checked against this codebase's own confirmed Material
+        Handling suppliers) before using this on a new category.
 
         `target_count`, when given, is an early-stop on VALIDATION, not
         on candidate collection: the raw-candidate-gathering loop below
@@ -306,7 +314,7 @@ class DiscoveryService:
             if not sic_codes:
                 raise ValueError("source='companies_house_sic' requires sic_codes")
             all_candidates, generation_stats = self.companies_house_sic_source.find_candidates(
-                sic_codes, max_candidates=max_candidates,
+                sic_codes, max_candidates=max_candidates, name_keywords=sic_name_keywords,
             )
             outcome.candidates_generated = generation_stats.companies_found
             raw_source = "companies-house-sic"
