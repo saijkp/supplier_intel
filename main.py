@@ -624,6 +624,43 @@ def import_linde_dealers(limit: Optional[int]) -> None:
     console.print(table)
 
 
+@cli.command("import-fabtech-exhibitors")
+@click.option("--limit", default=None, type=int,
+              help="Cap how many exhibitors to process (small-test-first, then the full "
+                   "~1,400). Applied after fetching FABTECH's real exhibitor list, so a "
+                   "small test still sees a representative real slice.")
+def import_fabtech_exhibitors_cmd(limit: Optional[int]) -> None:
+    """Import FABTECH's own real exhibitor directory (a server-rendered A2Z Inc-powered
+    list -- no login/JS/pagination needed). For each exhibitor, fetches their own
+    SmallWorldLabs profile page for a real company website, liveness-checks it, and
+    imports survivors through the same dedup/merge engine every other source uses.
+    Bypasses the trader/product-term validation gate entirely -- exhibiting at a real
+    trade show under one's own profile is itself a real identity signal -- but each
+    listed website still gets one real, lightweight liveness check before entering the
+    roster. See discovery/fabtech_exhibitor_import.py for the full design rationale."""
+    from deduplication.matcher import SupplierMatcher
+    from discovery.fabtech_exhibitor_import import import_fabtech_exhibitors
+
+    repo = SupplierRepository()
+    matcher = SupplierMatcher(repo)
+    console.print("Fetching FABTECH's real exhibitor directory...")
+    stats = import_fabtech_exhibitors(repo, matcher, limit=limit)
+
+    table = Table(show_header=False)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Count", justify="right", style="magenta")
+    table.add_row("total exhibitors", str(stats.total_exhibitors))
+    table.add_row("test/QA accounts excluded", str(stats.test_accounts_excluded))
+    table.add_row("no website listed (imported anyway)", str(stats.no_website))
+    table.add_row("website live", str(stats.website_live))
+    table.add_row("website blocked (imported, tagged unconfirmed)", str(stats.website_blocked))
+    table.add_row("website dead (skipped)", str(stats.website_dead))
+    if stats.static_import:
+        for key, value in stats.static_import.as_dict().items():
+            table.add_row(key.replace("_", " "), str(value))
+    console.print(table)
+
+
 @cli.command("backfill-discovery-keywords")
 def backfill_discovery_keywords() -> None:
     """One-off repair: suppliers `discover` created before it started
@@ -1102,6 +1139,55 @@ def history(supplier_id: int) -> None:
     for row in change_rows:
         console.print(f"  {row['changed_at']}  {row['field_name']}: "
                        f"{row['old_value']!r} -> {row['new_value']!r}  (by {row['changed_by']})")
+
+
+@cli.command("enable-monitoring")
+@click.option("--supplier-id", type=int, required=True)
+@click.option("--cadence", type=click.Choice(["monthly", "quarterly"]), required=True)
+def enable_monitoring_cmd(supplier_id: int, cadence: str) -> None:
+    """Opt one supplier into recurring monitoring (certifications, contact fields,
+    Companies House status, website reachability -- see monitoring/monitoring_service.py
+    for exactly what's tracked and why every v1 field is free). Shows the real cost
+    disclosure before enabling -- this is the one and only confirmation point for these
+    free fields; capture_snapshot_pending itself runs unattended on a schedule with no
+    per-run prompt, since there's no human present when a monthly check actually fires."""
+    from monitoring.monitoring_service import MONITORING_COST_DISCLOSURE, MonitoringService
+
+    console.print(f"[bold]Cost:[/bold] {MONITORING_COST_DISCLOSURE}")
+    service = MonitoringService()
+    try:
+        result = service.enable_monitoring(supplier_id, cadence)
+    except ValueError as e:
+        console.print(f"[red]X[/red] {e}")
+        raise SystemExit(1)
+    console.print(f"[green]OK[/green] Supplier #{supplier_id} monitoring enabled "
+                   f"({cadence}, next check due {result['next_check_due_at']}).")
+
+
+@cli.command("run-monitoring-checks")
+@click.option("--limit", default=None, type=int,
+              help="Cap how many due suppliers to check this run. Omit to process every "
+                   "supplier currently due (next_check_due_at <= now).")
+def run_monitoring_checks_cmd(limit: Optional[int]) -> None:
+    """Process every supplier currently due for a recurring monitoring re-check
+    (see main.py's enable-monitoring). Intended to be invoked periodically by an
+    external scheduler (a real OS cron / Railway scheduled job) -- this codebase has no
+    in-app cron of its own, same limitation every other async stage already documents.
+    Every v1 tracked field is free, so this prints scope after running rather than
+    blocking on a confirmation prompt before it -- see monitoring/monitoring_service.py's
+    own module docstring for the standing guard against a future paid field silently
+    inheriting this no-confirmation default."""
+    from monitoring.monitoring_service import MonitoringService
+
+    service = MonitoringService()
+    result = service.capture_snapshot_pending(limit=limit)
+
+    table = Table(show_header=False)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right", style="magenta")
+    for key, value in result.items():
+        table.add_row(key.replace("_", " "), str(value))
+    console.print(table)
 
 
 @cli.command("check-linkedin")
