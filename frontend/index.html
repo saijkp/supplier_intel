@@ -240,6 +240,69 @@ body{background:var(--steel-900)}
 #view-audit .score-label{color:var(--steel-300)}
 #view-audit .score-val{color:var(--orange)}
 
+/* Audit tab: triage mode -- single-card, keyboard-driven review.
+   Same steel/orange tokens as the rest of #view-audit, no new colors,
+   just a bigger/bolder single-card treatment for fast scanning. */
+.triage-card{
+  background:var(--surface);border:1px solid var(--rule);border-radius:12px;
+  box-shadow:var(--shadow);padding:20px 22px;animation:rise .32s cubic-bezier(.2,.7,.3,1) backwards;
+}
+.triage-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px}
+.triage-fact{
+  font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:17px;
+  border:1px solid var(--steel-900);border-left:4px solid var(--orange);
+  border-radius:8px;background:var(--paper);color:var(--steel-900);
+  padding:10px 14px;margin-bottom:18px;
+}
+.triage-criteria{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px}
+@media(max-width:760px){.triage-criteria{grid-template-columns:repeat(2,1fr)}}
+.triage-criterion{
+  border:2px solid var(--rule);border-radius:10px;padding:10px;
+  transition:border-color .12s,box-shadow .12s;
+}
+.triage-criterion.focused{border-color:var(--orange);box-shadow:0 0 0 3px rgba(37,99,235,.14)}
+.triage-criterion-label{
+  font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--steel-500);margin-bottom:8px;
+}
+.triage-chips{display:flex;flex-wrap:wrap;gap:6px}
+.triage-chip{
+  font-family:'IBM Plex Mono',monospace;font-size:11.5px;letter-spacing:.03em;
+  padding:4px 9px;border-radius:6px;border:1px solid var(--rule);
+  background:var(--surface);color:var(--steel-700);cursor:pointer;user-select:none;
+}
+.triage-chip:hover{border-color:var(--orange)}
+.triage-chip.active[data-value="Pass"],.triage-chip.active[data-value="Yes"]{
+  background:var(--tier-verified-bg);border-color:var(--tier-verified);color:var(--tier-verified);
+}
+.triage-chip.active[data-value="Fail"],.triage-chip.active[data-value="No"]{
+  background:var(--danger-bg);border-color:var(--danger);color:var(--danger-dark);
+}
+.triage-chip.active[data-value="Pending"]{
+  background:var(--paper);border-color:var(--steel-500);color:var(--steel-700);
+}
+.triage-field{margin-bottom:8px}
+.triage-field label{
+  font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--steel-500);display:block;margin-bottom:5px;
+}
+.triage-notes{
+  width:100%;min-height:56px;resize:vertical;background:var(--surface);
+  border:1px solid var(--rule);color:var(--steel-900);border-radius:6px;
+  padding:8px 10px;font-size:13px;font-family:inherit;line-height:1.5;
+}
+.triage-notes:focus{outline:none;border-color:var(--orange)}
+.triage-status{
+  font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--steel-500);
+  min-height:14px;margin-top:4px;
+}
+.triage-status.ok{color:var(--tier-verified)}
+.triage-status.err{color:var(--danger-dark)}
+.triage-help{
+  font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--steel-500);
+  margin-top:14px;padding-top:12px;border-top:1px solid var(--rule-soft);line-height:1.6;
+}
+
 .card-body{padding:12px 16px 16px}
 .section-rule{
   font-family:'IBM Plex Mono',monospace;font-size:10px;
@@ -746,7 +809,9 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
             <select class="input" id="auditCategory"></select>
           </div>
           <button class="btn btn-primary btn-block" id="btnAuditLoad">Load confirmed suppliers</button>
+          <button class="btn btn-ghost btn-block" id="btnAuditTriage" style="margin-top:8px">Triage mode</button>
           <p class="hint">Sorted by evidence completeness (same Sort Key logic the tracker export uses) -- most review-ready first.</p>
+          <p class="hint">Triage mode: one supplier at a time, keyboard-driven. A/B/C/D/Q focus a criterion, P/F set Pass/Fail, N sets Pending (or No on Qualified), Y sets Yes on Qualified, Space/Enter moves to the next supplier. Setting Qualified auto-advances.</p>
         </div>
       </aside>
 
@@ -757,6 +822,7 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
           <span class="count" id="auditCount"></span>
         </div>
         <div class="results" id="auditResults"></div>
+        <div id="auditTriage" class="hidden"></div>
       </div>
     </div>
   </section>
@@ -2185,6 +2251,7 @@ async function loadAuditSuppliers() {
   host.innerHTML = `<div class="empty"><div class="empty-title">Loading…</div></div>`;
   try {
     const data = await api("/audit/suppliers?category=" + encodeURIComponent(category));
+    lastAuditSuppliers = data.suppliers;
     $("auditCount").textContent = data.suppliers.length + " confirmed";
     if (!data.suppliers.length) {
       host.innerHTML = `<div class="empty"><div class="empty-title">No confirmed suppliers</div></div>`;
@@ -2310,6 +2377,238 @@ function wireVerdictControls(supplierId) {
       await saveVerdict(supplierId, "Notes", {notes: notesEl.value}, statusEl);
     } catch { /* left as typed -- explain() equivalent already shown via verdict-status */ }
   });
+}
+
+/* ═══ Audit tab: triage mode ═══════════════════════════════
+   Single-card, keyboard-driven review over the same suppliers
+   already loaded via loadAuditSuppliers -- reuses VERDICT_CRITERIA
+   and saveVerdict() verbatim, the exact same write path the dropdown
+   UI uses. Nothing here computes a verdict: triageStrongestFact()
+   only picks which already-stored evidence to surface first, in
+   plain neutral language -- same "evidence, not verdict" discipline
+   as the rest of the Audit tab (CLAUDE.md standing rule 2). */
+let lastAuditSuppliers = [];
+let triageQueue = [];
+let triageIndex = 0;
+let triageFocusedCriterion = "A";
+let triageKeydownHandler = null;
+
+$("btnAuditTriage").addEventListener("click", () => {
+  const active = !$("auditTriage").classList.contains("hidden");
+  if (active) {
+    exitTriageMode();
+  } else {
+    enterTriageMode();
+  }
+});
+
+function enterTriageMode() {
+  const alertHost = $("auditAlert");
+  alertBox(alertHost, 0);
+  if (!lastAuditSuppliers.length) {
+    alertBox(alertHost, 1, "Nothing to triage", "Load confirmed suppliers for a category first.");
+    return;
+  }
+  triageQueue = lastAuditSuppliers.map(s => s.supplier_id);
+  triageIndex = 0;
+  $("auditResults").classList.add("hidden");
+  $("auditTriage").classList.remove("hidden");
+  $("btnAuditTriage").textContent = "Exit triage mode";
+  loadTriageCard();
+}
+
+function exitTriageMode() {
+  if (triageKeydownHandler) {
+    document.removeEventListener("keydown", triageKeydownHandler);
+    triageKeydownHandler = null;
+  }
+  $("auditTriage").classList.add("hidden");
+  $("auditTriage").innerHTML = "";
+  $("auditResults").classList.remove("hidden");
+  $("btnAuditTriage").textContent = "Triage mode";
+}
+
+async function loadTriageCard() {
+  const host = $("auditTriage");
+  if (triageIndex >= triageQueue.length) {
+    if (triageKeydownHandler) {
+      document.removeEventListener("keydown", triageKeydownHandler);
+      triageKeydownHandler = null;
+    }
+    host.innerHTML = `<div class="empty">
+      <div class="empty-title">Queue complete</div>
+      <p class="empty-text">No more suppliers pending review in this category.</p>
+    </div>`;
+    return;
+  }
+  const supplierId = triageQueue[triageIndex];
+  host.innerHTML = `<div class="empty"><div class="empty-title">Loading…</div></div>`;
+  try {
+    const bundle = await api("/audit/suppliers/" + supplierId);
+    const qualified = bundle.verdicts && bundle.verdicts.Qualified && bundle.verdicts.Qualified.value;
+    if (qualified && qualified !== "Pending") {
+      // Already reviewed -- lazily skip forward rather than pre-fetching
+      // every bundle up front just to filter the queue.
+      triageIndex++;
+      return loadTriageCard();
+    }
+    triageFocusedCriterion = "A";
+    host.innerHTML = renderTriageCard(bundle);
+    wireTriageCard(bundle);
+  } catch (err) {
+    host.innerHTML = `<div id="triageErr"></div>`;
+    explain(err, $("triageErr"));
+  }
+}
+
+/* Fixed priority order, first match wins -- deterministic, never
+   LLM-judged (same discipline as procurement_recommendation.py).
+   Always a plain fact, never a severity word: the buyer decides what
+   a dissolved company or a duplicate image actually means for their
+   purchase, this just makes sure the eye goes there first. */
+function triageStrongestFact(b) {
+  const ch = b.companies_house || {};
+  const status = (ch.status || "").toLowerCase();
+  if (status === "dissolved" || status === "liquidation") {
+    return `Companies House: ${ch.status}`;
+  }
+
+  const ris = b.reverse_image_search || {};
+  const exactDup = (ris.exact_duplicate_domains || "").trim();
+  if (exactDup || ris.verification_flag === "Flagged") {
+    return exactDup
+      ? `Reverse image search: exact-duplicate domain(s) found (${exactDup})`
+      : "Reverse image search: flagged";
+  }
+
+  const certs = b.certifications_claimed || [];
+  const catalogue = b.catalogue_depth_signals || [];
+  if (certs.length === 0 && catalogue.length === 0) {
+    return "0 certifications claimed, 0 catalogue-depth signals found";
+  }
+  if (certs.length > 0 && catalogue.length > 0) {
+    return `${certs.length} certification(s) claimed, ${catalogue.length} catalogue-depth signal(s) found`;
+  }
+  return "No standout evidence signal on file";
+}
+
+function renderTriageCard(b) {
+  const verdicts = b.verdicts || {};
+  const criteriaHtml = VERDICT_CRITERIA.map(({criterion, label, options}) => {
+    const current = (verdicts[criterion] && verdicts[criterion].value) || "Pending";
+    const chips = options.map(o =>
+      `<span class="triage-chip${o === current ? " active" : ""}" data-value="${esc(o)}">${esc(o)}</span>`
+    ).join("");
+    return `<div class="triage-criterion" data-criterion="${criterion}">
+      <div class="triage-criterion-label">${esc(label)}</div>
+      <div class="triage-chips">${chips}</div>
+    </div>`;
+  }).join("");
+
+  const currentNotes = (verdicts.Notes && verdicts.Notes.notes) || "";
+
+  return `<div class="triage-card" data-supplier-id="${b.supplier_id}">
+    <div class="triage-head">
+      <div>
+        <div class="card-name">${esc(b.canonical_name || "")}</div>
+        <div class="card-meta">${esc(b.domain || "")}${b.country ? " · " + esc(b.country) : ""} · ${triageIndex + 1} of ${triageQueue.length}</div>
+      </div>
+    </div>
+    <div class="triage-fact">${esc(triageStrongestFact(b))}</div>
+    <div class="triage-criteria">${criteriaHtml}</div>
+    <div class="triage-field">
+      <label>Notes / Difficulties</label>
+      <textarea class="triage-notes" id="triageNotes" placeholder="Optional notes...">${esc(currentNotes)}</textarea>
+    </div>
+    <div class="triage-status" id="triageStatus"></div>
+    <div class="triage-help">A/B/C/D/Q focus a criterion (highlighted) · P Pass · F Fail · N Pending (No on Qualified) · Y Yes (Qualified only) · Space/Enter next</div>
+  </div>`;
+}
+
+function updateTriageFocusVisual() {
+  document.querySelectorAll(".triage-criterion").forEach(el => {
+    el.classList.toggle("focused", el.dataset.criterion === triageFocusedCriterion);
+  });
+}
+
+async function triageSetVerdict(bundle, criterion, value) {
+  const statusEl = $("triageStatus");
+  const chipRow = document.querySelector(`.triage-criterion[data-criterion="${criterion}"] .triage-chips`);
+  try {
+    await saveVerdict(bundle.supplier_id, criterion, {value}, statusEl);
+    bundle.verdicts = bundle.verdicts || {};
+    bundle.verdicts[criterion] = {value};
+    if (chipRow) {
+      chipRow.querySelectorAll(".triage-chip").forEach(c => c.classList.toggle("active", c.dataset.value === value));
+    }
+    if (criterion === "Qualified") {
+      advanceTriage();
+    }
+  } catch {
+    /* saveVerdict already reported the failure via triage-status */
+  }
+}
+
+function advanceTriage() {
+  triageIndex++;
+  loadTriageCard();
+}
+
+function wireTriageCard(bundle) {
+  updateTriageFocusVisual();
+
+  document.querySelectorAll(".triage-chip").forEach(chip => {
+    chip.addEventListener("click", () => {
+      const criterionEl = chip.closest(".triage-criterion");
+      triageFocusedCriterion = criterionEl.dataset.criterion;
+      updateTriageFocusVisual();
+      triageSetVerdict(bundle, criterionEl.dataset.criterion, chip.dataset.value);
+    });
+  });
+
+  const notesEl = $("triageNotes");
+  const savedNotes = notesEl.value;
+  notesEl.addEventListener("blur", async () => {
+    if (notesEl.value === savedNotes) return;
+    try {
+      await saveVerdict(bundle.supplier_id, "Notes", {notes: notesEl.value}, $("triageStatus"));
+    } catch { /* left as typed */ }
+  });
+
+  if (triageKeydownHandler) document.removeEventListener("keydown", triageKeydownHandler);
+  triageKeydownHandler = (e) => {
+    if (document.activeElement && document.activeElement.tagName === "TEXTAREA") return;
+    const key = e.key.toLowerCase();
+    const onABCD = ["a", "b", "c", "d"].includes(key);
+    if (onABCD) {
+      triageFocusedCriterion = key.toUpperCase();
+      updateTriageFocusVisual();
+      e.preventDefault();
+    } else if (key === "q") {
+      triageFocusedCriterion = "Qualified";
+      updateTriageFocusVisual();
+      e.preventDefault();
+    } else if (key === "p" && ["A", "B", "C", "D"].includes(triageFocusedCriterion)) {
+      triageSetVerdict(bundle, triageFocusedCriterion, "Pass");
+      e.preventDefault();
+    } else if (key === "f" && ["A", "B", "C", "D"].includes(triageFocusedCriterion)) {
+      triageSetVerdict(bundle, triageFocusedCriterion, "Fail");
+      e.preventDefault();
+    } else if (key === "n" && ["A", "B", "C", "D"].includes(triageFocusedCriterion)) {
+      triageSetVerdict(bundle, triageFocusedCriterion, "Pending");
+      e.preventDefault();
+    } else if (key === "n" && triageFocusedCriterion === "Qualified") {
+      triageSetVerdict(bundle, "Qualified", "No");
+      e.preventDefault();
+    } else if (key === "y" && triageFocusedCriterion === "Qualified") {
+      triageSetVerdict(bundle, "Qualified", "Yes");
+      e.preventDefault();
+    } else if (key === " " || key === "enter") {
+      e.preventDefault();
+      advanceTriage();
+    }
+  };
+  document.addEventListener("keydown", triageKeydownHandler);
 }
 
 async function openAuditDetail(supplierId, name) {
