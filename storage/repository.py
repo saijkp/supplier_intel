@@ -1988,6 +1988,94 @@ class SupplierRepository:
             return _rows_to_dicts(rows)
 
     # ═════════════════════════════════════════════════════
+    # Supplier monitoring/diff (v30) -- supplier_snapshots is an
+    # append-only observation log (no UNIQUE -- every check writes a
+    # new row even when unchanged, same "written even when nothing
+    # changed" discipline as verification_history) and
+    # supplier_monitoring_settings is the opt-in registry. See
+    # monitoring/monitoring_service.py.
+    # ═════════════════════════════════════════════════════
+
+    def save_snapshot(self, *, supplier_id: int, field_name: str, value: Optional[str]) -> int:
+        with connection_scope(self.db_path) as conn:
+            cur = conn.execute(
+                "INSERT INTO supplier_snapshots (supplier_id, field_name, value) VALUES (?, ?, ?)",
+                (supplier_id, field_name, value),
+            )
+            return cur.lastrowid
+
+    def get_snapshots(
+        self, supplier_id: int, field_name: Optional[str] = None, limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Ordered `captured_at ASC, id ASC` (oldest first) -- same
+        convention as get_field_provenance, so a caller comparing "the
+        last two" reads list[-2:] rather than reversing anything."""
+        with connection_scope(self.db_path) as conn:
+            if field_name:
+                rows = conn.execute(
+                    "SELECT * FROM supplier_snapshots WHERE supplier_id = ? AND field_name = ? "
+                    "ORDER BY captured_at ASC, id ASC LIMIT ?",
+                    (supplier_id, field_name, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM supplier_snapshots WHERE supplier_id = ? "
+                    "ORDER BY field_name, captured_at ASC, id ASC LIMIT ?",
+                    (supplier_id, limit),
+                ).fetchall()
+            return _rows_to_dicts(rows)
+
+    def get_monitoring_settings(self, supplier_id: int) -> Optional[Dict[str, Any]]:
+        with connection_scope(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM supplier_monitoring_settings WHERE supplier_id = ?",
+                (supplier_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def upsert_monitoring_settings(
+        self, *, supplier_id: int, cadence: str, next_check_due_at: str,
+        last_checked_at: Optional[str] = None,
+    ) -> None:
+        """Insert or update the one row for this supplier. `cadence`
+        and `next_check_due_at` are always overwritten (an opt-in
+        change replaces the prior schedule outright, matching
+        upsert_audit_verdict's own single-current-value semantics --
+        deliberately NOT append-only, unlike supplier_snapshots
+        itself: there's only one "current" cadence for a supplier, not
+        a history of them)."""
+        with connection_scope(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO supplier_monitoring_settings
+                    (supplier_id, cadence, next_check_due_at, last_checked_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (supplier_id) DO UPDATE SET
+                    cadence = excluded.cadence,
+                    next_check_due_at = excluded.next_check_due_at,
+                    last_checked_at = COALESCE(excluded.last_checked_at, supplier_monitoring_settings.last_checked_at)
+                """,
+                (supplier_id, cadence, next_check_due_at, last_checked_at),
+            )
+
+    def delete_monitoring_settings(self, supplier_id: int) -> None:
+        with connection_scope(self.db_path) as conn:
+            conn.execute("DELETE FROM supplier_monitoring_settings WHERE supplier_id = ?", (supplier_id,))
+
+    def get_suppliers_due_for_monitoring(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        with connection_scope(self.db_path) as conn:
+            query = (
+                "SELECT * FROM supplier_monitoring_settings "
+                "WHERE next_check_due_at <= CURRENT_TIMESTAMP ORDER BY next_check_due_at ASC"
+            )
+            if limit is not None:
+                query += " LIMIT ?"
+                rows = conn.execute(query, (limit,)).fetchall()
+            else:
+                rows = conn.execute(query).fetchall()
+            return _rows_to_dicts(rows)
+
+    # ═════════════════════════════════════════════════════
     # Buyer profiles (v10) -- named, reusable search + commercial
     # preference bundles. See pipeline.buyer_profile_search's own
     # docstring for exactly how required_capabilities/

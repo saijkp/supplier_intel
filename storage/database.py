@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 
 # ═══════════════════════════════════════════════════════════
@@ -750,6 +750,45 @@ CREATE TABLE IF NOT EXISTS audit_verdicts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_auditverdict_supplier ON audit_verdicts(supplier_id);
+
+
+-- ═══════════════════════════════════════
+-- SUPPLIER MONITORING / DIFF (v30) -- opt-in, cadence-based re-checking
+-- of a small set of low-cost signals. See monitoring/monitoring_service.py.
+--
+-- supplier_snapshots is append-only: every check writes a new row, even
+-- when the value hasn't changed (same "written even when nothing
+-- changed" discipline as verification_history) -- a diff needs two
+-- dated observations to compare, not just the latest. No CHECK on
+-- field_name -- same v28/v29 fix (open-ended, growing set of tracked
+-- fields, enforced in Python via VALID_SNAPSHOT_FIELDS instead of a
+-- CHECK that would break the moment a new field is tracked).
+--
+-- supplier_monitoring_settings is the opt-in registry, one row per
+-- opted-in supplier. cadence DOES get a real CHECK -- unlike
+-- field_name above, this value set is genuinely fixed and buyer-facing
+-- (same reasoning as field_provenance.claim_type).
+-- ═══════════════════════════════════════
+CREATE TABLE IF NOT EXISTS supplier_snapshots (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id  INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    field_name   TEXT NOT NULL,
+    value        TEXT,
+    captured_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_supplier_snapshots_supplier ON supplier_snapshots(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_supplier_snapshots_field ON supplier_snapshots(supplier_id, field_name);
+
+CREATE TABLE IF NOT EXISTS supplier_monitoring_settings (
+    supplier_id       INTEGER PRIMARY KEY REFERENCES suppliers(id) ON DELETE CASCADE,
+    cadence           TEXT NOT NULL CHECK (cadence IN ('monthly', 'quarterly')),
+    enabled_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_checked_at   TIMESTAMP,
+    next_check_due_at TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_monitoring_due ON supplier_monitoring_settings(next_check_due_at);
 
 
 -- ═══════════════════════════════════════
@@ -1606,6 +1645,40 @@ MIGRATIONS: dict[int, dict] = {
             "CREATE INDEX IF NOT EXISTS idx_auditverdict_supplier ON audit_verdicts(supplier_id)",
         ],
     },
+    30: {
+        "description": (
+            "Supplier monitoring/diff: supplier_snapshots (append-only "
+            "per-field observation log, no UNIQUE -- every check writes "
+            "a new row even when unchanged, so a diff has two dated "
+            "observations to compare) and supplier_monitoring_settings "
+            "(opt-in registry, cadence CHECK'd to monthly/quarterly, "
+            "next_check_due_at drives which suppliers are due). See "
+            "monitoring/monitoring_service.py."
+        ),
+        "statements": [
+            """
+            CREATE TABLE IF NOT EXISTS supplier_snapshots (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_id  INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+                field_name   TEXT NOT NULL,
+                value        TEXT,
+                captured_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_supplier_snapshots_supplier ON supplier_snapshots(supplier_id)",
+            "CREATE INDEX IF NOT EXISTS idx_supplier_snapshots_field ON supplier_snapshots(supplier_id, field_name)",
+            """
+            CREATE TABLE IF NOT EXISTS supplier_monitoring_settings (
+                supplier_id       INTEGER PRIMARY KEY REFERENCES suppliers(id) ON DELETE CASCADE,
+                cadence           TEXT NOT NULL CHECK (cadence IN ('monthly', 'quarterly')),
+                enabled_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_checked_at   TIMESTAMP,
+                next_check_due_at TIMESTAMP NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_monitoring_due ON supplier_monitoring_settings(next_check_due_at)",
+        ],
+    },
 }
 
 
@@ -1964,6 +2037,8 @@ def table_counts(db_path: Path | str | None = None) -> dict[str, int]:
         "supplier_capabilities",
         "supplier_catalogue_signals",
         "audit_verdicts",
+        "supplier_snapshots",
+        "supplier_monitoring_settings",
         "pipeline_jobs",
         "buyer_profiles",
         "procurement_outcomes",

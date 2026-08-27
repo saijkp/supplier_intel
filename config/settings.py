@@ -144,6 +144,15 @@ SOURCING_PARALLEL_WORKERS: int = int(os.getenv("SOURCING_PARALLEL_WORKERS") or 3
 FACTORY_FACTS_JOB_MAX_SECONDS: int = int(os.getenv("FACTORY_FACTS_JOB_MAX_SECONDS") or 600)
 FACTORY_FACTS_MAX_CONCURRENT_JOBS: int = int(os.getenv("FACTORY_FACTS_MAX_CONCURRENT_JOBS") or 1)
 
+# --- Monitoring Service (monitoring/monitoring_service.py) --
+# Same wall-clock-budget / process-wide-semaphore safeguards, applied to
+# supplier_snapshots re-check batches. All v1 tracked fields are free
+# (no paid API calls) -- see monitoring_service.py's own module
+# docstring for why that does NOT mean future fields inherit the same
+# no-confirmation-needed default.
+MONITORING_JOB_MAX_SECONDS: int = int(os.getenv("MONITORING_JOB_MAX_SECONDS") or 600)
+MONITORING_MAX_CONCURRENT_JOBS: int = int(os.getenv("MONITORING_MAX_CONCURRENT_JOBS") or 1)
+
 # --- Catalogue Depth Service (verification/catalogue_depth_service.py) --
 # Same wall-clock-budget / process-wide-semaphore safeguards, applied to
 # catalogue-depth-signal extraction batches (a separate, opt-in,

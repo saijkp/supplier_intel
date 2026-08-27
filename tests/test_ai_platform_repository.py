@@ -738,3 +738,147 @@ class TestAuditVerdicts:
 
         assert repo.get_audit_verdicts(s1)["A"]["value"] == "Pass"
         assert repo.get_audit_verdicts(s2) == {}
+
+
+class TestSupplierSnapshots:
+
+    def test_save_and_get_snapshots_for_one_field(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.save_snapshot(supplier_id=supplier_id, field_name="primary_email", value="old@acme.com")
+        repo.save_snapshot(supplier_id=supplier_id, field_name="primary_email", value="new@acme.com")
+
+        snapshots = repo.get_snapshots(supplier_id, field_name="primary_email")
+        assert [s["value"] for s in snapshots] == ["old@acme.com", "new@acme.com"]
+
+    def test_repeat_save_of_same_value_still_appends_a_new_row(self, tmp_path):
+        """No UNIQUE constraint -- every check writes a new row even
+        when nothing changed, so a diff always has two dated
+        observations to compare."""
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.save_snapshot(supplier_id=supplier_id, field_name="companies_house_status", value="active")
+        repo.save_snapshot(supplier_id=supplier_id, field_name="companies_house_status", value="active")
+        assert len(repo.get_snapshots(supplier_id, field_name="companies_house_status")) == 2
+
+    def test_none_value_is_a_real_storable_observation(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.save_snapshot(supplier_id=supplier_id, field_name="primary_phone", value=None)
+        snapshots = repo.get_snapshots(supplier_id, field_name="primary_phone")
+        assert len(snapshots) == 1
+        assert snapshots[0]["value"] is None
+
+    def test_get_snapshots_without_field_name_returns_every_field(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.save_snapshot(supplier_id=supplier_id, field_name="primary_email", value="a@acme.com")
+        repo.save_snapshot(supplier_id=supplier_id, field_name="primary_phone", value="555-0001")
+        all_snapshots = repo.get_snapshots(supplier_id)
+        assert {s["field_name"] for s in all_snapshots} == {"primary_email", "primary_phone"}
+
+    def test_different_suppliers_do_not_share_snapshots(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        s1 = repo.create_golden_record({"canonical_name": "Company One", "domain": "one.example.com"})
+        s2 = repo.create_golden_record({"canonical_name": "Company Two", "domain": "two.example.com"})
+        repo.save_snapshot(supplier_id=s1, field_name="primary_email", value="a@one.com")
+        assert len(repo.get_snapshots(s1, field_name="primary_email")) == 1
+        assert len(repo.get_snapshots(s2, field_name="primary_email")) == 0
+
+    def test_cascade_deletes_snapshots_when_supplier_deleted(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.save_snapshot(supplier_id=supplier_id, field_name="primary_email", value="a@acme.com")
+
+        from storage.database import connection_scope
+        with connection_scope(repo.db_path) as conn:
+            conn.execute("DELETE FROM suppliers WHERE id = ?", (supplier_id,))
+        assert repo.get_snapshots(supplier_id) == []
+
+
+class TestSupplierMonitoringSettings:
+
+    def test_upsert_creates_a_new_row(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.upsert_monitoring_settings(supplier_id=supplier_id, cadence="monthly", next_check_due_at="2026-09-26 00:00:00")
+
+        settings = repo.get_monitoring_settings(supplier_id)
+        assert settings["cadence"] == "monthly"
+        assert settings["next_check_due_at"] == "2026-09-26 00:00:00"
+        assert settings["last_checked_at"] is None
+
+    def test_upsert_overwrites_rather_than_duplicates(self, tmp_path):
+        """One current cadence per supplier, not a history -- opting
+        into a new cadence replaces the prior schedule outright."""
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.upsert_monitoring_settings(supplier_id=supplier_id, cadence="monthly", next_check_due_at="2026-09-26 00:00:00")
+        repo.upsert_monitoring_settings(supplier_id=supplier_id, cadence="quarterly", next_check_due_at="2026-11-26 00:00:00")
+
+        settings = repo.get_monitoring_settings(supplier_id)
+        assert settings["cadence"] == "quarterly"
+        assert settings["next_check_due_at"] == "2026-11-26 00:00:00"
+
+    def test_upsert_preserves_last_checked_at_when_not_given(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.upsert_monitoring_settings(
+            supplier_id=supplier_id, cadence="monthly", next_check_due_at="2026-09-01 00:00:00",
+            last_checked_at="2026-08-01 00:00:00",
+        )
+        repo.upsert_monitoring_settings(supplier_id=supplier_id, cadence="monthly", next_check_due_at="2026-10-01 00:00:00")
+
+        settings = repo.get_monitoring_settings(supplier_id)
+        assert settings["last_checked_at"] == "2026-08-01 00:00:00"
+        assert settings["next_check_due_at"] == "2026-10-01 00:00:00"
+
+    def test_invalid_cadence_is_rejected_by_the_db_check_constraint(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        try:
+            repo.upsert_monitoring_settings(supplier_id=supplier_id, cadence="weekly", next_check_due_at="2026-09-01 00:00:00")
+            assert False, "expected an IntegrityError"
+        except Exception as e:
+            assert "cadence" in str(e).lower()
+
+    def test_get_settings_for_supplier_with_none_enabled_returns_none(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        assert repo.get_monitoring_settings(supplier_id) is None
+
+    def test_delete_monitoring_settings(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        repo.upsert_monitoring_settings(supplier_id=supplier_id, cadence="monthly", next_check_due_at="2026-09-01 00:00:00")
+        repo.delete_monitoring_settings(supplier_id)
+        assert repo.get_monitoring_settings(supplier_id) is None
+
+    def test_get_suppliers_due_for_monitoring_excludes_future_due_dates(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        due_soon = repo.create_golden_record({"canonical_name": "Due Co", "domain": "due.example.com"})
+        not_due = repo.create_golden_record({"canonical_name": "Not Due Co", "domain": "notdue.example.com"})
+        repo.upsert_monitoring_settings(supplier_id=due_soon, cadence="monthly", next_check_due_at="2020-01-01 00:00:00")
+        repo.upsert_monitoring_settings(supplier_id=not_due, cadence="monthly", next_check_due_at="2099-01-01 00:00:00")
+
+        due = repo.get_suppliers_due_for_monitoring()
+        assert [d["supplier_id"] for d in due] == [due_soon]
+
+    def test_get_suppliers_due_for_monitoring_respects_limit(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        for i in range(3):
+            sid = repo.create_golden_record({"canonical_name": f"Due Co {i}", "domain": f"due{i}.example.com"})
+            repo.upsert_monitoring_settings(supplier_id=sid, cadence="monthly", next_check_due_at="2020-01-01 00:00:00")
+
+        due = repo.get_suppliers_due_for_monitoring(limit=2)
+        assert len(due) == 2
+
+    def test_ordered_oldest_due_date_first(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        later = repo.create_golden_record({"canonical_name": "Later Co", "domain": "later.example.com"})
+        earlier = repo.create_golden_record({"canonical_name": "Earlier Co", "domain": "earlier.example.com"})
+        repo.upsert_monitoring_settings(supplier_id=later, cadence="monthly", next_check_due_at="2020-01-02 00:00:00")
+        repo.upsert_monitoring_settings(supplier_id=earlier, cadence="monthly", next_check_due_at="2020-01-01 00:00:00")
+
+        due = repo.get_suppliers_due_for_monitoring()
+        assert [d["supplier_id"] for d in due] == [earlier, later]

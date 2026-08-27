@@ -1012,3 +1012,81 @@ def set_audit_verdict(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return repo.get_audit_verdicts(supplier_id).get(criterion, {})
+
+
+# ═════════════════════════════════════════════════════
+# Monitoring (supplier_snapshots / supplier_monitoring_settings) --
+# opt-in, cadence-based re-checking of a small set of free signals. All
+# business logic lives in monitoring/monitoring_service.py, same "thin
+# HTTP wrapper" discipline as Audit above -- these are plain
+# synchronous endpoints, not the async job/poll pattern used for
+# genuinely long-running paid stages (Contacts/Collection/Factory
+# Facts), since every v1 tracked field is free and a check is fast.
+# ═════════════════════════════════════════════════════
+
+
+@app.post("/monitoring/suppliers/{supplier_id}", dependencies=[Depends(require_api_token)])
+def enable_supplier_monitoring(
+    supplier_id: int, payload: Dict[str, Any] = Body(...),
+    repo: SupplierRepository = Depends(get_repo),
+) -> Dict[str, Any]:
+    """Opt a supplier into recurring monitoring. `payload["cadence"]`
+    must be "monthly" or "quarterly". Response includes
+    `cost_disclosure` -- the real, current cost of a check
+    (monitoring.monitoring_service.MONITORING_COST_DISCLOSURE) -- so
+    the frontend can show it at this, the one opt-in moment, per this
+    feature's own design: no per-run confirmation after that, since a
+    scheduled check has no human present to confirm it."""
+    from monitoring.monitoring_service import MONITORING_COST_DISCLOSURE, MonitoringService
+
+    service = MonitoringService(repo=repo)
+    try:
+        result = service.enable_monitoring(supplier_id, payload.get("cadence", ""))
+    except ValueError as e:
+        detail = str(e)
+        status = 404 if "No supplier" in detail else 400
+        raise HTTPException(status_code=status, detail=detail) from e
+    result["cost_disclosure"] = MONITORING_COST_DISCLOSURE
+    return result
+
+
+@app.delete("/monitoring/suppliers/{supplier_id}", status_code=204, dependencies=[Depends(require_api_token)])
+def disable_supplier_monitoring(supplier_id: int, repo: SupplierRepository = Depends(get_repo)) -> None:
+    from monitoring.monitoring_service import MonitoringService
+
+    MonitoringService(repo=repo).disable_monitoring(supplier_id)
+
+
+@app.get("/monitoring/suppliers/{supplier_id}", dependencies=[Depends(require_api_token)])
+def get_supplier_monitoring(
+    supplier_id: int, repo: SupplierRepository = Depends(get_repo),
+) -> Dict[str, Any]:
+    """Current cadence settings, full snapshot history per tracked
+    field, and any real diffs -- purely a read, same "verbatim,
+    nothing inferred" discipline as GET /audit/suppliers/{id}."""
+    from monitoring.monitoring_service import VALID_SNAPSHOT_FIELDS, MonitoringService
+
+    if repo.get_supplier(supplier_id) is None:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+
+    service = MonitoringService(repo=repo)
+    return {
+        "settings": repo.get_monitoring_settings(supplier_id),
+        "snapshots": {field: repo.get_snapshots(supplier_id, field_name=field) for field in VALID_SNAPSHOT_FIELDS},
+        "diffs": service.diff_all_fields(supplier_id),
+    }
+
+
+@app.post("/monitoring/jobs/run-due", dependencies=[Depends(require_api_token)])
+def run_due_monitoring_checks(
+    limit: Optional[int] = None, repo: SupplierRepository = Depends(get_repo),
+) -> Dict[str, Any]:
+    """Processes whatever's currently due (next_check_due_at <= now)
+    when invoked. No new in-app scheduler exists (this codebase has no
+    cron/Celery beat, only single-instance BackgroundTasks, same
+    limitation every other async stage already documents) -- actual
+    monthly/quarterly scheduling is an operator concern: a real OS
+    cron / Railway scheduled job hitting this endpoint periodically."""
+    from monitoring.monitoring_service import MonitoringService
+
+    return MonitoringService(repo=repo).capture_snapshot_pending(limit=limit)
