@@ -15,10 +15,19 @@ from scrapers.own_website_scraper import OwnWebsiteScraper
 
 
 class FakeResponse:
-    def __init__(self, text, status_code=200, content_type="text/html"):
+    """`url`, when given, simulates the ACTUAL URL httpx's own
+    `response.url` would report after following a redirect --
+    different from whatever URL this response was registered under in
+    FakeOwnWebsiteClient. Omitted by every existing test in this file
+    (matching a fake/mock that doesn't model this), which
+    OwnWebsiteScraper._fetch() degrades to "no redirect happened," not
+    an error."""
+
+    def __init__(self, text, status_code=200, content_type="text/html", url=None):
         self.text = text
         self.status_code = status_code
         self.headers = {"content-type": content_type}
+        self.url = url
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -280,3 +289,60 @@ class TestContactFormDetection:
         scraper = OwnWebsiteScraper(http_client=client, enable_delays=False)
         result = scraper.fetch("acme.example.com")
         assert result.pages[0].has_contact_form is False
+
+
+class TestFinalUrl:
+    """OwnWebsitePage.final_url -- the actual URL content was served
+    from, distinct from `url` (what was requested). See
+    discovery.candidate_validator.CandidateValidator's own off-domain-
+    redirect gate, the reason this field exists."""
+
+    def test_no_redirect_final_url_matches_requested_url(self):
+        client = FakeOwnWebsiteClient({"https://acme.example.com": FakeResponse("<html><body>text</body></html>")})
+        scraper = OwnWebsiteScraper(http_client=client, enable_delays=False)
+        result = scraper.fetch("acme.example.com")
+        assert result.pages[0].final_url == "https://acme.example.com"
+
+    def test_off_domain_redirect_is_captured_in_final_url(self):
+        """Real finding: duraauto.com's own homepage genuinely
+        redirects to durashiloh.com, a different real site."""
+        client = FakeOwnWebsiteClient({
+            "https://duraauto.com": FakeResponse("<html><body>Durashiloh homepage</body></html>", url="https://durashiloh.com/"),
+        })
+        scraper = OwnWebsiteScraper(http_client=client, enable_delays=False)
+        result = scraper.fetch("duraauto.com")
+        assert result.pages[0].url == "https://duraauto.com"
+        assert result.pages[0].final_url == "https://durashiloh.com/"
+
+    def test_same_domain_scheme_upgrade_redirect_is_captured_accurately(self):
+        """A same-domain http->https redirect is real too -- final_url
+        still reflects it, just not flagged as off-domain by anything
+        in THIS module (that judgment is candidate_validator's job)."""
+        client = FakeOwnWebsiteClient({
+            "https://acme.example.com": FakeResponse("<html><body>text</body></html>", url="https://www.acme.example.com/"),
+        })
+        scraper = OwnWebsiteScraper(http_client=client, enable_delays=False)
+        result = scraper.fetch("acme.example.com")
+        assert result.pages[0].final_url == "https://www.acme.example.com/"
+
+    def test_fake_not_modelling_url_falls_back_to_requested_url(self):
+        """A response object with no real `.url` (None, matching every
+        pre-existing test in this file) must not crash or invent a
+        redirect -- degrades to "no redirect detected"."""
+        client = FakeOwnWebsiteClient({"https://acme.example.com": FakeResponse("<html><body>text</body></html>")})
+        scraper = OwnWebsiteScraper(http_client=client, enable_delays=False)
+        result = scraper.fetch("acme.example.com")
+        assert result.pages[0].final_url == result.pages[0].url
+
+    def test_capability_sub_page_redirect_is_also_captured(self):
+        html = '<html><body><a href="/about-us">About Us</a></body></html>'
+        client = FakeOwnWebsiteClient({
+            "https://acme.example.com": FakeResponse(html),
+            "https://acme.example.com/about-us": FakeResponse(
+                "<html><body>About</body></html>", url="https://different-site.example/about-us",
+            ),
+        })
+        scraper = OwnWebsiteScraper(http_client=client, enable_delays=False)
+        result = scraper.fetch("acme.example.com")
+        about_page = next(p for p in result.pages if p.url == "https://acme.example.com/about-us")
+        assert about_page.final_url == "https://different-site.example/about-us"

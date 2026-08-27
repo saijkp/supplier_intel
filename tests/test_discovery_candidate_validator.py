@@ -27,8 +27,10 @@ from discovery.candidate_validator import (
 class FakeLLMClient:
     def __init__(self, response=None):
         self._response = response
+        self.calls = []
 
     def complete_json(self, system_prompt, user_prompt, **kwargs):
+        self.calls.append((system_prompt, user_prompt))
         return self._response
 
 
@@ -490,6 +492,77 @@ class TestSoftTraderSignalExclusion:
         result = validator.validate(_candidate(), "trailer axle")
 
         assert result.validated is True
+
+
+class TestOffDomainRedirectExclusion:
+    """gate 3.6 -- a fetch that silently landed on a DIFFERENT real
+    company's site (final_url's registered domain doesn't match the
+    candidate's own domain) must be rejected, not trusted as if it
+    were the candidate's own content. Real finding: duraauto.com's own
+    homepage genuinely redirects to durashiloh.com."""
+
+    def test_off_domain_redirect_is_rejected(self):
+        duraauto_candidate = Candidate(
+            title="Duraauto", link="https://duraauto.com/",
+            snippet="trailer axle manufacturer", domain="duraauto.com",
+        )
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Welcome to Durashiloh, a leading trailer axle manufacturer.",
+            final_url="https://durashiloh.com/",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Durashiloh", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(duraauto_candidate, "trailer axle")
+
+        assert result.validated is False
+        assert "duraauto.com -> durashiloh.com" in result.reason
+
+    def test_same_domain_scheme_upgrade_redirect_still_validates(self):
+        """A same-domain http->https or bare->www redirect is normal
+        and must not be wrongly rejected -- domains_match() is already
+        scheme/www-insensitive."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Welcome to Acme Trailer Co, manufacturer of trailer axle assemblies.",
+            final_url="https://www.acmetrailer.com/",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is True
+
+    def test_no_final_url_available_does_not_reject(self):
+        """A fetcher/fake that doesn't populate final_url at all (every
+        pre-existing test fixture in this file) must degrade to "no
+        redirect detected," never a false reject."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Welcome to Acme Trailer Co, manufacturer of trailer axle assemblies.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is True
+
+    def test_off_domain_redirect_checked_before_the_paid_llm_call(self):
+        """Rejected at gate 3.6 must not spend the LLM call at all --
+        same "reject cheap, before spending anything" discipline gate
+        3.5 already follows."""
+        duraauto_candidate = Candidate(
+            title="Duraauto", link="https://duraauto.com/", snippet="", domain="duraauto.com",
+        )
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Welcome to Durashiloh.", final_url="https://durashiloh.com/",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Durashiloh", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        validator.validate(duraauto_candidate, "trailer axle")
+
+        assert llm.calls == []
 
 
 class TestMarketplaceHostExclusion:

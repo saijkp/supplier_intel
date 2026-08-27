@@ -46,7 +46,7 @@ import random
 import re
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 import httpx
 from bs4 import BeautifulSoup
@@ -87,6 +87,23 @@ class OwnWebsitePage:
     text: str
     image_urls: List[str] = field(default_factory=list)
     has_contact_form: bool = False
+    # The ACTUAL URL this page's content was served from, after
+    # following any redirect -- distinct from `url` (the URL that was
+    # REQUESTED). httpx's own `response.url` already reflects this when
+    # `follow_redirects=True` (this class's own default), so no manual
+    # redirect-chain tracking is needed. Defaults to matching `url`
+    # when a caller/fake doesn't populate it, so a redirect-unaware
+    # caller degrades to "no redirect happened" rather than losing
+    # data. See discovery.candidate_validator.CandidateValidator's own
+    # off-domain-redirect gate, the reason this field exists at all --
+    # `url` alone couldn't tell it a fetch silently landed on a
+    # different company's site (found live: duraauto.com's own
+    # homepage genuinely redirects to durashiloh.com).
+    final_url: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.final_url:
+            self.final_url = self.url
 
 
 @dataclass
@@ -142,7 +159,13 @@ class OwnWebsiteScraper:
         min_sec, max_sec = REQUEST_DELAYS.get("own_website", (1.0, 2.5))
         time.sleep(random.uniform(min_sec, max_sec))
 
-    def _fetch(self, url: str) -> Optional[str]:
+    def _fetch(self, url: str) -> Optional[Tuple[str, str]]:
+        """Returns (html, final_url) -- `final_url` is `response.url`
+        (the URL the content actually came from, after any redirect),
+        falling back to the requested `url` if the response object
+        doesn't expose one (a fake/mock in a test that doesn't model
+        this -- same "degrade to no redirect detected" safety as
+        OwnWebsitePage.final_url's own default)."""
         try:
             response = self._client.get(url)
             response.raise_for_status()
@@ -152,7 +175,8 @@ class OwnWebsiteScraper:
         content_type = getattr(response, "headers", {}).get("content-type", "html")
         if "html" not in content_type and "text" not in content_type:
             return None
-        return response.text
+        final_url = str(getattr(response, "url", "") or "") or url
+        return response.text, final_url
 
     def _find_capability_links(self, base_url: str, html: str) -> List[str]:
         soup = BeautifulSoup(html, "html.parser")
@@ -237,13 +261,14 @@ class OwnWebsiteScraper:
 
         pages: List[OwnWebsitePage] = []
         try:
-            homepage_html = self._fetch(base_url)
-            if homepage_html is None:
+            homepage_result = self._fetch(base_url)
+            if homepage_result is None:
                 return OwnWebsiteFetchResult(
                     domain=domain, success=False, error=f"could not fetch homepage: {base_url}"
                 )
+            homepage_html, homepage_final_url = homepage_result
             pages.append(OwnWebsitePage(
-                url=base_url, text=html_to_text(homepage_html),
+                url=base_url, final_url=homepage_final_url, text=html_to_text(homepage_html),
                 image_urls=self._find_image_urls(base_url, homepage_html),
                 has_contact_form=self._has_contact_form(homepage_html),
             ))
@@ -252,10 +277,11 @@ class OwnWebsiteScraper:
                 if len(pages) >= self.max_pages:
                     break
                 self._polite_delay()
-                page_html = self._fetch(link)
-                if page_html:
+                page_result = self._fetch(link)
+                if page_result:
+                    page_html, page_final_url = page_result
                     pages.append(OwnWebsitePage(
-                        url=link, text=html_to_text(page_html),
+                        url=link, final_url=page_final_url, text=html_to_text(page_html),
                         image_urls=self._find_image_urls(link, page_html),
                         has_contact_form=self._has_contact_form(page_html),
                     ))

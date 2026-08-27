@@ -84,7 +84,12 @@ from typing import Any, Optional
 
 from rapidfuzz import fuzz
 
-from deduplication.domain_utils import PLATFORM_REGISTERED_DOMAINS, is_platform_subdomain
+from deduplication.domain_utils import (
+    PLATFORM_REGISTERED_DOMAINS,
+    domains_match,
+    extract_domain,
+    is_platform_subdomain,
+)
 from deduplication.name_utils import normalise_company_name
 from discovery.candidate_extractor import Candidate
 from llm.client import LLMClient
@@ -416,6 +421,7 @@ REASON_MARKETPLACE_HOST_PREFIX = "candidate domain is a known B2B marketplace ho
 REASON_FETCH_EXCEPTION_PREFIX = "fetch failed"                                   # gate 3 (raised)
 REASON_FETCH_UNSUCCESSFUL_PREFIX = "could not fetch candidate site"              # gate 3 (no success/no pages)
 REASON_EMPTY_PAGE = "fetched page had no readable text"                          # gate 3 (blank text)
+REASON_OFF_DOMAIN_REDIRECT_PREFIX = "candidate domain redirected off-domain"     # gate 3.6
 REASON_TERM_MISSING_PREFIX = "fetched page text does not mention the searched term"  # gate 6
 REASON_TRADER_PREFIX = "page self-identifies as a trading company/distributor"   # gate 7
 REASON_SUCCESS_PREFIX = "validated: name corroborated"                           # every gate passed
@@ -554,6 +560,23 @@ class CandidateValidator:
         page_text = fetch_result.pages[0].text
         if not page_text or not page_text.strip():
             return ValidationResult(candidate, False, None, None, None, REASON_EMPTY_PAGE)
+
+        # gate 3.6 -- catches a fetch that silently landed on a
+        # DIFFERENT real company's site (found live: duraauto.com's own
+        # homepage genuinely redirects to durashiloh.com). `final_url`
+        # defaults to `url` on any fetcher/fake that doesn't populate it
+        # (OwnWebsitePage.__post_init__), so this degrades to a no-op
+        # rather than a false reject when redirect info isn't available
+        # -- checked before the paid Companies House/LLM calls below,
+        # not after, same "reject cheap, before spending anything"
+        # discipline gate 3.5 already follows.
+        final_url = getattr(fetch_result.pages[0], "final_url", "") or candidate.domain
+        final_domain = extract_domain(final_url)
+        if final_domain and not domains_match(candidate.domain, final_domain):
+            return ValidationResult(
+                candidate, False, None, None, None,
+                f"{REASON_OFF_DOMAIN_REDIRECT_PREFIX}: {candidate.domain} -> {final_domain}",
+            )
 
         if self.companies_house_client is not None:
             name_candidates = _title_name_candidates(candidate.title)
