@@ -103,6 +103,12 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api.app, "run_single_company_job", fake_run_single_company_job)
 
+    def fake_run_supplier_correction_job(job_id, supplier_id, options):
+        test_repo.mark_pipeline_job_running(job_id)
+        test_repo.mark_pipeline_job_completed(job_id, stats={"supplier_id": supplier_id, "status": "needs_url"})
+
+    monkeypatch.setattr(api.app, "run_supplier_correction_job", fake_run_supplier_correction_job)
+
     batch_job_calls = []
 
     def fake_run_batch_job(job_id, csv_bytes, recover_dead_domains=False, recovery_product_term=None,
@@ -660,6 +666,36 @@ class TestSingleCompanyEnrichEndpoint:
 
     def test_requires_auth(self, client):
         response = client.post("/companies/enrich", json={"input_text": "Acme Trailer Co"})
+        assert response.status_code == 401
+
+
+class TestSupplierCorrectionEndpoint:
+
+    def test_creating_a_job_returns_202_with_a_job_id(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Ashpock", "domain": "shpock.com"})
+        response = client.post(
+            f"/suppliers/{supplier_id}/correct-domain",
+            json={"reason": "false match: shpock.com is an unrelated app"},
+            headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        body = response.json()
+        assert body["status"] == "queued"
+        assert body["query"] == f"[correct-supplier] #{supplier_id}"
+        assert body["id"]
+
+    def test_reason_is_optional(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Ashpock", "domain": "shpock.com"})
+        response = client.post(f"/suppliers/{supplier_id}/correct-domain", json={}, headers=auth_headers())
+        assert response.status_code == 202
+
+    def test_missing_supplier_is_404(self, client):
+        response = client.post("/suppliers/999999/correct-domain", json={}, headers=auth_headers())
+        assert response.status_code == 404
+
+    def test_requires_auth(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Ashpock", "domain": "shpock.com"})
+        response = client.post(f"/suppliers/{supplier_id}/correct-domain", json={})
         assert response.status_code == 401
 
 

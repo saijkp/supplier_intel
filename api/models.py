@@ -332,6 +332,21 @@ class SingleCompanyEnrichRequest(BaseModel):
     )
 
 
+class SupplierCorrectionRequest(BaseModel):
+    """Triggers batch.supplier_correction.SupplierCorrectionService --
+    the HTTP equivalent of `python main.py correct-supplier <id>
+    --clear-domain`, since this codebase's production database is a
+    SQLite file on a Railway volume and can only be corrected from
+    inside the running service itself (see api/jobs.py's
+    run_supplier_correction_job for the full flow)."""
+
+    reason: Optional[str] = Field(
+        default=None,
+        description="Why this correction is being made -- recorded on supplier_change_log. "
+                     "Defaults to a generic note naming the cleared value if omitted.",
+    )
+
+
 class SourcingRunRequest(BaseModel):
     """Triggers sourcing.sourcing_agent.SourcingAgentService -- one
     free-text procurement brief drives the entire discover -> collect

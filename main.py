@@ -1158,60 +1158,43 @@ def history(supplier_id: int) -> None:
 def correct_supplier(supplier_id: int, clear_domain: bool, reason: Optional[str]) -> None:
     """Reusable fix for a bad supplier record -- e.g. a false-match domain a validation
     gap let through (see scrapers/company_website_finder.py's own corroboration guards).
-    Every correction here goes through the same real pipeline every other write in this
-    codebase does (CompanyWebsiteFinder + CollectionService) with a supplier_change_log
-    entry, never a hand-applied database patch -- see `python main.py history --supplier-id`
-    to review what changed afterward. Currently supports --clear-domain only; add another
-    --clear-<field> following the same shape here for a future bad-record class, rather
-    than reaching for raw SQL again."""
-    from collection.collection_service import CollectionService
-    from scrapers.company_website_finder import CompanyWebsiteFinder
-    from scrapers.google_search_scraper import GoogleSearchScraper
-    from scrapers.own_website_scraper import OwnWebsiteScraper
+    Business logic lives in batch/supplier_correction.py's SupplierCorrectionService,
+    shared with POST /suppliers/{id}/correct-domain (this codebase's production database
+    is a SQLite file on a Railway volume, not network-reachable, so an already-deployed
+    bad record can only be corrected over HTTP -- this CLI command only ever reaches a
+    database on the same filesystem it's run from). Every correction goes through the
+    same real pipeline every other write in this codebase does (CompanyWebsiteFinder +
+    CollectionService) with a supplier_change_log entry, never a hand-applied database
+    patch -- see `python main.py history --supplier-id` to review what changed
+    afterward. Currently supports --clear-domain only; add another --clear-<field>
+    following the same shape here for a future bad-record class, rather than reaching
+    for raw SQL again."""
+    from batch.supplier_correction import SupplierCorrectionService
 
     if not clear_domain:
         console.print("[red]X[/red] Specify a correction to make, e.g. --clear-domain.")
         raise SystemExit(1)
 
-    repo = SupplierRepository()
-    supplier = repo.get_supplier(supplier_id)
-    if supplier is None:
-        console.print(f"[red]X[/red] No supplier with id={supplier_id}.")
+    service = SupplierCorrectionService()
+    try:
+        console.print("[bold]Correcting...[/bold] (1 SerpAPI call, +1 OpenAI call if a candidate "
+                       "site needs grounded-name verification)")
+        result = service.correct_domain(supplier_id, reason=reason)
+    except ValueError as e:
+        console.print(f"[red]X[/red] {e}")
         raise SystemExit(1)
 
-    old_domain = supplier.get("domain")
-    canonical_name = supplier.get("canonical_name")
-    console.print(f"[bold]Supplier #{supplier_id}[/bold]: {canonical_name!r} (current domain: {old_domain!r})")
-
-    if old_domain:
-        clear_reason = reason or f"manual correction: {old_domain!r} confirmed to be a wrong/unrelated site"
-        repo.clear_supplier_field(supplier_id, "domain", changed_by="manual", change_reason=clear_reason)
-        console.print(f"[green]OK[/green] Cleared domain (was {old_domain!r}).")
-    else:
-        console.print("[yellow]![/yellow] domain was already empty -- nothing to clear, re-resolving anyway.")
-
-    console.print("[bold]Re-resolving...[/bold] (1 SerpAPI call, +1 OpenAI call if a candidate "
-                   "site needs grounded-name verification)")
-    finder = CompanyWebsiteFinder(GoogleSearchScraper(), OwnWebsiteScraper())
-    finding = finder.find_website(canonical_name, country=supplier.get("country"))
-
-    if not finding.validated:
-        console.print(f"[yellow]![/yellow] No validated replacement found ({finding.reason}). "
-                       f"Supplier #{supplier_id} left with no domain -- re-run "
-                       f"`python main.py find-websites` later, or set the correct domain "
-                       f"manually once you have it.")
+    console.print(f"[bold]Supplier #{supplier_id}[/bold]: {result['canonical_name']!r} "
+                   f"(was: {result['old_domain']!r})")
+    if result["status"] == "needs_url":
+        console.print(f"[yellow]![/yellow] No validated replacement found ({result['reason']}). "
+                       f"Left with no domain -- re-run `python main.py find-websites` later, "
+                       f"or set the correct domain manually once you have it.")
         return
 
-    resolve_reason = f"corrected from wrong domain {old_domain!r}: {finding.reason}"
-    repo.update_supplier_fields_with_history(
-        supplier_id, {"domain": finding.domain}, changed_by="manual", change_reason=resolve_reason,
-    )
-    console.print(f"[green]OK[/green] Resolved and validated new domain: {finding.domain}")
-
-    console.print("[bold]Re-collecting[/bold] from the corrected site...")
-    outcome = CollectionService(repo=repo).collect(supplier_id, source_url=finding.domain)
-    console.print(f"[green]OK[/green] Re-collected: {outcome['status']} "
-                   f"({outcome.get('pages_visited', 0)} page(s) visited).")
+    console.print(f"[green]OK[/green] Resolved and validated new domain: {result['new_domain']}")
+    console.print(f"[green]OK[/green] Re-collected: {result['collection_status']} "
+                   f"({result['pages_visited']} page(s) visited).")
 
 
 @cli.command("enable-monitoring")

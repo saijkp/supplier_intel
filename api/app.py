@@ -52,6 +52,7 @@ from api.jobs import (
     run_reverify_job,
     run_single_company_job,
     run_sourcing_job,
+    run_supplier_correction_job,
     run_verification_job,
 )
 from api.models import (
@@ -70,6 +71,7 @@ from api.models import (
     SingleCompanyEnrichRequest,
     SourcingRunRequest,
     SourcingRunResponse,
+    SupplierCorrectionRequest,
     SupplierSearchResult,
     VerificationJobRequest,
 )
@@ -424,6 +426,39 @@ def create_single_company_job(
         job_id=job_id, query=f"[single-company] {request.input_text[:60]}", options=options,
     )
     background_tasks.add_task(run_single_company_job, job_id, options)
+    job = repo.get_pipeline_job(job_id)
+    return _to_job_response(job)
+
+
+@app.post(
+    "/suppliers/{supplier_id}/correct-domain",
+    response_model=PipelineJobResponse,
+    status_code=202,
+    dependencies=[Depends(require_api_token)],
+)
+def create_supplier_correction_job(
+    supplier_id: int,
+    request: SupplierCorrectionRequest,
+    background_tasks: BackgroundTasks,
+    repo: SupplierRepository = Depends(get_repo),
+) -> PipelineJobResponse:
+    """The HTTP equivalent of `python main.py correct-supplier
+    <supplier_id> --clear-domain` -- this codebase's production
+    database is a SQLite file on a Railway volume, not network-
+    reachable, so an already-deployed bad record (e.g. a false-match
+    domain scrapers/company_website_finder.py's own corroboration
+    guards later closed) can only be corrected over HTTP, through the
+    running service itself. Same async job/poll pattern as every other
+    job endpoint -- see api/jobs.py's run_supplier_correction_job for
+    the full flow. 404 if the supplier doesn't exist."""
+    if repo.get_supplier(supplier_id) is None:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    job_id = str(uuid.uuid4())
+    options = request.model_dump()
+    repo.create_pipeline_job(
+        job_id=job_id, query=f"[correct-supplier] #{supplier_id}", options=options,
+    )
+    background_tasks.add_task(run_supplier_correction_job, job_id, supplier_id, options)
     job = repo.get_pipeline_job(job_id)
     return _to_job_response(job)
 

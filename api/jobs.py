@@ -393,6 +393,35 @@ def run_single_company_job(job_id: str, options: Dict[str, Any]) -> None:
         repo.mark_pipeline_job_failed(job_id, error=str(e))
 
 
+def run_supplier_correction_job(job_id: str, supplier_id: int, options: Dict[str, Any]) -> None:
+    """The HTTP equivalent of `python main.py correct-supplier
+    <supplier_id> --clear-domain` -- exists because this codebase's
+    production database is a SQLite file on a Railway volume, not
+    network-reachable, so an already-deployed bad record (e.g. a
+    false-match domain) can only be corrected over HTTP, through the
+    running service itself, not by running the CLI command from
+    elsewhere. Business logic lives in
+    batch.supplier_correction.SupplierCorrectionService, shared with
+    that CLI command -- see this module's own docstring for why
+    BackgroundTasks (not a synchronous response) here too: a real
+    SerpAPI search + fetch + LLM call + Playwright collection can
+    easily take longer than a proxy is willing to hold a request
+    open."""
+    repo = SupplierRepository()
+    repo.mark_pipeline_job_running(job_id)
+    try:
+        from batch.supplier_correction import SupplierCorrectionService
+
+        service = SupplierCorrectionService(repo=repo)
+        result = service.correct_domain(supplier_id, reason=options.get("reason"))
+        repo.mark_pipeline_job_completed(job_id, stats=result)
+    except ValueError as e:
+        repo.mark_pipeline_job_failed(job_id, error=str(e))
+    except Exception as e:
+        logger.error("Supplier correction job %s (supplier #%s) failed: %s", job_id, supplier_id, e)
+        repo.mark_pipeline_job_failed(job_id, error=str(e))
+
+
 def run_sourcing_job(job_id: str, options: Dict[str, Any]) -> None:
     """The HTTP equivalent of one chat message on the frontend's Source
     tab. A sourcing run can easily take minutes (many discover->collect
