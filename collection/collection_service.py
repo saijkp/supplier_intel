@@ -92,6 +92,7 @@ from collection.proxy_provider import ProxyProvider, select_proxy_provider
 from collection.site_collector import SiteCollector
 from config.settings import (
     COLLECTION_JOB_MAX_SECONDS,
+    COLLECTION_MAX_CONCURRENT_BROWSERS,
     COLLECTION_MAX_CONCURRENT_JOBS,
     COLLECTION_PARALLEL_WORKERS,
 )
@@ -111,6 +112,20 @@ logger = logging.getLogger(__name__)
 # module docstring for why this needs to be process-wide, not
 # per-instance.
 _BATCH_SEMAPHORE = threading.Semaphore(COLLECTION_MAX_CONCURRENT_JOBS)
+
+# The TRUE global cap: every real Playwright browser launch, from
+# EVERY caller (collect_pending()'s own waves, a single collect() call,
+# batch_service.py's per-row loop, sourcing_agent.py's waves), blocks
+# here until a slot frees -- see COLLECTION_MAX_CONCURRENT_BROWSERS's
+# own docstring in config/settings.py for the live incident this
+# fixes. Distinct from both _BATCH_SEMAPHORE (gates concurrent
+# collect_pending() BATCH CALLS specifically) and
+# COLLECTION_PARALLEL_WORKERS (bounds a single collect_pending() call's
+# OWN wave size) -- neither of those coordinates across DIFFERENT
+# callers, which is exactly the gap that let multiple concurrent
+# /batch/upload jobs each launch their own unbounded Chromium
+# processes on top of each other.
+_BROWSER_SEMAPHORE = threading.Semaphore(COLLECTION_MAX_CONCURRENT_BROWSERS)
 
 
 class CollectionService:
@@ -187,7 +202,12 @@ class CollectionService:
             return outcome
 
         try:
-            result = self.site_collector.collect(supplier_id, domain, source_url=source_url)
+            # Blocks (queues) until a global browser-launch slot frees --
+            # see _BROWSER_SEMAPHORE's own comment. This is the ONLY
+            # place SiteCollector.collect() is ever invoked, so gating
+            # here covers every caller uniformly, not just this one.
+            with _BROWSER_SEMAPHORE:
+                result = self.site_collector.collect(supplier_id, domain, source_url=source_url)
         except Exception as e:  # noqa: BLE001 -- SiteCollector already never raises; this is defence in depth,
             # matching every other pipeline stage's per-supplier fault isolation in this codebase.
             logger.error("collection: unexpected error for supplier #%s: %s", supplier_id, e)

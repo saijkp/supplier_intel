@@ -17,8 +17,9 @@ import time
 
 import pytest
 
-from collection.collection_service import CollectionService, _BATCH_SEMAPHORE
+from collection.collection_service import CollectionService, _BATCH_SEMAPHORE, _BROWSER_SEMAPHORE
 from collection.schemas import CertificateDocument, CollectedPage, CollectionResult
+from config.settings import COLLECTION_MAX_CONCURRENT_BROWSERS
 from storage.database import initialise_schema
 from storage.repository import SupplierRepository
 
@@ -86,6 +87,8 @@ def _reset_semaphore():
     yield
     while _BATCH_SEMAPHORE._value < 1:
         _BATCH_SEMAPHORE.release()
+    while _BROWSER_SEMAPHORE._value < COLLECTION_MAX_CONCURRENT_BROWSERS:
+        _BROWSER_SEMAPHORE.release()
 
 
 class TestCollectSingleSupplier:
@@ -781,3 +784,69 @@ class TestCollectPending:
             assert stats["attempted"] == 0
         finally:
             _BATCH_SEMAPHORE.release()
+
+
+class TestGlobalBrowserConcurrencyCap:
+    """Real production incident, confirmed via Railway's own logs: a
+    batch-upload CSV retried several times (each retry starting its own
+    concurrent BackgroundTasks job, since POST /batch/upload has no
+    in-flight-job guard) fired 6+ simultaneous real Playwright launches
+    -- each one calling .collect() independently, NOT through one
+    shared collect_pending() wave -- and exhausted the container's OS
+    process table (BlockingIOError: [Errno 11] Resource temporarily
+    unavailable), cascading into Railway's own log-rate-limit dropping
+    thousands of messages and the whole service intermittently 500ing
+    on every endpoint, including a bare GET /health, for several
+    seconds. These tests simulate that exact shape -- several
+    INDEPENDENT collect() calls (standing in for separate concurrent
+    batch-upload jobs, not one collect_pending() call's own wave) from
+    different threads -- and confirm the new global semaphore actually
+    bounds them, queueing rather than piling up."""
+
+    def test_independent_collect_calls_are_capped_globally(self, repo):
+        ids = [
+            repo.create_golden_record({"canonical_name": f"Co {i}", "domain": f"co{i}.example.com"})
+            for i in range(8)
+        ]
+        fake = FakeSiteCollector(delay_seconds=0.15)
+        # One shared CollectionService instance standing in for what
+        # would really be several DIFFERENT BatchService/CollectionService
+        # instances (one per concurrent /batch/upload job) -- the
+        # semaphore is module-level/process-wide specifically so this
+        # doesn't matter (see _BROWSER_SEMAPHORE's own comment).
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        threads = [threading.Thread(target=service.collect, args=(sid,)) for sid in ids]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert fake.calls  # sanity: the threads actually ran
+        assert len(fake.calls) == 8
+        assert fake.max_concurrent <= COLLECTION_MAX_CONCURRENT_BROWSERS
+        assert fake.max_concurrent >= 2  # still real overlap, not fully serialised
+
+    def test_cap_applies_even_across_two_separate_service_instances(self, repo):
+        """The real incident was two DIFFERENT /batch/upload HTTP
+        requests, each constructing its own BatchService/
+        CollectionService -- not one instance's internal wave. Proves
+        the module-level semaphore, not something scoped to one
+        CollectionService object, is what's actually enforcing this."""
+        ids_a = [repo.create_golden_record({"canonical_name": f"A{i}", "domain": f"a{i}.example.com"}) for i in range(4)]
+        ids_b = [repo.create_golden_record({"canonical_name": f"B{i}", "domain": f"b{i}.example.com"}) for i in range(4)]
+        fake = FakeSiteCollector(delay_seconds=0.15)
+        service_a = CollectionService(repo=repo, site_collector=fake)
+        service_b = CollectionService(repo=repo, site_collector=fake)
+
+        threads = (
+            [threading.Thread(target=service_a.collect, args=(sid,)) for sid in ids_a]
+            + [threading.Thread(target=service_b.collect, args=(sid,)) for sid in ids_b]
+        )
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert len(fake.calls) == 8
+        assert fake.max_concurrent <= COLLECTION_MAX_CONCURRENT_BROWSERS

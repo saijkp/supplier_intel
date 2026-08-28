@@ -129,6 +129,30 @@ COLLECTION_MAX_CONCURRENT_JOBS: int = int(os.getenv("COLLECTION_MAX_CONCURRENT_J
 # on a modest Railway plan; see collection/collection_service.py's
 # module docstring for the full reasoning.
 COLLECTION_PARALLEL_WORKERS: int = int(os.getenv("COLLECTION_PARALLEL_WORKERS") or 3)
+# Process-wide cap on concurrent Playwright browser launches, covering
+# EVERY caller of CollectionService._collect_one() -- collect_pending()'s
+# own ThreadPoolExecutor waves (already bounded to
+# COLLECTION_PARALLEL_WORKERS among THEMSELVES), but also
+# batch/batch_service.py's per-row loop (called once per POST
+# /batch/upload request, each running as its own concurrent
+# BackgroundTasks job with no cap between DIFFERENT jobs) and
+# sourcing/sourcing_agent.py's own SOURCING_PARALLEL_WORKERS waves --
+# none of which previously coordinated with each other or with
+# collect_pending() at all. Found live: a real "UK_Facilities" batch-
+# upload retried several times (each retry starting a new concurrent
+# background job, since /batch/upload has no in-flight-job guard) fired
+# 6+ simultaneous real headless Chromium launches, exhausting the
+# container's OS process/file-descriptor table (BlockingIOError: [Errno
+# 11] Resource temporarily unavailable) and cascading into Railway's own
+# per-replica log-rate-limit (500 logs/sec) dropping thousands of
+# messages -- the whole service then intermittently failed to serve ANY
+# request, including a bare GET /health, for several seconds. Default
+# matches COLLECTION_PARALLEL_WORKERS's own already-tuned "modest
+# Railway plan" reasoning rather than inventing a second number --
+# collect_pending() alone can already use the full budget by itself
+# (correct: it should not get MORE headroom just because no other path
+# happens to be running concurrently right now).
+COLLECTION_MAX_CONCURRENT_BROWSERS: int = int(os.getenv("COLLECTION_MAX_CONCURRENT_BROWSERS") or 3)
 
 # --- Sourcing Agent (sourcing/sourcing_agent.py) -------------------------
 # Candidates processed concurrently within one _process_batch() wave --
