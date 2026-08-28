@@ -710,6 +710,17 @@ class TestSupplierCorrectionEndpoint:
         assert job["options"]["domain"] == "aspoeck.com"
         assert job["options"]["canonical_name"] == "Aspoeck Systems"
 
+    def test_flag_reason_passes_through_to_job_options(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Ashpock"})
+        response = client.post(
+            f"/suppliers/{supplier_id}/correct-domain",
+            json={"flag_reason": "duplicate of #123 (Aspoeck Systems, aspoeck.com)"},
+            headers=auth_headers(),
+        )
+        job_id = response.json()["id"]
+        job = client.repo.get_pipeline_job(job_id)
+        assert job["options"]["flag_reason"] == "duplicate of #123 (Aspoeck Systems, aspoeck.com)"
+
 
 class TestBackfillDiscoveryProductKeywordsEndpoint:
 

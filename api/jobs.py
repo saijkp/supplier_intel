@@ -413,8 +413,11 @@ def run_supplier_correction_job(job_id: str, supplier_id: int, options: Dict[str
         from batch.supplier_correction import SupplierCorrectionService
 
         service = SupplierCorrectionService(repo=repo)
+        flag_reason = options.get("flag_reason")
         domain = options.get("domain")
-        if domain:
+        if flag_reason:
+            result = service.flag_duplicate(supplier_id, flag_reason)
+        elif domain:
             result = service.set_confirmed_domain(
                 supplier_id, domain, canonical_name=options.get("canonical_name"), reason=options.get("reason"),
             )

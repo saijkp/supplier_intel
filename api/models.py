@@ -338,13 +338,17 @@ class SupplierCorrectionRequest(BaseModel):
     --clear-domain` / `--set-domain`, since this codebase's production
     database is a SQLite file on a Railway volume and can only be
     corrected from inside the running service itself (see
-    api/jobs.py's run_supplier_correction_job for the full flow). Two
-    modes: omit `domain` for the search-based correct_domain path
-    (clears the wrong value, re-resolves via CompanyWebsiteFinder --
-    for when the domain alone was wrong but the company name is
-    right); pass `domain` for the direct set_confirmed_domain path (no
-    search -- for when the ORIGINAL search term, e.g. the stored name,
-    was itself wrong)."""
+    api/jobs.py's run_supplier_correction_job for the full flow).
+    Three modes, checked in this order: `flag_reason` present -> marks
+    the record excluded (flagged, never deleted -- for a bad record
+    that turns out to be a duplicate of an already-existing real
+    supplier, e.g. after a `domain` attempt below returns
+    "domain_conflict"); else `domain` present -> writes an already-
+    human-verified domain/name directly, no search (for when the
+    ORIGINAL search term, e.g. the stored name, was itself wrong);
+    else -> the search-based correct_domain path (clears the wrong
+    value, re-resolves via CompanyWebsiteFinder -- for when the domain
+    alone was wrong but the company name is right)."""
 
     domain: Optional[str] = Field(
         default=None,
@@ -355,6 +359,12 @@ class SupplierCorrectionRequest(BaseModel):
         default=None,
         description="Only used together with `domain` -- corrects canonical_name too, when the "
                      "original name (not just the domain) was wrong.",
+    )
+    flag_reason: Optional[str] = Field(
+        default=None,
+        description="Marks this record excluded (flagged, never deleted) instead of correcting "
+                     "it -- for a bad record that turns out to be a duplicate of an already-"
+                     "existing real supplier. Takes priority over `domain` if both are given.",
     )
     reason: Optional[str] = Field(
         default=None,

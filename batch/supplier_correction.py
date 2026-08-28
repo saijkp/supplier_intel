@@ -34,6 +34,7 @@ rather than reaching for raw SQL.
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Any, Dict, Optional
 
 from storage.repository import SupplierRepository
@@ -126,7 +127,21 @@ class SupplierCorrectionService:
         Writes both fields directly via
         SupplierRepository.update_supplier_fields_with_history
         (changed_by="manual", auditable exactly like every other write
-        here), then re-collects from the confirmed domain."""
+        here), then re-collects from the confirmed domain.
+
+        `domain` is UNIQUE on `suppliers` -- real case, found live:
+        setting "Ashpock" (a bad duplicate record) to aspoeck.com
+        failed outright, because the REAL Aspoeck Systems already has
+        its own supplier row under that exact domain (unsurprising --
+        trailer lighting is a real product category this platform
+        already scrapes). That's not an error to retry differently,
+        it's proof the bad record IS a duplicate of an
+        already-existing real one -- returned as status
+        "domain_conflict" (naming the existing row, via
+        SupplierRepository.find_by_domain) instead of letting a raw
+        sqlite3.IntegrityError surface as an opaque job failure. See
+        flag_duplicate for the correct next step once that's
+        confirmed."""
         supplier = self.repo.get_supplier(supplier_id)
         if supplier is None:
             raise ValueError(f"No supplier with id={supplier_id}")
@@ -139,9 +154,22 @@ class SupplierCorrectionService:
             fields["canonical_name"] = canonical_name
 
         set_reason = reason or f"manual correction: confirmed correct domain set directly (was {old_domain!r})"
-        self.repo.update_supplier_fields_with_history(
-            supplier_id, fields, changed_by="manual", change_reason=set_reason,
-        )
+        try:
+            self.repo.update_supplier_fields_with_history(
+                supplier_id, fields, changed_by="manual", change_reason=set_reason,
+            )
+        except sqlite3.IntegrityError:
+            existing = self.repo.find_by_domain(domain)
+            existing_desc = (
+                f"#{existing['id']} ({existing.get('canonical_name')!r})" if existing else "another supplier"
+            )
+            return {
+                "supplier_id": supplier_id, "canonical_name": old_name,
+                "status": "domain_conflict", "old_domain": old_domain, "new_domain": None,
+                "reason": f"{domain!r} already belongs to {existing_desc} -- this record is likely "
+                          f"a duplicate; see flag_duplicate rather than forcing the domain",
+                "conflicting_supplier_id": existing["id"] if existing else None,
+            }
         collect_outcome = self.collection_service.collect(supplier_id, source_url=domain)
 
         return {
@@ -150,4 +178,28 @@ class SupplierCorrectionService:
             "status": "set", "old_domain": old_domain, "new_domain": domain,
             "collection_status": collect_outcome.get("status"),
             "pages_visited": collect_outcome.get("pages_visited", 0),
+        }
+
+    def flag_duplicate(self, supplier_id: int, flag_reason: str) -> Dict[str, Any]:
+        """Marks a bad record excluded (CLAUDE.md standing rule 8:
+        excluded suppliers are flagged, never deleted, so they can
+        never silently resurface in a future search/export) -- the
+        correct resolution for a false-match record that turns out to
+        be a duplicate of an already-existing real supplier (see
+        set_confirmed_domain's own "domain_conflict" status: the
+        UNIQUE constraint on suppliers.domain is what surfaces this,
+        found live setting the "Ashpock" record to aspoeck.com when
+        the real Aspoeck Systems already had its own row under that
+        domain)."""
+        supplier = self.repo.get_supplier(supplier_id)
+        if supplier is None:
+            raise ValueError(f"No supplier with id={supplier_id}")
+
+        self.repo.update_supplier_fields_with_history(
+            supplier_id, {"flagged": True, "flag_reason": flag_reason},
+            changed_by="manual", change_reason=flag_reason,
+        )
+        return {
+            "supplier_id": supplier_id, "canonical_name": supplier.get("canonical_name"),
+            "status": "flagged", "flag_reason": flag_reason,
         }

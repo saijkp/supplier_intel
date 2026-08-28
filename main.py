@@ -1161,12 +1161,17 @@ def history(supplier_id: int) -> None:
 @click.option("--set-name", default=None,
               help="Only used with --set-domain -- corrects canonical_name too, when the "
                    "original name (not just the domain) was wrong.")
+@click.option("--flag-duplicate", default=None,
+              help="Mark this record excluded (flagged, never deleted) instead of correcting it "
+                   "-- for a bad record that turns out to be a duplicate of an already-existing "
+                   "real supplier (e.g. --set-domain reported 'domain_conflict'). Pass the reason "
+                   "as the value.")
 @click.option("--reason", default=None,
               help="Why this correction is being made -- recorded on supplier_change_log. "
                    "Defaults to a generic note naming the cleared/old value if omitted.")
 def correct_supplier(
     supplier_id: int, clear_domain: bool, set_domain: Optional[str], set_name: Optional[str],
-    reason: Optional[str],
+    flag_duplicate: Optional[str], reason: Optional[str],
 ) -> None:
     """Reusable fix for a bad supplier record -- e.g. a false-match domain a validation
     gap let through (see scrapers/company_website_finder.py's own corroboration guards).
@@ -1178,18 +1183,21 @@ def correct_supplier(
     same real pipeline every other write in this codebase does (CompanyWebsiteFinder +
     CollectionService) with a supplier_change_log entry, never a hand-applied database
     patch -- see `python main.py history --supplier-id` to review what changed
-    afterward. Specify exactly one of --clear-domain or --set-domain; add another
-    --clear-<field>/--set-<field> following the same shape here for a future bad-record
-    class, rather than reaching for raw SQL again."""
+    afterward. Specify exactly one of --clear-domain, --set-domain, or --flag-duplicate;
+    add another --clear-<field>/--set-<field> following the same shape here for a future
+    bad-record class, rather than reaching for raw SQL again."""
     from batch.supplier_correction import SupplierCorrectionService
 
-    if bool(clear_domain) == bool(set_domain):
-        console.print("[red]X[/red] Specify exactly one of --clear-domain or --set-domain.")
+    modes = [bool(clear_domain), bool(set_domain), bool(flag_duplicate)]
+    if sum(modes) != 1:
+        console.print("[red]X[/red] Specify exactly one of --clear-domain, --set-domain, or --flag-duplicate.")
         raise SystemExit(1)
 
     service = SupplierCorrectionService()
     try:
-        if set_domain:
+        if flag_duplicate:
+            result = service.flag_duplicate(supplier_id, flag_duplicate)
+        elif set_domain:
             console.print("[bold]Setting confirmed domain directly...[/bold] (no search)")
             result = service.set_confirmed_domain(supplier_id, set_domain, canonical_name=set_name, reason=reason)
         else:
@@ -1200,12 +1208,18 @@ def correct_supplier(
         console.print(f"[red]X[/red] {e}")
         raise SystemExit(1)
 
-    console.print(f"[bold]Supplier #{supplier_id}[/bold]: {result['canonical_name']!r} "
-                   f"(was: {result['old_domain']!r})")
+    console.print(f"[bold]Supplier #{supplier_id}[/bold]: {result['canonical_name']!r}")
+    if result["status"] == "flagged":
+        console.print(f"[green]OK[/green] Flagged excluded: {result['flag_reason']}")
+        return
+    console.print(f"(was domain: {result['old_domain']!r})")
     if result["status"] == "needs_url":
         console.print(f"[yellow]![/yellow] No validated replacement found ({result['reason']}). "
                        f"Left with no domain -- re-run `python main.py find-websites` later, "
                        f"or set the correct domain manually once you have it.")
+        return
+    if result["status"] == "domain_conflict":
+        console.print(f"[yellow]![/yellow] {result['reason']}")
         return
 
     console.print(f"[green]OK[/green] Domain set: {result['new_domain']}")

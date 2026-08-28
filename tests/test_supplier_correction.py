@@ -175,3 +175,52 @@ class TestSetConfirmedDomain:
         )
         with pytest.raises(ValueError):
             service.set_confirmed_domain(999999, "example.com")
+
+    def test_domain_already_claimed_by_another_supplier_is_reported_not_raised(self, repo):
+        """Real case, found live: setting the bad "Ashpock" record's
+        domain to aspoeck.com failed outright, because the REAL
+        Aspoeck Systems already had its own supplier row under that
+        exact domain (suppliers.domain is UNIQUE) -- proof the bad
+        record is a duplicate, not a retry-differently error. Must
+        surface this cleanly (naming the existing row), not let a raw
+        sqlite3.IntegrityError bubble up as an opaque failure."""
+        real_id = repo.create_golden_record({"canonical_name": "Aspoeck Systems", "domain": "aspoeck.com"})
+        bad_id = repo.create_golden_record({"canonical_name": "Ashpock", "domain": "shpock.com"})
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+
+        result = service.set_confirmed_domain(bad_id, "aspoeck.com")
+
+        assert result["status"] == "domain_conflict"
+        assert result["new_domain"] is None
+        assert result["conflicting_supplier_id"] == real_id
+        assert "Aspoeck Systems" in result["reason"]
+        # the bad record's own domain is untouched -- still the old wrong value, not silently cleared
+        assert repo.get_supplier(bad_id)["domain"] == "shpock.com"
+
+
+class TestFlagDuplicate:
+
+    def test_flags_the_record_and_logs_the_reason(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Ashpock"})
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+
+        result = service.flag_duplicate(supplier_id, "duplicate of #123 (Aspoeck Systems, aspoeck.com)")
+
+        assert result["status"] == "flagged"
+        supplier = repo.get_supplier(supplier_id)
+        assert supplier["flagged"] == 1
+        assert supplier["flag_reason"] == "duplicate of #123 (Aspoeck Systems, aspoeck.com)"
+
+        log = repo.get_supplier_change_log(supplier_id)
+        assert any(entry["field_name"] == "flagged" for entry in log)
+
+    def test_raises_on_missing_supplier(self, repo):
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+        with pytest.raises(ValueError):
+            service.flag_duplicate(999999, "x")
