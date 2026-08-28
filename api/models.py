@@ -335,15 +335,31 @@ class SingleCompanyEnrichRequest(BaseModel):
 class SupplierCorrectionRequest(BaseModel):
     """Triggers batch.supplier_correction.SupplierCorrectionService --
     the HTTP equivalent of `python main.py correct-supplier <id>
-    --clear-domain`, since this codebase's production database is a
-    SQLite file on a Railway volume and can only be corrected from
-    inside the running service itself (see api/jobs.py's
-    run_supplier_correction_job for the full flow)."""
+    --clear-domain` / `--set-domain`, since this codebase's production
+    database is a SQLite file on a Railway volume and can only be
+    corrected from inside the running service itself (see
+    api/jobs.py's run_supplier_correction_job for the full flow). Two
+    modes: omit `domain` for the search-based correct_domain path
+    (clears the wrong value, re-resolves via CompanyWebsiteFinder --
+    for when the domain alone was wrong but the company name is
+    right); pass `domain` for the direct set_confirmed_domain path (no
+    search -- for when the ORIGINAL search term, e.g. the stored name,
+    was itself wrong)."""
 
+    domain: Optional[str] = Field(
+        default=None,
+        description="An ALREADY-human-verified domain to write directly, no search. Omit to use "
+                     "the search-based correction instead.",
+    )
+    canonical_name: Optional[str] = Field(
+        default=None,
+        description="Only used together with `domain` -- corrects canonical_name too, when the "
+                     "original name (not just the domain) was wrong.",
+    )
     reason: Optional[str] = Field(
         default=None,
         description="Why this correction is being made -- recorded on supplier_change_log. "
-                     "Defaults to a generic note naming the cleared value if omitted.",
+                     "Defaults to a generic note naming the cleared/old value if omitted.",
     )
 
 

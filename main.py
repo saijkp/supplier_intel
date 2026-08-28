@@ -1151,11 +1151,23 @@ def history(supplier_id: int) -> None:
                    "(scrapers.company_website_finder.CompanyWebsiteFinder), and re-collect from "
                    "the corrected site if one validates. Costs one paid SerpAPI call, plus a "
                    "small OpenAI call if a candidate site is found and needs the grounded-name "
-                   "corroboration check.")
+                   "corroboration check. Wrong tool if the ORIGINAL search term (company name) "
+                   "was itself wrong -- use --set-domain instead.")
+@click.option("--set-domain", default=None,
+              help="Write an ALREADY-human-verified domain directly, no search -- for when the "
+                   "original search term was itself wrong (a fresh search under the same wrong "
+                   "name just re-surfaces the same wrong candidate, or nothing). Combine with "
+                   "--set-name to correct the stored name too.")
+@click.option("--set-name", default=None,
+              help="Only used with --set-domain -- corrects canonical_name too, when the "
+                   "original name (not just the domain) was wrong.")
 @click.option("--reason", default=None,
               help="Why this correction is being made -- recorded on supplier_change_log. "
-                   "Defaults to a generic note naming the cleared value if omitted.")
-def correct_supplier(supplier_id: int, clear_domain: bool, reason: Optional[str]) -> None:
+                   "Defaults to a generic note naming the cleared/old value if omitted.")
+def correct_supplier(
+    supplier_id: int, clear_domain: bool, set_domain: Optional[str], set_name: Optional[str],
+    reason: Optional[str],
+) -> None:
     """Reusable fix for a bad supplier record -- e.g. a false-match domain a validation
     gap let through (see scrapers/company_website_finder.py's own corroboration guards).
     Business logic lives in batch/supplier_correction.py's SupplierCorrectionService,
@@ -1166,20 +1178,24 @@ def correct_supplier(supplier_id: int, clear_domain: bool, reason: Optional[str]
     same real pipeline every other write in this codebase does (CompanyWebsiteFinder +
     CollectionService) with a supplier_change_log entry, never a hand-applied database
     patch -- see `python main.py history --supplier-id` to review what changed
-    afterward. Currently supports --clear-domain only; add another --clear-<field>
-    following the same shape here for a future bad-record class, rather than reaching
-    for raw SQL again."""
+    afterward. Specify exactly one of --clear-domain or --set-domain; add another
+    --clear-<field>/--set-<field> following the same shape here for a future bad-record
+    class, rather than reaching for raw SQL again."""
     from batch.supplier_correction import SupplierCorrectionService
 
-    if not clear_domain:
-        console.print("[red]X[/red] Specify a correction to make, e.g. --clear-domain.")
+    if bool(clear_domain) == bool(set_domain):
+        console.print("[red]X[/red] Specify exactly one of --clear-domain or --set-domain.")
         raise SystemExit(1)
 
     service = SupplierCorrectionService()
     try:
-        console.print("[bold]Correcting...[/bold] (1 SerpAPI call, +1 OpenAI call if a candidate "
-                       "site needs grounded-name verification)")
-        result = service.correct_domain(supplier_id, reason=reason)
+        if set_domain:
+            console.print("[bold]Setting confirmed domain directly...[/bold] (no search)")
+            result = service.set_confirmed_domain(supplier_id, set_domain, canonical_name=set_name, reason=reason)
+        else:
+            console.print("[bold]Correcting...[/bold] (1 SerpAPI call, +1 OpenAI call if a candidate "
+                           "site needs grounded-name verification)")
+            result = service.correct_domain(supplier_id, reason=reason)
     except ValueError as e:
         console.print(f"[red]X[/red] {e}")
         raise SystemExit(1)
@@ -1192,7 +1208,7 @@ def correct_supplier(supplier_id: int, clear_domain: bool, reason: Optional[str]
                        f"or set the correct domain manually once you have it.")
         return
 
-    console.print(f"[green]OK[/green] Resolved and validated new domain: {result['new_domain']}")
+    console.print(f"[green]OK[/green] Domain set: {result['new_domain']}")
     console.print(f"[green]OK[/green] Re-collected: {result['collection_status']} "
                    f"({result['pages_visited']} page(s) visited).")
 

@@ -443,14 +443,17 @@ def create_supplier_correction_job(
     repo: SupplierRepository = Depends(get_repo),
 ) -> PipelineJobResponse:
     """The HTTP equivalent of `python main.py correct-supplier
-    <supplier_id> --clear-domain` -- this codebase's production
-    database is a SQLite file on a Railway volume, not network-
-    reachable, so an already-deployed bad record (e.g. a false-match
-    domain scrapers/company_website_finder.py's own corroboration
-    guards later closed) can only be corrected over HTTP, through the
-    running service itself. Same async job/poll pattern as every other
-    job endpoint -- see api/jobs.py's run_supplier_correction_job for
-    the full flow. 404 if the supplier doesn't exist."""
+    <supplier_id> --clear-domain` / `--set-domain` -- this codebase's
+    production database is a SQLite file on a Railway volume, not
+    network-reachable, so an already-deployed bad record (e.g. a
+    false-match domain scrapers/company_website_finder.py's own
+    corroboration guards later closed) can only be corrected over
+    HTTP, through the running service itself. Omit `domain` in the
+    request body for the search-based correction; pass it for a
+    direct, already-verified set (see SupplierCorrectionRequest's own
+    docstring). Same async job/poll pattern as every other job
+    endpoint -- see api/jobs.py's run_supplier_correction_job for the
+    full flow. 404 if the supplier doesn't exist."""
     if repo.get_supplier(supplier_id) is None:
         raise HTTPException(status_code=404, detail="Supplier not found")
     job_id = str(uuid.uuid4())

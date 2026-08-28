@@ -21,9 +21,15 @@ only ever run against a database on the SAME filesystem it's invoked
 from, so an already-deployed bad record can only be corrected over
 HTTP, through the running service itself.
 
-Currently supports clearing+re-resolving `domain` only; add another
-`correct_<field>` method here for a future bad-record class, following
-the same shape, rather than reaching for raw SQL.
+Two correction modes: `correct_domain` clears a wrong value and
+re-resolves it via search (CompanyWebsiteFinder) -- for when the
+domain alone was wrong but the search term (company name) is right.
+`set_confirmed_domain` writes an already-human-verified domain/name
+directly, no search -- for when the ORIGINAL search term was itself
+wrong (a fresh search under the same wrong name just re-surfaces the
+same wrong candidate). Add another `correct_<field>`/`set_<field>`
+method here for a future bad-record class, following the same shape,
+rather than reaching for raw SQL.
 """
 
 from __future__ import annotations
@@ -101,6 +107,47 @@ class SupplierCorrectionService:
             "supplier_id": supplier_id, "canonical_name": canonical_name,
             "status": "resolved", "old_domain": old_domain, "new_domain": finding.domain,
             "cleared": cleared, "reason": finding.reason,
+            "collection_status": collect_outcome.get("status"),
+            "pages_visited": collect_outcome.get("pages_visited", 0),
+        }
+
+    def set_confirmed_domain(
+        self, supplier_id: int, domain: str, canonical_name: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """For when a human has ALREADY confirmed the correct domain
+        (and optionally the correct name) directly -- correct_domain's
+        own search-based re-resolution is the wrong tool here: the
+        ORIGINAL search term can itself be wrong (real case: "Ashpock"
+        was a misspelling of "Aspock"/"Aspoeck" -- re-searching the
+        same wrong name just re-surfaces the same wrong candidate, or
+        nothing at all), so a fresh search adds cost and risk for no
+        benefit once a human has already done the real verification.
+        Writes both fields directly via
+        SupplierRepository.update_supplier_fields_with_history
+        (changed_by="manual", auditable exactly like every other write
+        here), then re-collects from the confirmed domain."""
+        supplier = self.repo.get_supplier(supplier_id)
+        if supplier is None:
+            raise ValueError(f"No supplier with id={supplier_id}")
+
+        old_domain = supplier.get("domain")
+        old_name = supplier.get("canonical_name")
+
+        fields: Dict[str, Any] = {"domain": domain}
+        if canonical_name and canonical_name != old_name:
+            fields["canonical_name"] = canonical_name
+
+        set_reason = reason or f"manual correction: confirmed correct domain set directly (was {old_domain!r})"
+        self.repo.update_supplier_fields_with_history(
+            supplier_id, fields, changed_by="manual", change_reason=set_reason,
+        )
+        collect_outcome = self.collection_service.collect(supplier_id, source_url=domain)
+
+        return {
+            "supplier_id": supplier_id,
+            "canonical_name": canonical_name or old_name, "old_canonical_name": old_name,
+            "status": "set", "old_domain": old_domain, "new_domain": domain,
             "collection_status": collect_outcome.get("status"),
             "pages_visited": collect_outcome.get("pages_visited", 0),
         }

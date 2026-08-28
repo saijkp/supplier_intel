@@ -125,3 +125,53 @@ class TestCorrectDomain:
 
         log = repo.get_supplier_change_log(supplier_id)
         assert "shpock.com" in log[0]["change_reason"]
+
+
+class TestSetConfirmedDomain:
+    """Real case: "Ashpock" was itself a misspelling of "Aspock"/
+    "Aspoeck" -- correct_domain's search-based re-resolution kept
+    failing because it was searching the WRONG name, not because the
+    domain-matching logic was broken. set_confirmed_domain writes an
+    already-human-verified answer directly, no search."""
+
+    def test_sets_domain_and_name_directly_no_search(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Ashpock", "domain": "shpock.com"})
+        finder = FakeWebsiteFinder()  # never called -- no search in this path
+        collection = FakeCollectionService(outcome={"status": "success", "pages_visited": 2})
+        service = SupplierCorrectionService(repo=repo, website_finder=finder, collection_service=collection)
+
+        result = service.set_confirmed_domain(
+            supplier_id, "aspoeck.com", canonical_name="Aspoeck Systems",
+            reason="original name was a misspelling",
+        )
+
+        assert result["status"] == "set"
+        assert result["old_domain"] == "shpock.com"
+        assert result["new_domain"] == "aspoeck.com"
+        assert result["old_canonical_name"] == "Ashpock"
+        assert result["canonical_name"] == "Aspoeck Systems"
+        assert finder.calls == []
+
+        supplier = repo.get_supplier(supplier_id)
+        assert supplier["domain"] == "aspoeck.com"
+        assert supplier["canonical_name"] == "Aspoeck Systems"
+        assert collection.calls == [(supplier_id, "aspoeck.com")]
+
+    def test_name_is_optional(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "IK Eng Ltd", "domain": "easydigitalfiling.com"})
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+
+        result = service.set_confirmed_domain(supplier_id, "ikeng.co.uk")
+
+        assert result["canonical_name"] == "IK Eng Ltd"  # unchanged
+        assert repo.get_supplier(supplier_id)["canonical_name"] == "IK Eng Ltd"
+        assert repo.get_supplier(supplier_id)["domain"] == "ikeng.co.uk"
+
+    def test_raises_on_missing_supplier(self, repo):
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+        with pytest.raises(ValueError):
+            service.set_confirmed_domain(999999, "example.com")

@@ -698,6 +698,18 @@ class TestSupplierCorrectionEndpoint:
         response = client.post(f"/suppliers/{supplier_id}/correct-domain", json={})
         assert response.status_code == 401
 
+    def test_domain_and_canonical_name_pass_through_to_job_options(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Ashpock", "domain": "shpock.com"})
+        response = client.post(
+            f"/suppliers/{supplier_id}/correct-domain",
+            json={"domain": "aspoeck.com", "canonical_name": "Aspoeck Systems"},
+            headers=auth_headers(),
+        )
+        job_id = response.json()["id"]
+        job = client.repo.get_pipeline_job(job_id)
+        assert job["options"]["domain"] == "aspoeck.com"
+        assert job["options"]["canonical_name"] == "Aspoeck Systems"
+
 
 class TestBackfillDiscoveryProductKeywordsEndpoint:
 

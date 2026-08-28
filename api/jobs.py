@@ -413,7 +413,13 @@ def run_supplier_correction_job(job_id: str, supplier_id: int, options: Dict[str
         from batch.supplier_correction import SupplierCorrectionService
 
         service = SupplierCorrectionService(repo=repo)
-        result = service.correct_domain(supplier_id, reason=options.get("reason"))
+        domain = options.get("domain")
+        if domain:
+            result = service.set_confirmed_domain(
+                supplier_id, domain, canonical_name=options.get("canonical_name"), reason=options.get("reason"),
+            )
+        else:
+            result = service.correct_domain(supplier_id, reason=options.get("reason"))
         repo.mark_pipeline_job_completed(job_id, stats=result)
     except ValueError as e:
         repo.mark_pipeline_job_failed(job_id, error=str(e))
