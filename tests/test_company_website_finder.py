@@ -33,6 +33,22 @@ class FakeGoogleScraper:
         return self._results
 
 
+class FakeLLMClient:
+    """Same shape as tests/test_discovery_candidate_validator.py's own
+    fake -- `response` is whatever complete_json should return this
+    call (a dict, or None to simulate "found nothing stated" / a
+    failed call, since llm.client.LLMClient.complete_json() never
+    raises, only returns None on failure)."""
+
+    def __init__(self, response=None):
+        self._response = response
+        self.calls = []
+
+    def complete_json(self, system_prompt, user_prompt, **kwargs):
+        self.calls.append((system_prompt, user_prompt))
+        return self._response
+
+
 class FakeOwnWebsiteScraper:
     def __init__(self, result_by_domain=None):
         self._by_domain = result_by_domain or {}
@@ -259,4 +275,103 @@ class TestThresholdIsConfigurable:
             min_name_similarity=10.0,
         )
         result = finder.find_website("Acme Trailer Parts Manufacturing Company")
+        assert result.validated is True
+
+
+class TestGroundedMatchGuards:
+    """Two real false matches confirmed live in production, both from
+    the SAME underlying gap: fuzz.partial_ratio against raw page text
+    has no concept of "is this actually the company's own site," only
+    "does something on this page look similar." Fixed with two
+    additional, independent gates -- see find_website's own inline
+    comments for the exact live cases."""
+
+    def test_ashpock_shpock_false_match_is_now_rejected(self):
+        """Real case: "Ashpock" (intended: Aspock/Aspoeck, the trailer-
+        lighting manufacturer) resolved to shpock.com (Shpock, an
+        unrelated classifieds app) -- fuzz.partial_ratio scores this
+        highly because "shpock" aligns as a near-perfect substring of
+        "ashpock". The distinctive-token guard rejects it: the literal
+        word "ashpock" never appears anywhere on shpock.com's page."""
+        finder = _finder(
+            [FakeSearchResult("https://shpock.com/")],
+            {"shpock.com": "Shpock is the marketplace app for buying and selling locally."},
+            min_name_similarity=10.0,  # isolate the distinctive-token gate, not the score gate
+        )
+        result = finder.find_website("Ashpock")
+        assert result.validated is False
+        assert "distinctive name" in result.reason
+
+    def test_legitimate_match_still_passes_the_distinctive_token_guard(self):
+        """The real company's own site literally says its name --
+        the guard must not become a blanket rejection."""
+        finder = _finder(
+            [FakeSearchResult("https://aspoeck.com/")],
+            {"aspoeck.com": "Welcome to Aspoeck Systems -- trailer lighting since 1958."},
+            llm_client=FakeLLMClient(response={"company_name": "Aspoeck Systems", "country": None}),
+        )
+        result = finder.find_website("Aspoeck")
+        assert result.validated is True
+
+    def test_ik_eng_third_party_mention_is_now_rejected(self):
+        """Real case: "IK Eng Ltd" resolved to easydigitalfiling.com, a
+        UK company-formation/filing agent's site that merely lists the
+        name among its client records. "IK Eng Ltd" has no word >=4
+        characters once "Ltd" is stripped, so the distinctive-token
+        guard alone has no signal to reject on (same "insufficient
+        signal, don't invent a rejection" rule as everywhere else) --
+        this needs the grounded-extraction gate: the LLM reads the
+        page's own stated identity (footer/copyright), which is the
+        filing agent's name, not the searched company's."""
+        finder = _finder(
+            [FakeSearchResult("https://easydigitalfiling.com/")],
+            {"easydigitalfiling.com": "IK Eng Ltd -- company formation completed. "
+                                      "(c) Easy Digital Filing Ltd, a UK company formation agent."},
+            llm_client=FakeLLMClient(response={"company_name": "Easy Digital Filing Ltd", "country": "United Kingdom"}),
+        )
+        result = finder.find_website("IK Eng Ltd")
+        assert result.validated is False
+        assert "does not corroborate" in result.reason
+
+    def test_ik_eng_real_site_still_validates(self):
+        """The real ikeng.co.uk site states its own name in the
+        footer -- the grounded extraction corroborates it even though
+        "IK Eng Ltd" has no >=4-character distinctive word (this is
+        exactly names_plausibly_corroborate's short-name ratio
+        fallback, not the token-overlap path)."""
+        finder = _finder(
+            [FakeSearchResult("https://ikeng.co.uk/")],
+            {"ikeng.co.uk": "Precision engineering services. (c) IK Eng Ltd, registered in England."},
+            llm_client=FakeLLMClient(response={"company_name": "IK Eng Ltd", "country": "United Kingdom"}),
+        )
+        result = finder.find_website("IK Eng Ltd")
+        assert result.validated is True
+
+    def test_grounded_extraction_finding_nothing_does_not_reject(self):
+        """Many real product-catalogue homepages never state the
+        company name at all in the first ~8,000 characters -- absence
+        of a grounded extraction must not undo a fuzzy/distinctive-
+        token match that already passed on real evidence."""
+        finder = _finder(
+            [FakeSearchResult("https://acme-trailer.com/")],
+            {"acme-trailer.com": "Welcome to Acme Trailer Parts Co., Ltd. -- est. 1998"},
+            llm_client=FakeLLMClient(response={"company_name": None, "country": None}),
+        )
+        result = finder.find_website("Acme Trailer Parts Co., Ltd.")
+        assert result.validated is True
+
+    def test_grounded_extraction_call_failure_does_not_reject(self):
+        """llm.client.LLMClient.complete_json() never raises by
+        contract, but this module must not depend on that -- a raising
+        fake still must not cost a real, already-passing match."""
+        class RaisingLLMClient:
+            def complete_json(self, *args, **kwargs):
+                raise RuntimeError("simulated transient failure")
+
+        finder = _finder(
+            [FakeSearchResult("https://acme-trailer.com/")],
+            {"acme-trailer.com": "Welcome to Acme Trailer Parts Co., Ltd. -- est. 1998"},
+            llm_client=RaisingLLMClient(),
+        )
+        result = finder.find_website("Acme Trailer Parts Co., Ltd.")
         assert result.validated is True

@@ -57,13 +57,22 @@ check is pure string matching.
 from __future__ import annotations
 
 import dataclasses
+import logging
 from typing import Any, Optional
 
 import tldextract
 from rapidfuzz import fuzz
 
 from deduplication.domain_utils import extract_domain, is_platform_subdomain
-from deduplication.name_utils import normalise_company_name
+from deduplication.name_utils import (
+    _shares_distinctive_token,
+    names_plausibly_corroborate,
+    normalise_company_name,
+)
+from llm.client import LLMClient
+from llm.prompts import GROUNDED_COMPANY_NAME_EXTRACTION_SYSTEM_PROMPT
+
+logger = logging.getLogger(__name__)
 
 # Non-platform domains that are still never a company's own site --
 # social networks, general business directories, and reference sites
@@ -184,10 +193,16 @@ class CompanyWebsiteFinder:
         google_scraper: Any,
         own_website_scraper: Any,
         min_name_similarity: float = _DEFAULT_MIN_NAME_SIMILARITY,
+        llm_client: Optional[LLMClient] = None,
     ):
         self.google_scraper = google_scraper
         self.own_website_scraper = own_website_scraper
         self.min_name_similarity = min_name_similarity
+        # Defaulted (never requires OPENAI_API_KEY to construct, same
+        # contract as discovery.candidate_validator.CandidateValidator's
+        # own llm_client -- see _corroborates_via_grounded_extraction's
+        # own docstring for what this is used for).
+        self.llm_client = llm_client or LLMClient()
 
     def find_website(self, company_name: str, country: Optional[str] = None) -> WebsiteFindingResult:
         if not company_name or not company_name.strip():
@@ -243,19 +258,96 @@ class CompanyWebsiteFinder:
         # sides case-insensitive) without mangling page content that
         # was never a company name to begin with.
         normalised_name = normalise_company_name(company_name)
-        page_text_lower = fetch_result.pages[0].text[:_VALIDATION_TEXT_CHARS].lower()
+        page_text = fetch_result.pages[0].text[:_VALIDATION_TEXT_CHARS]
+        page_text_lower = page_text.lower()
         score = fuzz.partial_ratio(normalised_name, page_text_lower)
 
-        if score >= self.min_name_similarity:
+        if score < self.min_name_similarity:
             return WebsiteFindingResult(
-                company_name=company_name, domain=candidate_domain, validated=True,
+                company_name=company_name, domain=None, validated=False,
                 candidate_url=candidate_url, name_match_score=score,
-                reason=f"company name matched candidate site text (score={score:.0f})",
+                reason=f"candidate site found but name match too weak "
+                       f"(score={score:.0f} < threshold {self.min_name_similarity:.0f})",
+            )
+
+        # Real false match, confirmed live: searching "Ashpock" (the
+        # real trailer-lighting manufacturer is "Aspock"/"Aspöck")
+        # resolved to shpock.com (Shpock, an unrelated classifieds
+        # app) -- fuzz.partial_ratio("ashpock", "...shpock...") scores
+        # ~92 because "shpock" aligns as a near-perfect SUBSTRING of
+        # "ashpock", the exact blind spot partial_ratio has (it only
+        # rewards the best local alignment, never penalises the rest
+        # of either string). _shares_distinctive_token doesn't have
+        # that blind spot -- "ashpock" and "shpock" are different exact
+        # word-tokens, so they share none, and the page text is long
+        # enough that this is checking "does the literal word
+        # 'ashpock' appear anywhere on the page", not a fuzzy
+        # approximation of it.
+        if not _shares_distinctive_token(normalised_name, page_text_lower):
+            return WebsiteFindingResult(
+                company_name=company_name, domain=None, validated=False,
+                candidate_url=candidate_url, name_match_score=score,
+                reason=f"candidate site text fuzzy-matched (score={score:.0f}) but never "
+                       f"actually says the company's own distinctive name -- likely a "
+                       f"near-miss on an unrelated site's name",
+            )
+
+        if not self._corroborated_by_grounded_extraction(company_name, page_text):
+            return WebsiteFindingResult(
+                company_name=company_name, domain=None, validated=False,
+                candidate_url=candidate_url, name_match_score=score,
+                reason="page's own self-stated name (heading/footer/copyright) does not "
+                       "corroborate the searched company -- likely a third-party page "
+                       "that merely mentions the company (e.g. a directory or filing-agent "
+                       "record), not the company's own site",
             )
 
         return WebsiteFindingResult(
-            company_name=company_name, domain=None, validated=False,
+            company_name=company_name, domain=candidate_domain, validated=True,
             candidate_url=candidate_url, name_match_score=score,
-            reason=f"candidate site found but name match too weak "
-                   f"(score={score:.0f} < threshold {self.min_name_similarity:.0f})",
+            reason=f"company name matched candidate site text (score={score:.0f})",
         )
+
+    def _corroborated_by_grounded_extraction(self, company_name: str, page_text: str) -> bool:
+        """Real false match, confirmed live: searching "IK Eng Ltd"
+        resolved to easydigitalfiling.com (a UK company-formation/
+        filing agent's site that merely lists client names, not "IK
+        Eng"'s own site) -- the page-text/distinctive-token checks
+        above can't catch this class at all, because "IK Eng Ltd" has
+        no word >=4 characters once "Ltd" is stripped
+        (_shares_distinctive_token's own "insufficient signal, don't
+        reject" rule then lets ANY page through). This asks the same
+        grounded question discovery.candidate_validator's gate 4 asks
+        of a discovery candidate -- whose name does this page actually
+        claim to be, per its own heading/footer/copyright, not merely
+        mention in passing -- via the identical prompt, then compares
+        that against `company_name` with
+        deduplication.name_utils.names_plausibly_corroborate (handles
+        the "IK Eng Ltd"-style short-name gap the check above can't).
+
+        Absence of a clean extraction (LLM found no stated name, or
+        the call itself failed/returned no key -- LLMClient.
+        complete_json() never raises, only returns None) is treated as
+        insufficient signal, not a rejection -- same discipline as
+        every other gate in this codebase: many real product-catalogue
+        homepages never state the company name in the first ~8,000
+        characters at all, and the fuzzy/distinctive-token checks
+        already run are real evidence on their own that shouldn't be
+        thrown out just because this extra check found nothing either
+        way."""
+        try:
+            extracted = self.llm_client.complete_json(
+                GROUNDED_COMPANY_NAME_EXTRACTION_SYSTEM_PROMPT,
+                f"Website page content:\n\n{page_text[:20_000]}",
+            )
+        except Exception as e:
+            logger.warning("company_website_finder: grounded-name extraction failed: %s", e)
+            return True
+
+        if not isinstance(extracted, dict):
+            return True
+        extracted_name = extracted.get("company_name")
+        if not isinstance(extracted_name, str) or not extracted_name.strip():
+            return True
+
+        return names_plausibly_corroborate(company_name, extracted_name.strip())

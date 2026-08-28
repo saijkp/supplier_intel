@@ -262,6 +262,44 @@ class TestMentionsProductTerm:
         )
         assert not _mentions_product_term("We manufacture wheel bearings.", "trailer axle")
 
+    def test_metal_jacks_propstand_prop_vocabulary_matches(self):
+        """Real case: Nice Steel (nicesteel.shop) and Baolai
+        (baolaisteel.com) both sell "adjustable props"/"steel prop
+        jack" but never the compound phrase "metal jacks and
+        propstand" verbatim."""
+        assert _mentions_product_term(
+            "Reliable adjustable props for supporting slabs and beams during construction safely.",
+            "metal jacks and propstand",
+        )
+        assert _mentions_product_term(
+            "Steel Prop Jack -- one-stop production and processing for steel structures.",
+            "metal jacks and propstand",
+        )
+
+    def test_metal_jacks_propstand_bare_jack_vocabulary_matches(self):
+        """Real case: ARES Scaffolding and ACE Aluminium Scaffolding
+        sell base/levelling/universal jacks and never say "prop"
+        anywhere on their site."""
+        assert _mentions_product_term(
+            "Also known as Levelling Jack. The pipe is of Hot Rolled Steel as per BS-1139 Standard.",
+            "metal jacks and propstand",
+        )
+
+    def test_metal_jacks_propstand_prop_and_jack_and_pairing_matches(self):
+        """A page using both words but not one of the fixed multi-word
+        phrases (e.g. neither "prop jack" nor "propstand" verbatim)
+        still matches via the ("prop", "jack") AND pair."""
+        assert _mentions_product_term(
+            "We sell both prop and jack accessories to contractors nationwide.",
+            "metal jacks and propstand",
+        )
+
+    def test_metal_jacks_propstand_unrelated_page_still_rejected(self):
+        assert not _mentions_product_term(
+            "We manufacture air suspension solutions for trailers, trucks and buses.",
+            "metal jacks and propstand",
+        )
+
 
 class TestValidateEndToEndWithLoosenedTermMatching:
 

@@ -90,9 +90,14 @@ from deduplication.domain_utils import (
     extract_domain,
     is_platform_subdomain,
 )
-from deduplication.name_utils import normalise_company_name
+from deduplication.name_utils import (
+    _distinctive_tokens,
+    _shares_distinctive_token,
+    normalise_company_name,
+)
 from discovery.candidate_extractor import Candidate
 from llm.client import LLMClient
+from llm.prompts import GROUNDED_COMPANY_NAME_EXTRACTION_SYSTEM_PROMPT
 from verification.uk_company_verification_service import match_company_name_against_companies_house
 
 logger = logging.getLogger(__name__)
@@ -253,8 +258,27 @@ _SPELLING_VARIANTS: tuple = (("mould", "mold"),)
 # compound phrase verbatim, the same "no real company repeats the
 # exact query phrasing" pattern _TRAILING_QUALIFIERS already
 # established for a trailing role word, just for an interior word here.
+# A candidate entry's value can mix bare strings (any one is a match on
+# its own) with tuples (every term in the tuple must be present -- an
+# AND, for a case where no single loose term is distinctive enough by
+# itself). Real case: "metal jacks and propstand" candidates split into
+# two vocabularies that are never written together -- "prop"-family
+# wording (adjustable prop, scaffolding prop, prop jack) on formwork/
+# scaffolding-props sites (nicesteel.shop, baolaisteel.com,
+# wm-scaffold.com, lianggongformwork.com), and bare "jack" wording
+# (base jack, levelling jack, universal jack) on scaffolding-hardware
+# sites that never say "prop" at all (aresscaffolding.com,
+# acescaffolduae.com) -- the ("prop", "jack") tuple exists for a page
+# that uses both words but never as one of the fixed multi-word phrases
+# above (e.g. "prop and jack sales"), not for the bare-"jack"-only
+# sites, which match on "metal jack"/"steel jack" instead.
 _PRODUCT_TERM_SYNONYM_PHRASES: dict = {
     "material handling equipment": ("material handling", "handling equipment"),
+    "metal jacks and propstand": (
+        "prop jack", "propstand", "prop stand", "adjustable prop", "scaffolding prop",
+        "metal jack", "steel jack", "levelling jack", "leveling jack", "base jack",
+        ("prop", "jack"),
+    ),
 }
 
 
@@ -285,59 +309,19 @@ _UK_PREFILTER_MATCH_THRESHOLD = _NAME_MATCH_THRESHOLD
 # ("apadrecoplastics" is one mashed token; "adreco"/"plastics" are
 # two, neither equal to it), while genuine variants keep at least one
 # shared distinctive word.
-_GENERIC_NAME_WORDS = frozenset({
-    "ltd", "limited", "inc", "incorporated", "llc", "co", "company",
-    "corp", "corporation", "group", "plc", "gmbh", "holdings",
-    "international", "the", "and",
-    # Industry-vocabulary, not legal suffixes -- same failure MODE as
-    # the corporate suffixes above (a word so common within one product
-    # category that sharing it proves nothing), found live in a second
-    # real false match: recovering "Ability Handling" (a dead domain)
-    # matched onto the real site of "Grant Handling" -- a completely
-    # unrelated company -- because both names include "Handling", which
-    # _shares_distinctive_token treated as proof of identity since it
-    # wasn't on this list yet. A 2+-shared-words requirement was
-    # considered and rejected as the general fix instead of a stoplist:
-    # it would have regressed the ALREADY-passing "Beta Bearings Ltd"
-    # vs "Beta Bearing Ltd" near-miss case above (verified empirically
-    # -- those two names share exactly ONE distinctive word, "beta",
-    # since "bearings"/"bearing" don't stem-match as exact tokens), so
-    # it trades one false-accept risk for a guaranteed false-reject on
-    # a case already proven to matter. Curated, not exhaustive --
-    # extended as a real collision is found, same discipline as
-    # _SPELLING_VARIANTS/_TRADER_SELF_DECLARATION_PHRASES elsewhere in
-    # this module. Confirmed via the real Lift Truck category dataset
-    # that produced the Ability/Grant Handling collision: "handling",
-    # "forklift(s)", "truck(s)", "lift(s)" and "equipment" all recur
-    # across multiple DISTINCT real companies; "plant"/"machinery"/
-    # "material(s)" likewise. Plurals listed separately -- this
-    # tokeniser does no stemming, so "forklift" and "forklifts" are
-    # different tokens.
-    "handling", "forklift", "forklifts", "truck", "trucks", "lift", "lifts",
-    "equipment", "plant", "machinery", "material", "materials",
-})
+#
+# _GENERIC_NAME_WORDS/_distinctive_tokens/_shares_distinctive_token now
+# live in deduplication/name_utils.py (imported above) so
+# scrapers/company_website_finder.py can reuse the exact same
+# discipline instead of reimplementing it -- see that module's own
+# names_plausibly_corroborate for the CompanyWebsiteFinder-specific
+# false-match class ("IK Eng Ltd" -> easydigitalfiling.com) this check
+# alone doesn't cover.
 
 _UK_COUNTRY_SYNONYMS = frozenset({
     "uk", "united kingdom", "great britain", "england", "scotland",
     "wales", "northern ireland",
 })
-
-
-def _distinctive_tokens(name: str) -> set:
-    words = re.findall(r"[a-z0-9]+", (name or "").lower())
-    return {w for w in words if len(w) >= 4 and w not in _GENERIC_NAME_WORDS}
-
-
-def _shares_distinctive_token(a: str, b: str) -> bool:
-    """True if `a` and `b` share at least one significant word, OR
-    either side has no significant words at all to compare (nothing
-    distinctive means no basis for a rejection -- don't invent one
-    from insufficient signal, same discipline as everywhere else in
-    this module)."""
-    tokens_a, tokens_b = _distinctive_tokens(a), _distinctive_tokens(b)
-    if not tokens_a or not tokens_b:
-        return True
-    return bool(tokens_a & tokens_b)
 
 
 def _countries_plausibly_match(a: str, b: str) -> bool:
@@ -416,7 +400,10 @@ def _mentions_product_term(page_text: str, product_term: str) -> bool:
     _core_product_term), spelling-insensitive for known British/
     American variants (see _SPELLING_VARIANTS) and matching a curated
     multi-word synonym phrase (see _PRODUCT_TERM_SYNONYM_PHRASES) when
-    one is known for this exact core term."""
+    one is known for this exact core term. A synonym entry may be a
+    tuple instead of a bare string -- every term in that tuple must be
+    present (an AND), for a synonym too generic to trust alone (see
+    _PRODUCT_TERM_SYNONYM_PHRASES's own doc)."""
     core = _core_product_term(product_term).lower()
     haystack = (page_text or "").lower()
 
@@ -426,7 +413,13 @@ def _mentions_product_term(page_text: str, product_term: str) -> bool:
         candidates.add(core.replace(american, british))
     candidates.update(_PRODUCT_TERM_SYNONYM_PHRASES.get(core, ()))
 
-    return any(candidate in haystack for candidate in candidates)
+    for candidate in candidates:
+        if isinstance(candidate, tuple):
+            if all(term in haystack for term in candidate):
+                return True
+        elif candidate in haystack:
+            return True
+    return False
 
 
 # Named, not just inline f-strings, so discovery_service.py can classify
@@ -481,19 +474,12 @@ _RECOVERY_DIRECTORY_EXCLUSIONS: tuple = (
 # validate() call is never wasted on one in the first place.
 _RECOVERY_EXCLUDED_HOSTS: tuple = tuple(sorted(PLATFORM_REGISTERED_DOMAINS)) + _RECOVERY_DIRECTORY_EXCLUSIONS
 
-SYSTEM_PROMPT = """You are reading the text of a company website. Extract ONLY what is explicitly stated in the text below -- never guess, infer, or fill in based on typical industry patterns or the domain name.
-
-Rules, strictly enforced:
-1. Only report a company name if it is explicitly stated in the text (e.g. in a heading, footer, "About Us" section, or copyright notice).
-2. If the company name is not clearly stated, return null for company_name -- do not guess it from the domain or from context.
-3. Only report a country if it is explicitly stated (an address, a phone country code mentioned as text, "based in X").
-4. Never invent certifications, products, or history not present in the text -- this task only asks for name and country.
-
-Return ONLY a JSON object with exactly these keys, no other text:
-{
-  "company_name": "the exact company name as stated in the text, or null if not clearly stated",
-  "country": "the country as stated in the text, or null if not clearly stated"
-}"""
+# Moved to llm/prompts.py so scrapers/company_website_finder.py can
+# reuse the exact same grounded-extraction prompt without a circular
+# import (see that module's own docstring). SYSTEM_PROMPT kept as a
+# module-level alias since every existing call site here already
+# refers to it by that name.
+SYSTEM_PROMPT = GROUNDED_COMPANY_NAME_EXTRACTION_SYSTEM_PROMPT
 
 
 @dataclass

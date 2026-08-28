@@ -381,6 +381,36 @@ class TestSupplierGoldenRecords:
         with pytest.raises(ValueError):
             repo.update_supplier_fields_with_history(999999, {"primary_phone": "x"}, changed_by="manual")
 
+    def test_clear_supplier_field_nulls_the_column_and_logs_it(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Ashpock", "domain": "shpock.com"})
+        repo.clear_supplier_field(
+            supplier_id, "domain", changed_by="manual",
+            change_reason="false match: shpock.com is an unrelated classifieds app",
+        )
+        assert repo.get_supplier(supplier_id)["domain"] is None
+
+        log = repo.get_supplier_change_log(supplier_id)
+        assert len(log) == 1
+        assert log[0]["field_name"] == "domain"
+        assert log[0]["old_value"] == "shpock.com"
+        assert log[0]["new_value"] is None
+        assert log[0]["changed_by"] == "manual"
+        assert "unrelated classifieds app" in log[0]["change_reason"]
+
+    def test_clear_supplier_field_is_a_noop_when_already_empty(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Foo Co"})
+        repo.clear_supplier_field(supplier_id, "domain", changed_by="manual", change_reason="already blank")
+        assert repo.get_supplier_change_log(supplier_id) == []
+
+    def test_clear_supplier_field_raises_on_missing_supplier(self, repo):
+        with pytest.raises(ValueError):
+            repo.clear_supplier_field(999999, "domain", changed_by="manual", change_reason="x")
+
+    def test_clear_supplier_field_rejects_a_non_writable_field(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Foo Co"})
+        with pytest.raises(ValueError):
+            repo.clear_supplier_field(supplier_id, "id", changed_by="manual", change_reason="x")
+
     def test_delete_supplier(self, repo):
         supplier_id = repo.create_golden_record({"canonical_name": "Foo Co"})
         repo.delete_supplier(supplier_id)

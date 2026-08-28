@@ -655,6 +655,43 @@ class SupplierRepository:
                 )
         return changes
 
+    def clear_supplier_field(
+        self, supplier_id: int, field: str, *, changed_by: str, change_reason: str,
+    ) -> None:
+        """Explicitly sets one writable supplier field to NULL, with a
+        supplier_change_log entry -- the deliberate-clear counterpart
+        to update_supplier_fields_with_history, which can only ever
+        WRITE a value: _prepare_supplier_payload silently drops any
+        field whose incoming value is None (correct for a partial
+        normalizer dict, which should never accidentally null a field
+        it simply didn't have data for), which also makes it
+        impossible to null a field through that path on purpose. Used
+        by main.py correct-supplier --clear-domain to record "this
+        value was wrong and has been removed" as its own distinct,
+        audited fact, separate from whatever value (if any) replaces
+        it afterward. No-op (and no log entry) if the field is already
+        empty -- nothing changed, nothing to record."""
+        if field not in SUPPLIER_WRITABLE_FIELDS:
+            raise ValueError(f"{field!r} is not a writable supplier field")
+        existing = self.get_supplier(supplier_id)
+        if existing is None:
+            raise ValueError(f"No supplier with id={supplier_id} to update")
+        old_value = existing.get(field)
+        if old_value is None:
+            return
+        old_comparable = json.dumps(old_value, default=_json_default) if isinstance(old_value, (list, dict)) else old_value
+        with connection_scope(self.db_path) as conn:
+            conn.execute(
+                f"UPDATE suppliers SET {field} = NULL, last_updated = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), supplier_id),
+            )
+            conn.execute(
+                "INSERT INTO supplier_change_log "
+                "(supplier_id, field_name, old_value, new_value, changed_by, change_reason) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (supplier_id, field, old_comparable, None, changed_by, change_reason),
+            )
+
     def get_supplier_change_log(self, supplier_id: int, limit: int = 200) -> List[Dict[str, Any]]:
         with connection_scope(self.db_path) as conn:
             rows = conn.execute(
