@@ -35,6 +35,11 @@ _WEBSITE_ALIASES: tuple = (
     "website", "website url", "url", "site", "web site", "domain",
     "company website", "web address", "homepage", "link",
 )
+# Trusted directly into suppliers.country when present -- this is the
+# uploader's OWN data, not a scraped extraction, same status as
+# _COMPANY_NAME_ALIASES already has for canonical_name (see
+# batch_service.py's _resolve_named_row/_resolve_placeholder_row).
+_COUNTRY_ALIASES: tuple = ("country", "nation")
 
 # rapidfuzz.fuzz.ratio, 0-100 -- checked against real messy header
 # samples ("Company Name", "company", "Business Name ", "COMPANY") in
@@ -48,6 +53,7 @@ class ParsedRow:
     original_columns: Dict[str, str]      # every column from this CSV row, verbatim (whitespace-stripped)
     company_name: Optional[str]           # detected company name, stripped, or None if no column matched / cell empty
     website: Optional[str]                # detected website, stripped, or None if no column matched / cell empty
+    country: Optional[str] = None         # detected country, stripped, or None if no column matched / cell empty
 
 
 @dataclass
@@ -55,6 +61,7 @@ class ParseResult:
     rows: List[ParsedRow] = field(default_factory=list)
     company_name_column: Optional[str] = None    # which real header was detected as company_name, or None if none matched
     website_column: Optional[str] = None          # which real header was detected as website, or None if none matched
+    country_column: Optional[str] = None          # which real header was detected as country, or None if none matched
     # row_index of any row whose (company_name, website) pair repeats an
     # earlier row -- informational only; batch_service.py decides what
     # to do with it (e.g. skip a redundant real enrichment call and
@@ -111,8 +118,10 @@ def parse_csv(file_content: bytes) -> ParseResult:
 
     company_col = _best_column_match(headers, _COMPANY_NAME_ALIASES)
     website_col = _best_column_match(headers, _WEBSITE_ALIASES)
+    country_col = _best_column_match(headers, _COUNTRY_ALIASES)
     result.company_name_column = company_col
     result.website_column = website_col
+    result.country_column = country_col
 
     seen_keys: set = set()
     for i, raw_row in enumerate(reader):
@@ -120,6 +129,7 @@ def parse_csv(file_content: bytes) -> ParseResult:
 
         company_name = (original.get(company_col) or "").strip() or None if company_col else None
         website = (original.get(website_col) or "").strip() or None if website_col else None
+        country = (original.get(country_col) or "").strip() or None if country_col else None
 
         key = (company_name or "", website or "")
         if key != ("", "") and key in seen_keys:
@@ -129,7 +139,7 @@ def parse_csv(file_content: bytes) -> ParseResult:
 
         result.rows.append(ParsedRow(
             row_index=i, original_columns=original,
-            company_name=company_name, website=website,
+            company_name=company_name, website=website, country=country,
         ))
 
     return result

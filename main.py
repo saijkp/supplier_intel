@@ -836,7 +836,8 @@ def batch_upload(
     console.print(
         f"[bold]{len(parsed.rows)}[/bold] row(s). Detected columns: "
         f"company name = [cyan]{parsed.company_name_column or '(none found)'}[/cyan], "
-        f"website = [cyan]{parsed.website_column or '(none found)'}[/cyan]"
+        f"website = [cyan]{parsed.website_column or '(none found)'}[/cyan], "
+        f"country = [cyan]{parsed.country_column or '(none found)'}[/cyan]"
     )
     if parsed.duplicate_row_indices:
         console.print(f"[dim]{len(parsed.duplicate_row_indices)} duplicate row(s) detected (exact name+website repeat).[/dim]")

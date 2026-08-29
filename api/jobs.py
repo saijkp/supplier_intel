@@ -175,6 +175,7 @@ def run_batch_job(
         stats = dataclasses.asdict(outcome)
         stats["company_name_column"] = parsed.company_name_column
         stats["website_column"] = parsed.website_column
+        stats["country_column"] = parsed.country_column
         stats["duplicate_row_count"] = len(parsed.duplicate_row_indices)
         repo.mark_pipeline_job_completed(job_id, stats=stats)
     except Exception as e:

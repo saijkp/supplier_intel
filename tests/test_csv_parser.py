@@ -49,6 +49,20 @@ class TestHeaderDetection:
         assert result.company_name_column is None
         assert result.website_column is None
 
+    def test_country_column_is_detected(self):
+        result = parse_csv(b"Company Name,Website,Country\nAcme Co,https://acme.com,United Kingdom\n")
+        assert result.country_column == "Country"
+        assert result.rows[0].country == "United Kingdom"
+
+    def test_country_column_variant_alias_detected(self):
+        result = parse_csv(b"Company,URL,Nation\nAcme Co,acme.com,France\n")
+        assert result.country_column == "Nation"
+
+    def test_no_country_column_leaves_it_none_not_a_false_match(self):
+        result = parse_csv(b"Company Name,Website,Notes\nAcme Co,https://acme.com,a note\n")
+        assert result.country_column is None
+        assert result.rows[0].country is None
+
 
 class TestMissingColumns:
 

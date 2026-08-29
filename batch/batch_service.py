@@ -454,10 +454,10 @@ class BatchService:
             is_repeat = domain in resolved_domains
             try:
                 if row.company_name:
-                    supplier_id = self._resolve_named_row(row.company_name, domain, resolved_domains)
+                    supplier_id = self._resolve_named_row(row.company_name, domain, resolved_domains, country=row.country)
                     name_source = "csv"
                 else:
-                    supplier_id = self._resolve_placeholder_row(domain, resolved_domains)
+                    supplier_id = self._resolve_placeholder_row(domain, resolved_domains, country=row.country)
                     name_source = "inferred_from_domain"
                     outcome.placeholder_names_used += 1
             except Exception as e:  # noqa: BLE001 -- one row's failure must never abort the whole batch
@@ -565,16 +565,20 @@ class BatchService:
             except Exception as e:  # noqa: BLE001 -- a progress-reporting glitch must never abort the batch
                 logger.warning("batch: progress callback failed: %s", e)
 
-    def _resolve_named_row(self, company_name: str, domain: str, resolved_domains: Dict[str, int]) -> int:
+    def _resolve_named_row(
+        self, company_name: str, domain: str, resolved_domains: Dict[str, int], country: Optional[str] = None,
+    ) -> int:
         if domain in resolved_domains:
             return resolved_domains[domain]
-        candidate = {"canonical_name": company_name, "domain": domain}
+        candidate = {"canonical_name": company_name, "domain": domain, "country": country}
         result = self.matcher.resolve_and_store(candidate)
         supplier_id = result.get("supplier_id") or result.get("new_supplier_id")
         resolved_domains[domain] = supplier_id
         return supplier_id
 
-    def _resolve_placeholder_row(self, domain: str, resolved_domains: Dict[str, int]) -> int:
+    def _resolve_placeholder_row(
+        self, domain: str, resolved_domains: Dict[str, int], country: Optional[str] = None,
+    ) -> int:
         """Direct domain lookup, never SupplierMatcher's fuzzy name
         matching -- see module docstring for why."""
         if domain in resolved_domains:
@@ -582,10 +586,14 @@ class BatchService:
         placeholder_name = _placeholder_name_from_domain(domain)
         existing = self.repo.find_by_domain(domain)
         if existing:
-            self.repo.merge_into_golden(existing["id"], {"canonical_name": placeholder_name, "domain": domain})
+            self.repo.merge_into_golden(
+                existing["id"], {"canonical_name": placeholder_name, "domain": domain, "country": country},
+            )
             supplier_id = existing["id"]
         else:
-            supplier_id = self.repo.create_golden_record({"canonical_name": placeholder_name, "domain": domain})
+            supplier_id = self.repo.create_golden_record(
+                {"canonical_name": placeholder_name, "domain": domain, "country": country},
+            )
         resolved_domains[domain] = supplier_id
         return supplier_id
 

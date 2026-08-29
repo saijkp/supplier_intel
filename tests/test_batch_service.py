@@ -276,10 +276,10 @@ def _reputation_result(title, link, snippet):
     )
 
 
-def _row(row_index=0, company_name=None, website=None, original_columns=None):
+def _row(row_index=0, company_name=None, website=None, original_columns=None, country=None):
     return ParsedRow(
         row_index=row_index, original_columns=original_columns or {},
-        company_name=company_name, website=website,
+        company_name=company_name, website=website, country=country,
     )
 
 
@@ -363,6 +363,47 @@ class TestNamedRowSuccessPath:
         assert row["status"] == "failed"
         assert row["error_message"] == "site unreachable"
 
+    def test_csv_country_column_is_trusted_directly_onto_a_new_supplier(self):
+        """The CSV's own Country column is the uploader's own data, not
+        a scraped extraction -- same trust status as Company Name
+        already has for canonical_name. Threaded into the matcher
+        candidate so a brand-new supplier gets it set directly."""
+        repo = FakeRepo()
+        matcher = FakeMatcher(repo)
+        service, _ = _make_service(repo=repo, matcher=matcher)
+        service.run_batch(
+            [_row(company_name="Acme Co", website="https://acme.com", country="United Kingdom")], "job-1",
+        )
+        assert matcher.calls[0]["country"] == "United Kingdom"
+        supplier = next(iter(repo.suppliers.values()))
+        assert supplier["country"] == "United Kingdom"
+
+    def test_csv_country_does_not_overwrite_an_existing_suppliers_country(self):
+        """Real case this guards against: a batch upload for a company
+        already in the DB (matched by domain) must not let a CSV's
+        Country column silently clobber an already-known, possibly
+        more specific fact (e.g. an existing "China" from an earlier
+        scrape overwritten by a CSV's coarser "Asia") -- same
+        trusted-value-guard discipline as every other merge field."""
+        repo = FakeRepo()
+        repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com", "country": "China"})
+        matcher = FakeMatcher(repo)
+        service, _ = _make_service(repo=repo, matcher=matcher)
+        service.run_batch(
+            [_row(company_name="Acme Co", website="https://acme.com", country="Asia")], "job-1",
+        )
+        supplier = next(iter(repo.suppliers.values()))
+        assert supplier["country"] == "China"
+
+    def test_no_country_column_leaves_behaviour_unchanged(self):
+        repo = FakeRepo()
+        matcher = FakeMatcher(repo)
+        service, _ = _make_service(repo=repo, matcher=matcher)
+        service.run_batch([_row(company_name="Acme Co", website="https://acme.com")], "job-1")
+        assert matcher.calls[0]["country"] is None
+        supplier = next(iter(repo.suppliers.values()))
+        assert supplier.get("country") is None
+
     def test_resolve_exception_marks_row_failed_and_does_not_abort_batch(self):
         class ExplodingMatcher(FakeMatcher):
             def resolve_and_store(self, candidate):
@@ -411,6 +452,22 @@ class TestPlaceholderRows:
         service, _ = _make_service(repo=repo)
         service.run_batch([_row(website="https://brandnew.com")], "job-1")
         assert len(repo.suppliers) == 1
+
+    def test_placeholder_row_csv_country_is_trusted_onto_a_new_supplier(self):
+        repo = FakeRepo()
+        service, _ = _make_service(repo=repo)
+        service.run_batch([_row(website="https://brandnew.com", country="France")], "job-1")
+        supplier = next(iter(repo.suppliers.values()))
+        assert supplier["country"] == "France"
+
+    def test_placeholder_row_csv_country_does_not_overwrite_existing(self):
+        repo = FakeRepo()
+        existing_id = repo.create_golden_record({
+            "canonical_name": "Existing Co", "domain": "acmetrailer.com", "country": "Germany",
+        })
+        service, _ = _make_service(repo=repo)
+        service.run_batch([_row(website="https://acmetrailer.com", country="France")], "job-1")
+        assert repo.suppliers[existing_id]["country"] == "Germany"
 
 
 class TestNameExtraction:
