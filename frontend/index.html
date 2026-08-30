@@ -534,6 +534,7 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
       <button data-view="find" aria-current="page">Find suppliers</button>
       <button data-view="search">Search</button>
       <button data-view="discover">Discover &amp; enrich</button>
+      <button data-view="bulk">Bulk enrichment</button>
       <button data-view="jobs">Job history</button>
       <button data-view="source">Source</button>
       <button data-view="compare">Compare</button>
@@ -675,32 +676,38 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
           </div>
         </div>
 
-        <div class="panel">
-          <div class="panel-head"><h2 class="panel-title">Bulk enrichment</h2></div>
-          <div class="panel-body">
-            <p class="hint" style="margin-top:0;margin-bottom:16px">Runs across existing suppliers that haven't been done yet.</p>
-            <div class="field">
-              <label class="label" for="bLimit">Suppliers per run</label>
-              <input class="input" id="bLimit" type="number" min="1" max="200" placeholder="20">
-            </div>
-            <div class="field">
-              <label class="check">
-                <input type="checkbox" id="bForce">
-                <span>Redo suppliers already processed</span>
-              </label>
-            </div>
-            <button class="btn btn-ghost btn-block" id="btnBulkCollect">Collect all pending</button>
-            <button class="btn btn-ghost btn-block" id="btnBulkVerify" style="margin-top:8px">Verify all pending (AI)</button>
-            <button class="btn btn-ghost btn-block" id="btnBulkContacts" style="margin-top:8px">Find contacts (Apollo)</button>
-            <button class="btn btn-ghost btn-block" id="btnBulkFactoryFacts" style="margin-top:8px">Extract factory facts</button>
-            <p class="hint" style="margin-top:10px">Each supplier costs a real headless-browser visit (collect), a real OpenAI call (verify, factory facts), or up to 3 Apollo credits (contacts) — start small.</p>
-          </div>
-        </div>
-
       </aside>
 
       <div>
         <div id="discoverAlert"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ BULK ENRICHMENT ═══════════════════════════════════ -->
+  <section id="view-bulk" class="hidden">
+    <div id="bulkAlert"></div>
+    <div class="panel">
+      <div class="panel-head"><h2 class="panel-title">Bulk enrichment</h2></div>
+      <div class="panel-body">
+        <p class="hint" style="margin-top:0;margin-bottom:16px">Runs across existing suppliers that haven't been done yet -- maintaining data already in the database, not discovering new suppliers.</p>
+        <div class="field">
+          <label class="label" for="bLimit">Suppliers per run</label>
+          <input class="input" id="bLimit" type="number" min="1" max="200" placeholder="20">
+        </div>
+        <div class="field">
+          <label class="check">
+            <input type="checkbox" id="bForce">
+            <span>Redo suppliers already processed</span>
+          </label>
+        </div>
+        <button class="btn btn-ghost btn-block" id="btnBulkCollect">Collect all pending</button>
+        <button class="btn btn-ghost btn-block" id="btnBulkVerify" style="margin-top:8px">Verify all pending (AI)</button>
+        <button class="btn btn-ghost btn-block" id="btnBulkContacts" style="margin-top:8px"
+          data-apollo-gated
+        >Find contacts (Apollo)</button>
+        <button class="btn btn-ghost btn-block" id="btnBulkFactoryFacts" style="margin-top:8px">Extract factory facts</button>
+        <p class="hint" style="margin-top:10px">Each supplier costs a real headless-browser visit (collect), a real OpenAI call (verify, factory facts), or up to 3 Apollo credits (contacts) — start small.</p>
       </div>
     </div>
   </section>
@@ -974,7 +981,7 @@ $("nav").addEventListener("click", (e) => {
   const view = btn.dataset.view;
   document.querySelectorAll("#nav button").forEach(b =>
     b.setAttribute("aria-current", b === btn ? "page" : "false"));
-  ["find","search","discover","jobs","source","compare","audit"].forEach(v =>
+  ["find","search","discover","bulk","jobs","source","compare","audit"].forEach(v =>
     $("view-" + v).classList.toggle("hidden", v !== view));
   if (view === "find") initFindView();
   if (view === "jobs") loadJobs();
@@ -1210,6 +1217,19 @@ function badges(s) {
    currently do anything; flip APOLLO_CONTACTS_AVAILABLE back to true
    once the account is upgraded and a live check confirms it. */
 const APOLLO_CONTACTS_AVAILABLE = false;
+
+// Same gating as the per-card "Find contacts" button above, applied to
+// the bulk "Find contacts (Apollo)" button (Bulk enrichment tab) --
+// that one is static HTML present at page load (not re-templated per
+// render like a supplier card), so it's gated here once instead of
+// inline, reading the SAME APOLLO_CONTACTS_AVAILABLE constant rather
+// than a second hardcoded copy that could drift out of sync with it.
+if (!APOLLO_CONTACTS_AVAILABLE) {
+  document.querySelectorAll("[data-apollo-gated]").forEach(btn => {
+    btn.disabled = true;
+    btn.title = "Apollo account is on the Free plan, which has no API access to contact search/enrichment on any tier -- upgrading the plan is what re-enables this, no code change needed";
+  });
+}
 
 function supplierCard(s, i, opts) {
   opts = opts || {};
@@ -1880,12 +1900,12 @@ async function triggerBulkJob(btn, path) {
   btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Queuing`;
   try {
     await api(path, { method: "POST", body: JSON.stringify({ pending: true, limit, force }) });
-    alertBox($("discoverAlert"), 0);
+    alertBox($("bulkAlert"), 0);
     btn.textContent = "Queued ✓";
     loadJobs();
   } catch (err) {
     btn.textContent = original;
-    explain(err, $("discoverAlert"));
+    explain(err, $("bulkAlert"));
   } finally {
     setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
   }
