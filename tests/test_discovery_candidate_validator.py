@@ -770,7 +770,14 @@ class TestOffDomainRedirectExclusion:
     company's site (final_url's registered domain doesn't match the
     candidate's own domain) must be rejected, not trusted as if it
     were the candidate's own content. Real finding: duraauto.com's own
-    homepage genuinely redirects to durashiloh.com."""
+    homepage genuinely redirects to durashiloh.com.
+
+    Runs AFTER the LLM name extraction (moved here from before it) so
+    a LEGITIMATE same-company domain migration (dexteraxle.com now
+    forwards to dextergroup.com) can be told apart from a genuine
+    hijack/unrelated-redirect via _shares_distinctive_token -- the
+    same corroboration check recover() already uses -- rather than
+    rejecting every redirect on domain mismatch alone."""
 
     def test_off_domain_redirect_is_rejected(self):
         duraauto_candidate = Candidate(
@@ -818,10 +825,15 @@ class TestOffDomainRedirectExclusion:
 
         assert result.validated is True
 
-    def test_off_domain_redirect_checked_before_the_paid_llm_call(self):
-        """Rejected at gate 3.6 must not spend the LLM call at all --
-        same "reject cheap, before spending anything" discipline gate
-        3.5 already follows."""
+    def test_off_domain_redirect_now_pays_for_the_llm_call(self):
+        """Real cost tradeoff, deliberate: telling a same-company domain
+        migration (dexteraxle.com -> dextergroup.com) apart from an
+        unrelated hijack (duraauto.com -> durashiloh.com) requires
+        reading what the landed page actually says, so the LLM call now
+        always runs for a redirected candidate -- see
+        test_same_company_domain_migration_is_allowed_through and
+        test_unrelated_company_redirect_is_still_rejected below for the
+        two outcomes this then produces."""
         duraauto_candidate = Candidate(
             title="Duraauto", link="https://duraauto.com/", snippet="", domain="duraauto.com",
         )
@@ -833,7 +845,51 @@ class TestOffDomainRedirectExclusion:
 
         validator.validate(duraauto_candidate, "trailer axle")
 
-        assert llm.calls == []
+        assert len(llm.calls) == 1
+
+    def test_same_company_domain_migration_is_allowed_through(self):
+        """The exact real case found live: dexteraxle.com now forwards
+        to dextergroup.com -- the SAME real manufacturer under its
+        current domain, not a hijack. The landed page's own stated name
+        shares a distinctive word ("dexter") with the original
+        candidate's name, so this must be allowed through rather than
+        rejected on domain mismatch alone."""
+        dexter_candidate = Candidate(
+            title="Dexter Axle", link="https://dexteraxle.com/",
+            snippet="Dexter Axle -- trailer axle manufacturer", domain="dexteraxle.com",
+        )
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Welcome to Dexter Group, manufacturer of trailer axle assemblies.",
+            final_url="https://www.dextergroup.com/",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Dexter Group", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(dexter_candidate, "trailer axle")
+
+        assert result.validated is True
+        assert result.extracted_name == "Dexter Group"
+
+    def test_unrelated_company_redirect_is_still_rejected(self):
+        """The original case this gate was built for must still reject
+        -- "Duraauto" and "Durashiloh" share no distinctive word, so
+        this is correctly treated as a hijack/unrelated redirect, not a
+        company migration."""
+        duraauto_candidate = Candidate(
+            title="Duraauto", link="https://duraauto.com/",
+            snippet="trailer axle manufacturer", domain="duraauto.com",
+        )
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Welcome to Durashiloh, a leading trailer axle manufacturer.",
+            final_url="https://durashiloh.com/",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Durashiloh", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(duraauto_candidate, "trailer axle")
+
+        assert result.validated is False
+        assert "duraauto.com -> durashiloh.com" in result.reason
 
 
 class TestMarketplaceHostExclusion:

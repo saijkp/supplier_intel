@@ -723,23 +723,6 @@ class CandidateValidator:
 
         page_text = fetch_result.pages[0].text
 
-        # gate 3.6 -- catches a fetch that silently landed on a
-        # DIFFERENT real company's site (found live: duraauto.com's own
-        # homepage genuinely redirects to durashiloh.com). `final_url`
-        # defaults to `url` on any fetcher/fake that doesn't populate it
-        # (OwnWebsitePage.__post_init__), so this degrades to a no-op
-        # rather than a false reject when redirect info isn't available
-        # -- checked before the paid Companies House/LLM calls below,
-        # not after, same "reject cheap, before spending anything"
-        # discipline gate 3.5 already follows.
-        final_url = getattr(fetch_result.pages[0], "final_url", "") or candidate.domain
-        final_domain = extract_domain(final_url)
-        if final_domain and not domains_match(candidate.domain, final_domain):
-            return ValidationResult(
-                candidate, False, None, None, None,
-                f"{REASON_OFF_DOMAIN_REDIRECT_PREFIX}: {candidate.domain} -> {final_domain}",
-            )
-
         if self.companies_house_client is not None:
             name_candidates = _title_name_candidates(candidate.title)
             best_ch_match = {"match_status": "no_clear_match", "confidence": None, "matched_title": None}
@@ -779,6 +762,49 @@ class CandidateValidator:
                 candidate, False, None, extracted_country, None, "no company name found in page text",
             )
         extracted_name = extracted_name.strip()
+
+        # gate 3.6 -- catches a fetch that silently landed on a
+        # DIFFERENT real company's site (found live: duraauto.com's own
+        # homepage genuinely redirects to durashiloh.com, an unrelated
+        # company). `final_url` defaults to `url` on any fetcher/fake
+        # that doesn't populate it (OwnWebsitePage.__post_init__), so
+        # this degrades to a no-op rather than a false reject when
+        # redirect info isn't available.
+        #
+        # Runs HERE, after the LLM extraction above, not before it (as
+        # it originally did) -- moved specifically so a LEGITIMATE
+        # same-company domain migration isn't rejected on domain
+        # mismatch alone. Found live: dexteraxle.com now forwards to
+        # dextergroup.com, the SAME real manufacturer under its current
+        # domain, not a hijack -- but a bare domain-mismatch check can't
+        # tell that apart from duraauto.com's genuine redirect to an
+        # unrelated competitor without reading what the landed page
+        # actually says. _shares_distinctive_token(candidate.title,
+        # extracted_name) is the exact corroboration check recover()
+        # already uses for an analogous problem (a recovered candidate
+        # must share a real word with the name it was recovering, not
+        # just look self-consistent) -- reused here, not reimplemented.
+        # A redirect whose landed page names an unrelated company (no
+        # shared distinctive word) is still rejected exactly as before;
+        # this only ever narrows the false-reject rate, never loosens
+        # the hijack protection itself.
+        #
+        # Real cost tradeoff: every off-domain-redirect candidate now
+        # costs one LLM call regardless of outcome (previously zero --
+        # gate 3.6 rejected before the LLM ever ran), since there is no
+        # way to distinguish "same company, migrated" from "different
+        # company entirely" without reading what the landed page
+        # actually says. A redirect is rare enough for this to be a
+        # small, bounded increase against the alternative of silently
+        # dropping a real, findable manufacturer every time one happens.
+        final_url = getattr(fetch_result.pages[0], "final_url", "") or candidate.domain
+        final_domain = extract_domain(final_url)
+        if final_domain and not domains_match(candidate.domain, final_domain):
+            if not _shares_distinctive_token(candidate.title, extracted_name):
+                return ValidationResult(
+                    candidate, False, extracted_name, extracted_country, None,
+                    f"{REASON_OFF_DOMAIN_REDIRECT_PREFIX}: {candidate.domain} -> {final_domain}",
+                )
 
         haystack = f"{candidate.title} {candidate.snippet}".lower()
         normalised_extracted = normalise_company_name(extracted_name)
