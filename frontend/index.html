@@ -696,33 +696,6 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
           </div>
         </div>
 
-        <div class="panel">
-          <div class="panel-head"><h2 class="panel-title">Batch upload</h2></div>
-          <div class="panel-body">
-            <p class="hint" style="margin-top:0;margin-bottom:16px">A spreadsheet of companies not yet in the database — company name and/or website columns, header wording doesn't have to match exactly. Each row goes through the same enrichment as a single Collect.</p>
-            <div class="field">
-              <label class="label" for="batchFile">CSV file</label>
-              <input class="input" id="batchFile" type="file" accept=".csv">
-            </div>
-            <div class="field">
-              <label class="check">
-                <input type="checkbox" id="batchRecoverDeadDomains">
-                <span>Try to recover dead-domain rows (1 extra paid search each)</span>
-              </label>
-            </div>
-            <div class="field hidden" id="batchRecoveryProductTermField">
-              <label class="label" for="batchRecoveryProductTerm">Product/category for validation (required)</label>
-              <input class="input" id="batchRecoveryProductTerm" placeholder="e.g. trailer axle">
-            </div>
-            <div class="field">
-              <label class="label" for="batchDefaultRegion">Country/region (optional -- helps phone-number parsing)</label>
-              <input class="input" id="batchDefaultRegion" placeholder="e.g. GB" maxlength="2" style="text-transform:uppercase">
-              <p class="hint">ISO 3166-1 country code. A plain local phone number (no country dialling code) can't be recognised without this. Only set it when you KNOW every row is from one country -- never guessed per-row.</p>
-            </div>
-            <button class="btn btn-primary btn-block" id="btnBatchUpload">Upload &amp; enrich</button>
-            <div id="batchProgress" style="margin-top:12px"></div>
-          </div>
-        </div>
       </aside>
 
       <div>
@@ -1917,82 +1890,11 @@ $("btnBulkVerify").addEventListener("click", () => triggerBulkJob($("btnBulkVeri
 $("btnBulkContacts").addEventListener("click", () => triggerBulkJob($("btnBulkContacts"), "/contacts/jobs"));
 $("btnBulkFactoryFacts").addEventListener("click", () => triggerBulkJob($("btnBulkFactoryFacts"), "/factory-facts/jobs"));
 
-/* ═══ Batch upload ══════════════════════════════════════════
-   The only file-upload flow in this frontend — a bespoke fetch (not
-   the shared api() helper, which always sets Content-Type:
-   application/json) using FormData so the browser sets the correct
-   multipart boundary itself. Progress polls the same pipeline_jobs
-   endpoint every other job type already uses. */
-$("batchRecoverDeadDomains").addEventListener("change", () => {
-  $("batchRecoveryProductTermField").classList.toggle("hidden", !$("batchRecoverDeadDomains").checked);
-});
-
-$("btnBatchUpload").addEventListener("click", async () => {
-  const file = $("batchFile").files[0];
-  if (!file) { alertBox($("discoverAlert"), 1, "No file selected", "Choose a CSV file first."); return; }
-
-  const recoverDeadDomains = $("batchRecoverDeadDomains").checked;
-  const recoveryProductTerm = $("batchRecoveryProductTerm").value.trim();
-  if (recoverDeadDomains && !recoveryProductTerm) {
-    alertBox($("discoverAlert"), 1, "Product/category required",
-      "Enter a product/category term to validate recovered candidates against, or uncheck domain recovery.");
-    return;
-  }
-
-  const btn = $("btnBatchUpload");
-  const original = btn.textContent;
-  btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Uploading`;
-  $("batchProgress").innerHTML = "";
-  alertBox($("discoverAlert"), 0);
-
-  try {
-    const form = new FormData();
-    form.append("file", file);
-    if (recoverDeadDomains) {
-      form.append("recover_dead_domains", "true");
-      form.append("recovery_product_term", recoveryProductTerm);
-    }
-    const defaultRegion = $("batchDefaultRegion").value.trim();
-    if (defaultRegion) { form.append("default_region", defaultRegion); }
-    const res = await fetch(state.base + "/batch/upload", {
-      method: "POST",
-      headers: { "Authorization": "Bearer " + state.token },
-      body: form,
-    });
-    if (!res.ok) throw Object.assign(new Error("Upload failed"), { status: res.status });
-    const job = await res.json();
-    pollBatchJob(job.id);
-  } catch (err) {
-    explain(err, $("discoverAlert"));
-    btn.disabled = false; btn.textContent = original;
-  }
-});
-
-async function pollBatchJob(jobId) {
-  const btn = $("btnBatchUpload");
-  try {
-    const job = await api(`/pipeline/jobs/${jobId}`);
-    if (job.status === "queued" || job.status === "running") {
-      const p = job.progress || {};
-      $("batchProgress").innerHTML = `<p class="hint">Processing… ${p.processed ?? 0}/${p.total_rows ?? "?"} row(s) (${p.succeeded ?? 0} succeeded, ${p.failed ?? 0} failed so far)</p>`;
-      btn.innerHTML = `<span class="spin"></span> Processing`;
-      setTimeout(() => pollBatchJob(jobId), 3000);
-      return;
-    }
-    btn.disabled = false; btn.textContent = "Upload & enrich";
-    if (job.status === "completed") {
-      const st = job.stats || {};
-      $("batchProgress").innerHTML = `
-        <p class="hint">Done: ${st.succeeded ?? 0} succeeded, ${st.failed ?? 0} failed, ${st.needs_url ?? 0} need a URL.</p>
-        <button class="btn btn-ghost btn-block" data-download-batch="${esc(jobId)}" style="margin-top:8px">Download results CSV</button>`;
-    } else {
-      $("batchProgress").innerHTML = `<div class="alert"><div class="alert-title">Batch failed</div><div>${esc(job.error || "unknown error")}</div></div>`;
-    }
-  } catch (err) {
-    explain(err, $("discoverAlert"));
-    btn.disabled = false; btn.textContent = "Upload & enrich";
-  }
-}
+// Batch upload retired from this tab -- Find Suppliers' own "Have a
+// list instead?" block (findSubmitBulk/pollFindBulkJob) is a superset
+// (pasted list OR CSV file, same /batch/upload endpoint, same
+// recover_dead_domains/recovery_product_term/default_region options)
+// and is now the single entry point for it.
 
 document.addEventListener("click", async (e) => {
   const btn = e.target.closest("[data-download-batch]");
