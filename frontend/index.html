@@ -534,6 +534,7 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
       <button data-view="find" aria-current="page">Find suppliers</button>
       <button data-view="search">Search</button>
       <button data-view="discover">Discover &amp; enrich</button>
+      <button data-view="jobs">Job history</button>
       <button data-view="source">Source</button>
       <button data-view="compare">Compare</button>
       <button data-view="audit">Audit</button>
@@ -700,14 +701,19 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
 
       <div>
         <div id="discoverAlert"></div>
-        <div class="panel">
-          <div class="panel-head">
-            <h2 class="panel-title">Recent runs</h2>
-            <button class="btn btn-ghost btn-sm" id="btnRefreshJobs">Refresh</button>
-          </div>
-          <div id="jobList"></div>
-        </div>
       </div>
+    </div>
+  </section>
+
+  <!-- ══ JOB HISTORY ═══════════════════════════════════════ -->
+  <section id="view-jobs" class="hidden">
+    <div id="jobsAlert"></div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2 class="panel-title">Job history</h2>
+        <button class="btn btn-ghost btn-sm" id="btnRefreshJobs">Refresh</button>
+      </div>
+      <div id="jobList"></div>
     </div>
   </section>
 
@@ -968,10 +974,10 @@ $("nav").addEventListener("click", (e) => {
   const view = btn.dataset.view;
   document.querySelectorAll("#nav button").forEach(b =>
     b.setAttribute("aria-current", b === btn ? "page" : "false"));
-  ["find","search","discover","source","compare","audit"].forEach(v =>
+  ["find","search","discover","jobs","source","compare","audit"].forEach(v =>
     $("view-" + v).classList.toggle("hidden", v !== view));
   if (view === "find") initFindView();
-  if (view === "discover") loadJobs();
+  if (view === "jobs") loadJobs();
   if (view === "source") initSourceView();
   if (view === "compare") initCompareView();
   if (view === "audit") initAuditView();
@@ -1971,6 +1977,30 @@ function summarizeJobStats(j) {
   return Object.entries(st).slice(0, 2).map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(", ");
 }
 
+// Job History's own re-download links -- reuses the three download
+// click handlers that already exist (data-download-job/-batch/-run,
+// wired elsewhere in this file), never a new download mechanism. Only
+// job types that actually produce a downloadable result list get a
+// button; the bulk-maintenance types (collection/verification/reverify/
+// contacts/factory-facts) modify existing suppliers in place -- there's
+// no separate result list to export.
+function jobDownloadButton(j) {
+  if (j.status !== "completed") return "";
+  const st = j.stats || {};
+  const q = j.query || "";
+  if (q.startsWith("[discovery]") || q.startsWith("[single-company]")) {
+    return `<button class="btn btn-ghost btn-sm" data-download-job="${esc(j.id)}" data-format="csv">CSV</button>
+      <button class="btn btn-ghost btn-sm" data-download-job="${esc(j.id)}" data-format="xlsx">XLSX</button>`;
+  }
+  if (q.startsWith("[batch]")) {
+    return `<button class="btn btn-ghost btn-sm" data-download-batch="${esc(j.id)}">CSV</button>`;
+  }
+  if (q.startsWith("[sourcing]") && st.run_id != null) {
+    return `<button class="btn btn-ghost btn-sm" data-download-run="${esc(st.run_id)}">CSV</button>`;
+  }
+  return "";
+}
+
 function renderJobsTable(jobs) {
   if (!jobs.length) {
     return `<div style="padding:32px 16px;text-align:center;color:var(--steel-500);font-size:14px">
@@ -1978,12 +2008,13 @@ function renderJobsTable(jobs) {
     </div>`;
   }
   return `<table class="tbl">
-    <thead><tr><th>Run</th><th>Status</th><th>Result</th><th>Started</th></tr></thead>
+    <thead><tr><th>Run</th><th>Status</th><th>Result</th><th>Download</th><th>Started</th></tr></thead>
     <tbody>${jobs.map(j => `
       <tr>
         <td><strong>${esc(j.query)}</strong></td>
         <td><span class="status ${esc(j.status)}">${esc(j.status)}</span></td>
         <td class="mono">${summarizeJobStats(j)}</td>
+        <td>${jobDownloadButton(j)}</td>
         <td class="mono" style="color:var(--steel-500)">${esc(j.created_at || "")}</td>
       </tr>`).join("")}</tbody>
   </table>`;
@@ -1996,7 +2027,7 @@ async function loadJobs() {
     const active = jobs.some(j => j.status === "queued" || j.status === "running");
     active ? startPolling() : stopPolling();
   } catch (err) {
-    explain(err, $("discoverAlert"));
+    explain(err, $("jobsAlert"));
     stopPolling();
   }
 }
