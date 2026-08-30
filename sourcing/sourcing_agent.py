@@ -122,6 +122,9 @@ class SourcingAgentService:
         capability_extractor: Optional[Any] = None,
         own_website_scraper: Optional[Any] = None,
         trade_pipeline: Optional[Any] = None,
+        llm_client: Optional[Any] = None,
+        manufacturer_verifier: Optional[Any] = None,
+        qichacha_client: Optional[Any] = None,
         parallel_workers: int = SOURCING_PARALLEL_WORKERS,
     ):
         self.repo = repo or SupplierRepository()
@@ -171,6 +174,30 @@ class SourcingAgentService:
             from pipeline.orchestrator import SupplierIntelligencePipeline
 
             self.trade_pipeline = SupplierIntelligencePipeline(repo=self.repo)
+
+        if llm_client is not None:
+            self.llm_client = llm_client
+        else:
+            from llm.client import LLMClient
+
+            self.llm_client = LLMClient()
+
+        # Reuse trade_pipeline's already-constructed instances by
+        # default, rather than building a second ManufacturerVerifier/
+        # QichachaVerifier -- both are already free to construct
+        # (never require credentials until an actual call), but there's
+        # no reason to duplicate the object. Explicit params still exist
+        # so tests can inject fakes without needing a fake trade_pipeline
+        # too. See _process_candidate's own comment for why these are
+        # called here at all: found live that a Source-tab candidate's
+        # is_manufacturer/business_scope/registered_capital_rmb were
+        # NEVER populated, meaning cross_checker.py's
+        # manufacturer_assessment sub-check (25 of confidence_scorer.py's
+        # ~100 weighted points) could never get real signal, and the
+        # module docstring's own "NOT a confirmed trader" exclusion
+        # (point 3 above) could never actually fire.
+        self.manufacturer_verifier = manufacturer_verifier or self.trade_pipeline.manufacturer_verifier
+        self.qichacha_client = qichacha_client or self.trade_pipeline.qichacha
 
     def _run_trade_shipment_enrichment(self, product: str) -> None:
         """Once per run, before anything else -- a small, no-paid-API
@@ -362,7 +389,16 @@ class SourcingAgentService:
 
         if not skip_collection_if_fresh or _is_stale(supplier):
             self.collection_service.collect(supplier_id)
-            self._extract_and_persist_capabilities(supplier_id)
+            pages = self._extract_and_persist_capabilities(supplier_id)
+            # Both of these run BEFORE verify() specifically so
+            # verification_ai/cross_checker.py's manufacturer_assessment
+            # and facility_address sub-checks (50 of confidence_scorer.py's
+            # ~100 weighted points) have real input to work with, instead
+            # of the "no signal" every Source-tab candidate got before --
+            # see this class's own __init__ comment for the live incident.
+            if pages:
+                self._attempt_address_extraction(supplier_id, pages)
+            self._assess_manufacturer_status(supplier_id)
             self.verification_service.verify(supplier_id)
             supplier = self.repo.get_supplier(supplier_id)
             if supplier is None:
@@ -405,7 +441,7 @@ class SourcingAgentService:
 
         return supplier_id
 
-    def _extract_and_persist_capabilities(self, supplier_id: int) -> None:
+    def _extract_and_persist_capabilities(self, supplier_id: int) -> Optional[List[Any]]:
         """Reuses verification.capability_extractor.CapabilityExtractor
         exactly as pipeline/orchestrator.py's own capability-extraction
         stage does -- neither CollectionService nor VerificationService
@@ -415,16 +451,20 @@ class SourcingAgentService:
         fetch of the supplier's own site (via the same cheap,
         no-JS OwnWebsiteScraper VerificationService already uses for
         its own cross-checks) -- own try/except so a bad page never
-        aborts the candidate."""
+        aborts the candidate.
+
+        Returns the fetched pages on success (so _process_candidate can
+        reuse them for address extraction without a THIRD fetch of the
+        same site), or None if there's no domain or the fetch failed."""
         supplier = self.repo.get_supplier(supplier_id)
         domain = supplier.get("domain") if supplier else None
         if not domain:
-            return
+            return None
         try:
             fetch_result = self.own_website_scraper.fetch(domain)
             if not fetch_result.success:
                 self.repo.mark_capability_extraction_attempted(supplier_id)
-                return
+                return None
             findings = self.capability_extractor.extract_from_pages(fetch_result.pages)
             for finding in findings:
                 self.repo.add_capability_finding(
@@ -440,8 +480,76 @@ class SourcingAgentService:
                     },
                 )
             self.repo.mark_capability_extraction_attempted(supplier_id)
+            return fetch_result.pages
         except Exception as e:
             logger.warning("sourcing_agent: capability extraction failed for supplier #%s: %s", supplier_id, e)
+            return None
+
+    def _attempt_address_extraction(self, supplier_id: int, pages: List[Any]) -> None:
+        """Reuses verification.address_extractor.attempt_address_extraction
+        (extracted out of batch/batch_service.py for exactly this reuse)
+        against the pages _extract_and_persist_capabilities already
+        fetched -- no new network call. Closes the facility_address gap
+        in cross_checker.py's sub-checks (25 of confidence_scorer.py's
+        ~100 weighted points), which could never fire for a Source-tab
+        candidate before this: sourcing_agent.py never populated
+        suppliers.address at all. Own try/except so an extraction bug
+        never aborts the candidate -- same discipline as every other
+        call in this method's caller."""
+        try:
+            from verification.address_extractor import attempt_address_extraction
+
+            attempt_address_extraction(
+                self.repo, self.llm_client, supplier_id, pages, changed_by="sourcing_agent",
+            )
+        except Exception as e:
+            logger.warning("sourcing_agent: address extraction failed for supplier #%s: %s", supplier_id, e)
+
+    def _assess_manufacturer_status(self, supplier_id: int) -> None:
+        """Populates is_manufacturer/manufacturer_confidence/
+        manufacturer_signals for real, for the first time in the
+        sourcing path -- closes the manufacturer_assessment gap in
+        cross_checker.py's sub-checks (25 of confidence_scorer.py's
+        ~100 weighted points) AND makes this class's own module
+        docstring's "NOT a confirmed trader" exclusion (point 3) able
+        to actually fire, which it never could while is_manufacturer
+        stayed permanently blank.
+
+        Qichacha (business_scope/registered_capital_rmb) only applies
+        when the supplier already carries a USCC -- an 18-character
+        Chinese business-registry number that ONLY ever arrives via
+        Alibaba/1688 scraping, never via SerpAPI/LLM discovery (the
+        Source tab's primary path). So this step is a real, but
+        partial, fix: it closes the gap completely for a candidate
+        that already has a USCC (re-surfaced from an earlier
+        Alibaba/1688-sourced record), and leaves every other candidate
+        exactly as honestly "no signal" as the shipped evidence-list UI
+        already discloses -- verification.manufacturer_verifier.
+        ManufacturerVerifier.assess() itself never calls an external
+        API, so running it here is free regardless.
+
+        Reuses SupplierRepository.update_verification/
+        update_manufacturer_verification -- the exact same apply
+        methods pipeline/orchestrator.py's own batch stages use, so the
+        trusted-value-guard/None-never-overwrites semantics are
+        identical, not reimplemented."""
+        supplier = self.repo.get_supplier(supplier_id)
+        if supplier is None:
+            return
+
+        if supplier.get("uscc") and self.qichacha_client.app_key and self.qichacha_client.app_secret:
+            try:
+                verification = self.qichacha_client.verify(supplier["uscc"])
+                self.repo.update_verification(supplier_id, verification)
+                supplier = self.repo.get_supplier(supplier_id) or supplier
+            except Exception as e:
+                logger.warning("sourcing_agent: Qichacha verification failed for supplier #%s: %s", supplier_id, e)
+
+        try:
+            result = self.manufacturer_verifier.assess(supplier)
+            self.repo.update_manufacturer_verification(supplier_id, result)
+        except Exception as e:
+            logger.warning("sourcing_agent: manufacturer assessment failed for supplier #%s: %s", supplier_id, e)
 
     def _latest_cross_check_result(self, supplier_id: int) -> CrossCheckResult:
         """Reconstructs the CrossCheckResult VerificationService.verify()

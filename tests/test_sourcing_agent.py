@@ -94,13 +94,14 @@ class FakeCapabilityExtractor:
 
 
 class FakeOwnWebsiteScraper:
-    def __init__(self, success=True):
+    def __init__(self, success=True, pages=None):
         self._success = success
+        self._pages = pages
 
     def fetch(self, domain):
+        pages = self._pages if self._pages is not None else [SimpleNamespace(url=f"https://{domain}", text="some page text")]
         return SimpleNamespace(
-            success=self._success,
-            pages=[SimpleNamespace(url=f"https://{domain}", text="some page text")],
+            success=self._success, pages=pages,
             error=None if self._success else "fetch failed",
         )
 
@@ -137,10 +138,58 @@ class FakeBriefParser:
         return self._brief
 
 
+class FakeLLMClient:
+    """Default response=None means "no address found" -- attempt_
+    address_extraction() degrades to "skipped" cleanly on this, same as
+    a real LLMClient() with no API key configured (never raises, see
+    llm/client.py's own contract) -- so tests that don't care about
+    address extraction get a fast, deterministic no-op instead of
+    depending on a real network call's failure timing."""
+    def __init__(self, response=None):
+        self._response = response
+        self.calls = []
+
+    def complete_json(self, system_prompt, user_prompt, **kwargs):
+        self.calls.append((system_prompt, user_prompt))
+        return self._response
+
+
+class FakeManufacturerVerifier:
+    """Default result has is_manufacturer=None (no signal) -- a no-op
+    write (update_manufacturer_verification skips None fields), so
+    tests that don't care about manufacturer assessment are unaffected
+    by this step running."""
+    def __init__(self, result=None):
+        self._result = result or {"is_manufacturer": None, "manufacturer_confidence": 50, "manufacturer_signals": []}
+        self.calls = []
+
+    def assess(self, supplier):
+        self.calls.append(supplier["id"])
+        return dict(self._result)
+
+
+class FakeQichachaClient:
+    """app_key/app_secret both None by default -- _assess_manufacturer_
+    status skips the Qichacha call entirely unless a test explicitly
+    configures credentials, same as the real QichachaVerifier with no
+    keys set."""
+    def __init__(self, app_key=None, app_secret=None, verification=None):
+        self.app_key = app_key
+        self.app_secret = app_secret
+        self._verification = verification or {}
+        self.calls = []
+
+    def verify(self, uscc):
+        self.calls.append(uscc)
+        return dict(self._verification)
+
+
 class FakeTradePipeline:
-    def __init__(self, raise_error=None):
+    def __init__(self, raise_error=None, manufacturer_verifier=None, qichacha=None):
         self._raise_error = raise_error
         self.calls = []
+        self.manufacturer_verifier = manufacturer_verifier or FakeManufacturerVerifier()
+        self.qichacha = qichacha or FakeQichachaClient()
 
     def run(self, product, **kwargs):
         self.calls.append({"product": product, **kwargs})
@@ -164,7 +213,8 @@ def _brief(**overrides):
 
 def _service(repo, *, suppliers_by_country=None, is_manufacturer_by_id=None,
              brief=None, dossier_response="default", capability_findings=None,
-             raise_verify_for_id=None, trade_pipeline=None, parallel_workers=None):
+             raise_verify_for_id=None, trade_pipeline=None, parallel_workers=None,
+             llm_client=None, manufacturer_verifier=None, qichacha_client=None):
     kwargs = {}
     if parallel_workers is not None:
         kwargs["parallel_workers"] = parallel_workers
@@ -180,6 +230,9 @@ def _service(repo, *, suppliers_by_country=None, is_manufacturer_by_id=None,
         capability_extractor=FakeCapabilityExtractor(findings=capability_findings),
         own_website_scraper=FakeOwnWebsiteScraper(),
         trade_pipeline=trade_pipeline or FakeTradePipeline(),
+        llm_client=llm_client or FakeLLMClient(),
+        manufacturer_verifier=manufacturer_verifier,
+        qichacha_client=qichacha_client,
         **kwargs,
     )
 
@@ -737,3 +790,203 @@ class TestExistingDatabaseFirst:
         outcome = service.run("find winch manufacturers with ISO 9001")
 
         assert outcome.qualified_supplier_ids == []
+
+
+class TestManufacturerAssessmentWiring:
+    """Root-cause fix for the Source-tab scoring investigation: before
+    this, is_manufacturer/business_scope/registered_capital_rmb were
+    NEVER populated for a sourced candidate, so cross_checker.py's
+    manufacturer_assessment sub-check (25 of confidence_scorer.py's
+    ~100 weighted points) could never get real signal."""
+
+    def test_assess_manufacturer_status_persists_a_real_verdict(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Trading Co"})
+        verifier = FakeManufacturerVerifier(result={
+            "is_manufacturer": False, "manufacturer_confidence": 20,
+            "manufacturer_signals": ["RED FLAG: distributor language found"],
+        })
+        service = _service(repo, manufacturer_verifier=verifier)
+
+        service._assess_manufacturer_status(supplier_id)
+
+        supplier = repo.get_supplier(supplier_id)
+        assert not supplier["is_manufacturer"]
+        assert verifier.calls == [supplier_id]
+
+    def test_qichacha_called_only_with_a_uscc_and_credentials(self, repo):
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Acme Co", "uscc": "123456789012345678",
+        })
+        qichacha = FakeQichachaClient(
+            app_key="key", app_secret="secret",
+            verification={"uscc_verified": True, "business_scope": "manufacturing of winches"},
+        )
+        service = _service(repo, qichacha_client=qichacha)
+
+        service._assess_manufacturer_status(supplier_id)
+
+        assert qichacha.calls == ["123456789012345678"]
+        assert repo.get_supplier(supplier_id)["business_scope"] == "manufacturing of winches"
+
+    def test_qichacha_skipped_without_a_uscc(self, repo):
+        """The real limit found while scoping this fix: SerpAPI/LLM
+        discovery (the Source tab's primary path) never produces a
+        USCC at all -- only Alibaba/1688 scraping does. This step
+        stays a real no-op for that common case, not an error."""
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co"})
+        qichacha = FakeQichachaClient(app_key="key", app_secret="secret")
+        service = _service(repo, qichacha_client=qichacha)
+
+        service._assess_manufacturer_status(supplier_id)
+
+        assert qichacha.calls == []
+
+    def test_qichacha_skipped_without_credentials(self, repo):
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Acme Co", "uscc": "123456789012345678",
+        })
+        qichacha = FakeQichachaClient()  # app_key/app_secret both None
+        service = _service(repo, qichacha_client=qichacha)
+
+        service._assess_manufacturer_status(supplier_id)
+
+        assert qichacha.calls == []
+
+    def test_manufacturer_assessment_failure_does_not_raise(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co"})
+
+        class ExplodingVerifier:
+            def assess(self, supplier):
+                raise RuntimeError("boom")
+
+        service = _service(repo, manufacturer_verifier=ExplodingVerifier())
+
+        service._assess_manufacturer_status(supplier_id)  # must not raise
+
+    def test_qichacha_failure_does_not_block_manufacturer_assessment(self, repo):
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Acme Co", "uscc": "123456789012345678",
+        })
+
+        class ExplodingQichacha:
+            app_key = "key"
+            app_secret = "secret"
+
+            def verify(self, uscc):
+                raise RuntimeError("boom")
+
+        verifier = FakeManufacturerVerifier(result={"is_manufacturer": True, "manufacturer_confidence": 60})
+        service = _service(repo, qichacha_client=ExplodingQichacha(), manufacturer_verifier=verifier)
+
+        service._assess_manufacturer_status(supplier_id)  # must not raise
+
+        assert verifier.calls == [supplier_id]  # assessment still ran despite the Qichacha failure
+
+
+class TestAddressExtractionWiring:
+    """Root-cause fix: sourcing_agent.py never extracted or set
+    suppliers.address anywhere, so cross_checker.py's facility_address
+    sub-check (25 of confidence_scorer.py's ~100 weighted points) could
+    never fire for a sourced candidate. Reuses the pages
+    _extract_and_persist_capabilities() already fetched -- no new
+    network call."""
+
+    def test_extract_and_persist_capabilities_returns_the_fetched_pages(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.example.com"})
+        pages = [SimpleNamespace(url="https://acme.example.com/", text="some page text", footer_text="")]
+        service = SourcingAgentService(
+            repo=repo, discovery_service=FakeDiscoveryService(repo), collection_service=FakeCollectionService(),
+            verification_service=FakeVerificationService(repo), brief_parser=FakeBriefParser(brief=_brief()),
+            dossier_generator=FakeDossierGenerator(), capability_extractor=FakeCapabilityExtractor(),
+            own_website_scraper=FakeOwnWebsiteScraper(pages=pages), trade_pipeline=FakeTradePipeline(),
+            llm_client=FakeLLMClient(),
+        )
+
+        result = service._extract_and_persist_capabilities(supplier_id)
+
+        assert result == pages
+
+    def test_extract_and_persist_capabilities_returns_none_on_fetch_failure(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.example.com"})
+        service = SourcingAgentService(
+            repo=repo, discovery_service=FakeDiscoveryService(repo), collection_service=FakeCollectionService(),
+            verification_service=FakeVerificationService(repo), brief_parser=FakeBriefParser(brief=_brief()),
+            dossier_generator=FakeDossierGenerator(), capability_extractor=FakeCapabilityExtractor(),
+            own_website_scraper=FakeOwnWebsiteScraper(success=False), trade_pipeline=FakeTradePipeline(),
+            llm_client=FakeLLMClient(),
+        )
+
+        assert service._extract_and_persist_capabilities(supplier_id) is None
+
+    def test_address_extraction_uses_pages_from_capability_extraction(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.example.com"})
+        pages = [SimpleNamespace(
+            url="https://acme.example.com/contact",
+            text="Contact us: Acme Co, 1 Main St, Springfield, IL. We ship worldwide and respond quickly.",
+            footer_text="",
+        )]
+        llm = FakeLLMClient(response={"address": "1 Main St, Springfield, IL"})
+        service = SourcingAgentService(
+            repo=repo, discovery_service=FakeDiscoveryService(repo), collection_service=FakeCollectionService(),
+            verification_service=FakeVerificationService(repo), brief_parser=FakeBriefParser(brief=_brief()),
+            dossier_generator=FakeDossierGenerator(), capability_extractor=FakeCapabilityExtractor(),
+            own_website_scraper=FakeOwnWebsiteScraper(pages=pages), trade_pipeline=FakeTradePipeline(),
+            llm_client=llm,
+        )
+
+        fetched_pages = service._extract_and_persist_capabilities(supplier_id)
+        service._attempt_address_extraction(supplier_id, fetched_pages)
+
+        assert repo.get_supplier(supplier_id)["address"] == "1 Main St, Springfield, IL"
+        log = repo.get_supplier_change_log(supplier_id)
+        assert any(entry["field_name"] == "address" and entry["changed_by"] == "sourcing_agent" for entry in log)
+
+    def test_no_pages_skips_address_extraction_cleanly(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co"})
+        service = _service(repo)
+
+        service._attempt_address_extraction(supplier_id, [])  # must not raise
+
+        assert repo.get_supplier(supplier_id).get("address") is None
+
+    def test_address_extraction_failure_does_not_raise(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Co"})
+        pages = [SimpleNamespace(
+            url="https://acme.example.com/contact",
+            text="Contact us: Acme Co, 1 Main St, Springfield, IL. We ship worldwide and respond quickly.",
+            footer_text="",
+        )]
+
+        class ExplodingLLM:
+            def complete_json(self, *args, **kwargs):
+                raise RuntimeError("boom")
+
+        service = _service(repo, llm_client=ExplodingLLM())
+
+        service._attempt_address_extraction(supplier_id, pages)  # must not raise
+
+        assert repo.get_supplier(supplier_id).get("address") is None
+
+    def test_full_process_candidate_flow_populates_address_and_manufacturer_fields(self, repo):
+        """End-to-end: a freshly-discovered candidate going through
+        _process_candidate now gets real facility_address and
+        manufacturer_assessment signal, not permanently blank."""
+        pages = [SimpleNamespace(
+            url="https://acmewinchco.example.com/contact",
+            text="Contact Acme Winch Co at 1 Main St, Springfield, IL. We manufacture winches in-house.",
+            footer_text="",
+        )]
+        llm = FakeLLMClient(response={"address": "1 Main St, Springfield, IL"})
+        verifier = FakeManufacturerVerifier(result={"is_manufacturer": True, "manufacturer_confidence": 75})
+        service = _service(
+            repo, suppliers_by_country={None: ["Acme Winch Co"]},
+            llm_client=llm, manufacturer_verifier=verifier,
+        )
+        service.own_website_scraper = FakeOwnWebsiteScraper(pages=pages)
+
+        outcome = service.run("find 1 winch manufacturer")
+
+        assert len(outcome.qualified_supplier_ids) == 1
+        supplier_id = outcome.qualified_supplier_ids[0]
+        assert repo.get_supplier(supplier_id)["address"] == "1 Main St, Springfield, IL"
+        assert verifier.calls == [supplier_id]

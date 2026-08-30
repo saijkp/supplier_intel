@@ -16,7 +16,6 @@ import pytest
 
 from batch.batch_service import (
     BatchService,
-    _address_candidate_sources,
     _placeholder_name_from_domain,
     _reject_reason_for_extracted_name,
 )
@@ -710,88 +709,6 @@ class TestRejectReasonForExtractedName:
         assert _reject_reason_for_extracted_name("Acme Trading Co", long_text) is None
 
 
-class TestAddressCandidateSources:
-
-    def test_prefers_contact_page_over_footer_and_impressum(self):
-        pages = [
-            FakePage("https://x.com/", "homepage text", footer_text="Acme Co, 1 Main St"),
-            FakePage("https://x.com/impressum", "Acme Co GmbH, Impressum, 1 Main St, Berlin"),
-            FakePage("https://x.com/contact", "Contact us: Acme Co, 1 Main St, Berlin"),
-        ]
-        candidates = _address_candidate_sources(pages)
-        assert candidates[0][0] == "contact page"
-        assert candidates[0][1] == "https://x.com/contact"
-
-    def test_falls_back_to_footer_when_no_contact_page(self):
-        pages = [
-            FakePage("https://x.com/", "homepage text", footer_text="Acme Co, 1 Main St"),
-            FakePage("https://x.com/impressum", "Acme Co GmbH, Impressum, 1 Main St, Berlin"),
-        ]
-        candidates = _address_candidate_sources(pages)
-        assert candidates[0][0] == "footer"
-        assert candidates[0][1] == "https://x.com/"
-
-    def test_falls_back_to_impressum_when_no_contact_or_footer(self):
-        pages = [
-            FakePage("https://x.com/", "homepage text with no address"),
-            FakePage("https://x.com/imprint", "Acme Co GmbH, 1 Main St, Berlin"),
-        ]
-        candidates = _address_candidate_sources(pages)
-        assert candidates[0][0] == "impressum page"
-        assert candidates[0][1] == "https://x.com/imprint"
-
-    def test_only_the_first_matching_page_per_tier_is_used(self):
-        pages = [
-            FakePage("https://x.com/contact", "first contact page"),
-            FakePage("https://x.com/contact-us", "second contact-shaped page"),
-        ]
-        candidates = _address_candidate_sources(pages)
-        contact_candidates = [c for c in candidates if c[0] == "contact page"]
-        assert len(contact_candidates) == 1
-        assert contact_candidates[0][1] == "https://x.com/contact"
-
-    def test_empty_footer_text_is_not_treated_as_a_candidate(self):
-        pages = [FakePage("https://x.com/", "homepage text", footer_text="")]
-        candidates = _address_candidate_sources(pages)
-        assert candidates == []
-
-    def test_no_matching_pages_returns_empty_list(self):
-        pages = [FakePage("https://x.com/products", "our products page")]
-        assert _address_candidate_sources(pages) == []
-
-    def test_falls_back_to_about_page_when_no_contact_footer_or_impressum(self):
-        """Added after a real gap-analysis run against the 29 confirmed
-        injection-moulding candidates found 3 of 5 "no address found"
-        suppliers would have been recovered by an about-page tier."""
-        pages = [
-            FakePage("https://x.com/", "homepage text with no address"),
-            FakePage("https://x.com/about-us", "Acme Co was founded in 1990. Head office: 1 Main St, Berlin."),
-        ]
-        candidates = _address_candidate_sources(pages)
-        assert candidates[0][0] == "about page"
-        assert candidates[0][1] == "https://x.com/about-us"
-
-    def test_about_page_is_lowest_priority_tried_after_impressum(self):
-        pages = [
-            FakePage("https://x.com/about-us", "Acme Co, 1 Main St, Berlin"),
-            FakePage("https://x.com/imprint", "Acme Co GmbH, 1 Main St, Berlin"),
-        ]
-        candidates = _address_candidate_sources(pages)
-        assert [c[0] for c in candidates] == ["impressum page", "about page"]
-
-    def test_about_page_matches_company_url_convention_too(self):
-        """Real sites use both conventions for the same page -- e.g.
-        plasticmold.net/company/ vs hordrt.com/about-us-3/."""
-        pages = [FakePage("https://x.com/company", "Acme Co, 1 Main St, Berlin")]
-        candidates = _address_candidate_sources(pages)
-        assert candidates[0][0] == "about page"
-        assert candidates[0][1] == "https://x.com/company"
-
-    def test_empty_about_page_text_is_not_treated_as_a_candidate(self):
-        pages = [FakePage("https://x.com/about-us", "")]
-        assert _address_candidate_sources(pages) == []
-
-
 class TestAddressExtraction:
 
     def test_applied_when_supplier_has_no_existing_address(self):
@@ -976,8 +893,9 @@ class TestAddressExtraction:
         assert repo.suppliers[supplier_id]["address"] == "1 Depot Rd, Ohio, USA"
 
     def test_falls_through_to_about_page_when_no_other_tier_has_an_address(self):
-        """The 4th, lowest-priority tier -- see _address_candidate_sources'
-        own docstring for why it's tried last."""
+        """The 4th, lowest-priority tier -- see verification.
+        address_extractor.address_candidate_sources' own docstring for
+        why it's tried last."""
         repo = FakeRepo()
         repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
 

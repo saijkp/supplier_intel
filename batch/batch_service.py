@@ -63,12 +63,13 @@ supplier_id in the export is itself the visible signal.
 
 Address extraction (_attempt_address_extraction): runs for EVERY
 successfully-collected row, not just placeholder-name rows -- address
-isn't tied to whether the CSV gave a name. Candidate sources are tried
-in a fixed order (contact page, then footer text, then impressum page,
-then about/company page -- see _address_candidate_sources), stopping
-at the first tier that yields an address; grounded-only prompt (ADDRESS_EXTRACTION_SYSTEM_PROMPT)
-so a partial address (e.g. just a city) is stored as-is, never
-completed. Same trusted-value guard as canonical_name: only written to
+isn't tied to whether the CSV gave a name. Delegates to
+verification.address_extractor.attempt_address_extraction (extracted
+out so sourcing/sourcing_agent.py can reuse the exact same tiered-
+candidate-source/grounded-extraction logic -- see that module's own
+docstring), stopping at the first tier that yields an address; a
+partial address (e.g. just a city) is stored as-is, never completed.
+Same trusted-value guard as canonical_name: only written to
 suppliers.address if currently empty, otherwise recorded via
 field_provenance as field_name="address_candidate" -- a disagreement
 signal, not applied.
@@ -137,6 +138,11 @@ from discovery.candidate_validator import SYSTEM_PROMPT as NAME_EXTRACTION_SYSTE
 from llm.client import LLMClient
 from scrapers.google_search_scraper import GoogleSearchScraper
 from storage.repository import SupplierRepository
+from verification.address_extractor import (
+    address_candidate_sources,
+    attempt_address_extraction,
+    reject_reason_for_llm_extraction,
+)
 from verification.website_contact_extractor import parking_page_reason
 
 logger = logging.getLogger(__name__)
@@ -162,31 +168,6 @@ _JUNK_NAME_EXACT_BLOCKLIST: frozenset = frozenset({
 })
 
 
-# A page with less real content than this (after stripping whitespace)
-# isn't trustworthy enough for a grounded LLM CLAIM (a name or an
-# address) regardless of what was extracted from it. NOT part of
-# parking_page_reason itself -- that's shared with contact extraction
-# now too, and a real "Contact Us" page is often legitimately this
-# short (just an address/phone block), unlike a page an LLM is being
-# asked to assert a company name or address from.
-_MIN_MEANINGFUL_PAGE_TEXT_LENGTH = 60
-
-
-def _reject_reason_for_llm_extraction(page_text: str) -> Optional[str]:
-    """None if `page_text` is trustworthy enough to run a grounded LLM
-    extraction (name or address) against; otherwise a reason. Layers
-    this module's own length floor on top of the shared, signature-only
-    parking_page_reason -- see that function's own docstring and
-    _MIN_MEANINGFUL_PAGE_TEXT_LENGTH above for why the floor lives here
-    rather than in the shared function."""
-    reason = parking_page_reason(page_text)
-    if reason:
-        return reason
-    if len(re.sub(r"\s+", "", page_text or "")) < _MIN_MEANINGFUL_PAGE_TEXT_LENGTH:
-        return "page text is too short to be a real company page"
-    return None
-
-
 def _reject_reason_for_extracted_name(name: str, page_text: str) -> Optional[str]:
     """None if `name` passes the floor test; otherwise a human-readable
     rejection reason. See _JUNK_NAME_EXACT_BLOCKLIST for what's checked
@@ -195,29 +176,12 @@ def _reject_reason_for_extracted_name(name: str, page_text: str) -> Optional[str
     if normalised_name in _JUNK_NAME_EXACT_BLOCKLIST:
         return f"extracted name '{name}' matches a known server-default/placeholder page name"
 
-    return _reject_reason_for_llm_extraction(page_text)
+    return reject_reason_for_llm_extraction(page_text)
 
 
-# Grounded-only, same discipline as NAME_EXTRACTION_SYSTEM_PROMPT --
-# critically, rule 2 is what makes "store the city, leave the rest
-# empty" the default behaviour rather than something callers have to
-# special-case: the model is told to return exactly the substring
-# found, never to complete a partial address.
-ADDRESS_EXTRACTION_SYSTEM_PROMPT = """You are reading the text of a company website page. Extract ONLY the company's own postal address if it is explicitly stated in the text below -- never guess, infer, or complete a partial address.
-
-Rules, strictly enforced:
-1. Only report an address if it is explicitly stated in the text (e.g. in a contact section, footer, or legal/impressum notice).
-2. Return exactly what is stated -- do not add a street, postcode, city, or country that isn't present. If only a city or a partial address is given, return just that partial text -- never complete it using typical address patterns or general knowledge.
-3. If no address is stated at all, return null.
-4. Never invent or infer an address from a domain name, company name, or general knowledge about the company.
-
-Return ONLY a JSON object with exactly this key, no other text:
-{
-  "address": "the exact address text as stated, or null if not clearly stated"
-}"""
-
-# Same grounded discipline as ADDRESS_EXTRACTION_SYSTEM_PROMPT, but
-# deliberately asks about the factory/production site specifically --
+# Same grounded discipline as verification.address_extractor's
+# ADDRESS_EXTRACTION_SYSTEM_PROMPT, but deliberately asks about the
+# factory/production site specifically --
 # never treats a general contact/office address as the factory unless
 # the text itself says so (see module docstring).
 FACTORY_LOCATION_EXTRACTION_SYSTEM_PROMPT = """You are reading the text of a company website page. Extract ONLY the location of the company's actual factory/production site if it is explicitly stated in the text below -- never guess, infer, or complete a partial location, and never assume the factory is at the same address as a general contact/office address unless the text explicitly says so.
@@ -269,58 +233,6 @@ class BatchOutcome:
     facility_photos_found: int = 0
     reputation_snippets_found: int = 0
     domains_recovered: int = 0
-
-
-def _address_candidate_sources(pages: List[Any]) -> List[tuple]:
-    """Ordered (tier_label, url, text) candidates for address
-    extraction -- contact page, footer text, impressum page, about
-    page, per the required preference order. Only the first page found
-    in each tier is used (at most one candidate per tier, so at most 4
-    LLM calls total per row -- see _attempt_address_extraction, which
-    stops at the first tier that actually yields an address).
-
-    "about page" (added after a real gap-analysis run against the 29
-    confirmed injection-moulding candidates -- see batch_service's own
-    diagnostic notes): a general company-info page is the LEAST
-    authoritative of the four tiers (a dedicated contact/impressum page
-    states an address on purpose; an about page mentions one
-    incidentally, if at all) -- deliberately tried last, only once
-    contact/footer/impressum have all come up empty. Matches "about" OR
-    "company" in the URL -- real sites use both conventions for the
-    same page (e.g. plasticmold.net/company/, hordrt.com/about-us-3/)."""
-    candidates: List[tuple] = []
-
-    contact_page = next(
-        (p for p in pages if "contact" in (getattr(p, "url", "") or "").lower()
-         and (getattr(p, "text", "") or "").strip()),
-        None,
-    )
-    if contact_page is not None:
-        candidates.append(("contact page", contact_page.url, contact_page.text))
-
-    footer_page = next((p for p in pages if (getattr(p, "footer_text", "") or "").strip()), None)
-    if footer_page is not None:
-        candidates.append(("footer", footer_page.url, footer_page.footer_text))
-
-    impressum_page = next(
-        (p for p in pages
-         if any(k in (getattr(p, "url", "") or "").lower() for k in ("impressum", "imprint"))
-         and (getattr(p, "text", "") or "").strip()),
-        None,
-    )
-    if impressum_page is not None:
-        candidates.append(("impressum page", impressum_page.url, impressum_page.text))
-
-    about_page = next(
-        (p for p in pages
-         if any(k in (getattr(p, "url", "") or "").lower() for k in ("about", "company"))
-         and (getattr(p, "text", "") or "").strip()),
-        None,
-    )
-    if about_page is not None:
-        candidates.append(("about page", about_page.url, about_page.text))
-
-    return candidates
 
 
 def _placeholder_name_from_domain(domain: str) -> str:
@@ -711,74 +623,14 @@ class BatchService:
     def _attempt_address_extraction(self, supplier_id: int, collect_result: Dict[str, Any]) -> str:
         """Runs for EVERY successfully-collected row, regardless of
         name_source -- address isn't tied to whether the CSV gave a
-        name. Tries candidate sources in the order specified: contact
-        page, then footer text, then impressum page -- only the first
-        page found in each tier, stopping at the first tier that
-        actually yields an address (never blending across tiers, never
-        making more than one LLM call per tier).
-
-        Returns "applied" (address was empty, now written to
-        suppliers.address + field_provenance), "conflicting" (supplier
-        already had a non-empty address from elsewhere -- never
-        overwritten, but the extracted value is still recorded via
-        field_provenance under field_name="address_candidate" so a
-        disagreement between the trusted address and the site's own
-        content is visible, same pattern as canonical_name_candidate),
-        or "skipped" (no pages, every tier empty/parking-page-shaped,
-        or no address found anywhere)."""
+        name. Delegates to verification.address_extractor.
+        attempt_address_extraction (extracted out so
+        sourcing/sourcing_agent.py can reuse the exact same logic) --
+        see that function's own docstring for the tiered-candidate/
+        trusted-value-guard behavior and return values, unchanged from
+        before the extraction."""
         pages = collect_result.get("pages") or []
-        if not pages:
-            return "skipped"
-
-        for tier_label, url, text in _address_candidate_sources(pages):
-            if _reject_reason_for_llm_extraction(text):
-                continue
-            try:
-                extracted = self.llm_client.complete_json(
-                    ADDRESS_EXTRACTION_SYSTEM_PROMPT,
-                    f"Website page content ({tier_label}):\n\n{text[:20_000]}",
-                )
-            except Exception as e:  # noqa: BLE001 -- an extraction failure must never fail an otherwise-successful collection
-                logger.warning("batch: address extraction failed for supplier #%s (%s): %s", supplier_id, tier_label, e)
-                continue
-            if not isinstance(extracted, dict):
-                continue
-
-            address = extracted.get("address")
-            if not isinstance(address, str) or not address.strip():
-                continue
-            address = address.strip()
-
-            supplier = self.repo.get_supplier(supplier_id)
-            current_address = (supplier or {}).get("address")
-
-            if current_address:
-                logger.info(
-                    "batch: extracted address for supplier #%s (%s) conflicts with existing "
-                    "address -- not applied", supplier_id, tier_label,
-                )
-                self.repo.save_field_provenance(
-                    supplier_id=supplier_id, field_name="address_candidate", value=address,
-                    source_url=url, raw_snippet=text[:500],
-                    extraction_method="llm_grounded_extraction",
-                    source_tier="own_domain", claim_type="verifiable_fact",
-                )
-                return "conflicting"
-
-            self.repo.update_supplier_fields_with_history(
-                supplier_id, {"address": address},
-                changed_by="batch_service",
-                change_reason=f"address found on the supplier's own site ({tier_label})",
-            )
-            self.repo.save_field_provenance(
-                supplier_id=supplier_id, field_name="address", value=address,
-                source_url=url, raw_snippet=text[:500],
-                extraction_method="llm_grounded_extraction",
-                source_tier="own_domain", claim_type="verifiable_fact",
-            )
-            return "applied"
-
-        return "skipped"
+        return attempt_address_extraction(self.repo, self.llm_client, supplier_id, pages, changed_by="batch_service")
 
     def _attempt_factory_location_extraction(self, supplier_id: int, collect_result: Dict[str, Any]) -> str:
         """Same tiered-candidate/trusted-value-guard pattern as
@@ -805,8 +657,8 @@ class BatchService:
         if not pages:
             return "skipped"
 
-        for tier_label, url, text in _address_candidate_sources(pages):
-            if _reject_reason_for_llm_extraction(text):
+        for tier_label, url, text in address_candidate_sources(pages):
+            if reject_reason_for_llm_extraction(text):
                 continue
             try:
                 extracted = self.llm_client.complete_json(

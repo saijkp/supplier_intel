@@ -1089,7 +1089,8 @@ function confidenceBreakdownTable(breakdown) {
    path) exists -- see verification_ai/confidence_scorer.py's
    CHECK_WEIGHTS for why these particular two checks dominate. */
 const _NO_SIGNAL_HINT = {
-  manufacturer_assessment: "Qichacha/registry data not run for this candidate",
+  manufacturer_assessment: "Chinese business-registry check only available for "
+    + "Alibaba/1688-sourced candidates",
   facility_address: "no address on file to verify yet",
 };
 function subCheckEvidenceBlock(breakdown) {
