@@ -1452,6 +1452,22 @@ const FIND_DISCLAIMER = `<p class="hint" style="margin-top:10px">Sourcing-valida
 // no new evidence-rendering code, no live-feed noise. Replaces the old
 // findRenderSupplierResults, which only ever showed new_supplier_ids
 // via the plain supplierCard() summary.
+// Plain unweighted evidence-completeness sum for the Find Suppliers
+// results screen -- deliberately a DIFFERENT, broader number from
+// batch/tracker_exporter.py's own evidence_score() (which the Audit
+// tab uses, and which only counts 4 contact fields, 0-4). This one
+// also adds certifications-claimed count and catalogue-depth-signal
+// count, both already present on the same evidence bundle each card
+// already fetches -- no new backend call. A completeness ranking, NOT
+// a quality judgment: see the heading's own tooltip text below.
+function findEvidenceCompletenessScore(b) {
+  const contactFields = [b.contact.address, b.contact.phone, b.contact.email, b.contact.factory_location];
+  const contactCount = contactFields.filter(Boolean).length;
+  const certCount = (b.certifications_claimed || []).length;
+  const catalogueCount = (b.catalogue_depth_signals || []).length;
+  return contactCount + certCount + catalogueCount;
+}
+
 async function findRenderResultsScreen(host, jobId, newIds, duplicateIds) {
   // Real bug found live: a supplier id can repeat WITHIN
   // duplicateIds itself (two different candidates in the same run
@@ -1476,6 +1492,17 @@ async function findRenderResultsScreen(host, jobId, newIds, duplicateIds) {
   host.innerHTML = `<div class="empty"><div class="empty-title">Loading results…</div></div>`;
   try {
     const bundles = await Promise.all(allIds.map(id => api(`/audit/suppliers/${id}`)));
+
+    // Most-documented-first, not a quality ranking -- see the heading's
+    // own tooltip below. Ties broken alphabetically, same convention
+    // build_tracker_export's own CSV row order already uses.
+    bundles.sort((a, b) => {
+      const scoreDiff = findEvidenceCompletenessScore(b) - findEvidenceCompletenessScore(a);
+      if (scoreDiff !== 0) return scoreDiff;
+      return (a.canonical_name || "").toLowerCase().localeCompare((b.canonical_name || "").toLowerCase());
+    });
+
+    const rankingHeading = `<h3 style="margin:0 0 6px;font-size:14px;font-weight:600;cursor:help" title="Ranked by how much verified evidence is on file -- address, phone, certifications, catalogue details, etc. Not a quality judgment or recommendation. Real suppliers with less evidence gathered may simply have thinner sites, not be lesser suppliers.">Most fully documented first</h3>`;
 
     // Plain scannable summary, above the full evidence cards -- a
     // buyer can read this in five seconds; the detail cards below are
@@ -1516,6 +1543,7 @@ async function findRenderResultsScreen(host, jobId, newIds, duplicateIds) {
         <button class="btn btn-ghost" data-download-job="${esc(jobId)}" data-format="csv">Download CSV</button>
         <button class="btn btn-ghost" data-download-job="${esc(jobId)}" data-format="xlsx">Download XLSX</button>
       </div>
+      ${rankingHeading}
       ${summaryTable}
       ${cards}` + FIND_DISCLAIMER;
   } catch (err) {
