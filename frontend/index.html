@@ -1453,8 +1453,21 @@ const FIND_DISCLAIMER = `<p class="hint" style="margin-top:10px">Sourcing-valida
 // findRenderSupplierResults, which only ever showed new_supplier_ids
 // via the plain supplierCard() summary.
 async function findRenderResultsScreen(host, jobId, newIds, duplicateIds) {
+  // Real bug found live: a supplier id can repeat WITHIN
+  // duplicateIds itself (two different candidates in the same run
+  // both merging into the SAME existing supplier -- e.g. "Dexter
+  // Axle" and "Dexter Components" both matching "Dexter Group"), not
+  // just across newIds/duplicateIds. Filtering duplicateIds against
+  // newIds alone (the old logic) missed that case, rendering the same
+  // card twice. Same seen-set dedup discipline as api/app.py's own
+  // _job_result_supplier_ids, applied here too so the live screen and
+  // the CSV/XLSX export can never disagree on the real match count.
   const newSet = new Set(newIds);
-  const allIds = [...newIds, ...duplicateIds.filter(id => !newSet.has(id))];
+  const seen = new Set();
+  const allIds = [];
+  for (const id of [...newIds, ...duplicateIds]) {
+    if (!seen.has(id)) { seen.add(id); allIds.push(id); }
+  }
   if (!allIds.length) {
     host.innerHTML = `<div class="empty"><div class="empty-title">No suppliers found</div>
       <p class="empty-text">Try rephrasing the product term, removing a filter, or asking for fewer suppliers.</p></div>`;
@@ -1463,6 +1476,28 @@ async function findRenderResultsScreen(host, jobId, newIds, duplicateIds) {
   host.innerHTML = `<div class="empty"><div class="empty-title">Loading results…</div></div>`;
   try {
     const bundles = await Promise.all(allIds.map(id => api(`/audit/suppliers/${id}`)));
+
+    // Plain scannable summary, above the full evidence cards -- a
+    // buyer can read this in five seconds; the detail cards below are
+    // for anyone who wants to dig into the evidence behind a row.
+    const summaryRows = bundles.map(b => `<tr>
+      <td>${esc(b.canonical_name || "")}</td>
+      <td>${b.domain ? `<a href="https://${esc(b.domain)}" target="_blank" rel="noopener">${esc(b.domain)}</a>` : ""}</td>
+      <td>${esc(b.contact.address || "")}</td>
+      <td>${esc(b.contact.phone || "")}</td>
+      <td>${esc(b.contact.email || "")}</td>
+    </tr>`).join("");
+    const summaryTable = `<table class="find-summary-table" style="width:100%;border-collapse:collapse;margin-bottom:16px">
+      <thead><tr>
+        <th style="text-align:left;padding:6px 8px;border-bottom:2px solid var(--rule)">Name</th>
+        <th style="text-align:left;padding:6px 8px;border-bottom:2px solid var(--rule)">Website</th>
+        <th style="text-align:left;padding:6px 8px;border-bottom:2px solid var(--rule)">Address</th>
+        <th style="text-align:left;padding:6px 8px;border-bottom:2px solid var(--rule)">Phone</th>
+        <th style="text-align:left;padding:6px 8px;border-bottom:2px solid var(--rule)">Email</th>
+      </tr></thead>
+      <tbody>${summaryRows}</tbody>
+    </table>`;
+
     const cards = bundles.map(b => {
       const isNew = newSet.has(b.supplier_id);
       return `<div class="find-result-card" style="border:1px solid var(--rule);border-radius:8px;padding:14px;margin-bottom:12px">
@@ -1481,6 +1516,7 @@ async function findRenderResultsScreen(host, jobId, newIds, duplicateIds) {
         <button class="btn btn-ghost" data-download-job="${esc(jobId)}" data-format="csv">Download CSV</button>
         <button class="btn btn-ghost" data-download-job="${esc(jobId)}" data-format="xlsx">Download XLSX</button>
       </div>
+      ${summaryTable}
       ${cards}` + FIND_DISCLAIMER;
   } catch (err) {
     explain(err, host);
