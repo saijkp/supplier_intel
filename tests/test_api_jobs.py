@@ -511,6 +511,45 @@ class TestRunDiscoveryJob:
         assert job["status"] == "failed"
         assert "search API down" in job["error"]
 
+    def test_duplicate_status_events_accumulate_into_candidates_duplicate(self, repo, monkeypatch):
+        """A "duplicate" event is a real, successful validation against
+        an already-existing supplier (name-corroborated, product-term-
+        confirmed) -- not a failure. Surfaced separately in live
+        progress so the frontend can report it honestly instead of only
+        counting genuinely new rows toward what the user asked to
+        find."""
+        from discovery.discovery_service import DiscoveryOutcome, DiscoveryProgressEvent
+
+        class DuplicateFiringDiscoveryService(FakeDiscoveryService):
+            def discover(self, product, category=None, country=None, max_candidates=20, source="serpapi",
+                         progress_callback=None, recover_dead_domains=False):
+                if progress_callback:
+                    progress_callback(DiscoveryProgressEvent(
+                        domain="acmetrailer.com", candidate_title="Acme Trailer Co", extracted_name="Acme Trailer Co",
+                        status="validated", reason="validated", badge="validated", round_examined=1, round_validated=1,
+                    ))
+                    progress_callback(DiscoveryProgressEvent(
+                        domain="already-known.com", candidate_title="Known Co", extracted_name="Known Co",
+                        status="duplicate", reason="validated: duplicate of an existing supplier",
+                        badge="duplicate", round_examined=2, round_validated=1,
+                    ))
+                    progress_callback(DiscoveryProgressEvent(
+                        domain="also-known.com", candidate_title="Known Co 2", extracted_name="Known Co 2",
+                        status="duplicate", reason="validated: duplicate of an existing supplier",
+                        badge="duplicate", round_examined=3, round_validated=1,
+                    ))
+                return DiscoveryOutcome(candidates_found=3, candidates_validated=1, candidates_duplicate=2,
+                                         new_supplier_ids=[10])
+
+        monkeypatch.setattr(jobs_module, "DiscoveryService", DuplicateFiringDiscoveryService)
+
+        repo.create_pipeline_job(job_id="job59", query="[discovery] trailer axle", options={"product": "trailer axle"})
+        jobs_module.run_discovery_job("job59", {"product": "trailer axle"})
+
+        job = repo.get_pipeline_job("job59")
+        assert job["progress"]["candidates_duplicate"] == 2
+        assert job["stats"]["candidates_duplicate"] == 2
+
     def test_progress_is_written_incrementally(self, repo, monkeypatch):
         """The new capability: unlike every other existing behaviour
         here, this job type previously had NO progress callback at all

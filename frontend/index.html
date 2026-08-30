@@ -1406,9 +1406,30 @@ function findEventRow(ev) {
   </div>`;
 }
 
+function findMatchSummaryText(stats) {
+  // A "duplicate" is a real, successful validation (name-corroborated,
+  // product-term-confirmed) against an already-existing supplier, not
+  // a failure -- candidates_validated alone (DiscoveryOutcome's own
+  // doc: "always == len(new_supplier_ids) by construction") only
+  // counts genuinely NEW rows, so a run that re-confirmed 9 known
+  // suppliers plus 1 new one was displaying as "1 validated / 5
+  // target" -- as if almost nothing had been found. Report the real
+  // total instead, with an honest new-vs-already-known breakdown.
+  const newCount = stats.candidates_validated ?? 0;
+  const dup = stats.candidates_duplicate ?? 0;
+  const total = newCount + dup;
+  const target = stats.target_count ?? stats.target;
+  const targetSuffix = target ? ` / ${target} target` : "";
+  if (total === 0) return `0 matches found${targetSuffix}`;
+  const parts = [];
+  if (newCount) parts.push(`${newCount} new`);
+  if (dup) parts.push(`${dup} already in your database`);
+  return `${total} real match${total === 1 ? "" : "es"} found (${parts.join(", ")})${targetSuffix}`;
+}
+
 function findStopReasonMessage(stats) {
   if (!stats.stopped_reason || stats.stopped_reason === "target_reached") return "";
-  const found = stats.candidates_validated ?? 0;
+  const found = (stats.candidates_validated ?? 0) + (stats.candidates_duplicate ?? 0);
   const target = stats.target_count ?? "?";
   const ceiling = stats.ceiling ?? "?";
   if (stats.stopped_reason === "no_new_candidates_found") {
@@ -1483,7 +1504,7 @@ async function pollFindDiscoveryJob(jobId) {
     btn.innerHTML = `<span class="spin"></span> Searching`;
     const p = job.progress || {};
     $("findProgressPanel").style.display = "";
-    $("findProgressCount").textContent = `${p.candidates_validated ?? 0} validated${p.target ? " / " + p.target + " target" : ""}`;
+    $("findProgressCount").textContent = findMatchSummaryText(p);
     $("findProgressFeed").innerHTML = (p.events || []).slice().reverse().map(findEventRow).join("");
     setTimeout(() => pollFindDiscoveryJob(jobId), 3000);
     return;
@@ -1501,7 +1522,11 @@ async function pollFindDiscoveryJob(jobId) {
   // panel would otherwise freeze one tick behind the true final count.
   const p = job.progress || {};
   $("findProgressPanel").style.display = "";
-  $("findProgressCount").textContent = `${st.candidates_validated ?? p.candidates_validated ?? 0} validated${st.target_count ? " / " + st.target_count + " target" : ""}`;
+  $("findProgressCount").textContent = findMatchSummaryText({
+    candidates_validated: st.candidates_validated ?? p.candidates_validated ?? 0,
+    candidates_duplicate: st.candidates_duplicate ?? p.candidates_duplicate ?? 0,
+    target_count: st.target_count ?? p.target,
+  });
   $("findProgressFeed").innerHTML = (p.events || []).slice().reverse().map(findEventRow).join("");
 
   const stopMsg = findStopReasonMessage(st);
@@ -1882,7 +1907,14 @@ function summarizeJobStats(j) {
   const st = j.stats || {};
   const q = j.query || "";
   if (q.startsWith("[discovery]")) {
-    return `${st.candidates_validated ?? 0} validated · ${(st.new_supplier_ids || []).length} new`;
+    // candidates_validated always equals new_supplier_ids.length by
+    // construction (DiscoveryOutcome's own doc) -- showing both was
+    // just the same number twice. candidates_duplicate (a real
+    // validated match against an already-existing supplier, not a
+    // failure) is the number worth surfacing alongside it instead.
+    const newCount = (st.new_supplier_ids || []).length;
+    const dup = st.candidates_duplicate ?? 0;
+    return dup ? `${newCount} new, ${dup} matched existing` : `${newCount} new`;
   }
   if (q.startsWith("[collection]")) {
     return "pages_visited" in st
