@@ -582,6 +582,21 @@ class ValidationResult:
     extracted_country: Optional[str]
     name_match_score: Optional[float]
     reason: str
+    # Set ONLY when gate 3.6 allowed a same-company domain migration
+    # through (see validate()'s own gate 3.6 doc) -- the domain the
+    # candidate's own redirect actually landed on (dextergroup.com),
+    # not the one originally searched for (dexteraxle.com). None means
+    # "no redirect, use candidate.domain as-is," the same as every
+    # caller already did before this field existed. Found live: without
+    # this, a validated redirect candidate got its golden record stored
+    # under the STALE pre-redirect domain, which then broke the exact-
+    # domain-match dedup tier against an already-existing supplier under
+    # the real, current domain -- a genuine duplicate (two "Dexter
+    # Group" golden records, one per domain string). Callers building a
+    # supplier record from a validated result must use
+    # `resolved_domain or candidate.domain`, never `candidate.domain`
+    # alone.
+    resolved_domain: Optional[str] = None
 
 
 class CandidateValidator:
@@ -799,12 +814,14 @@ class CandidateValidator:
         # dropping a real, findable manufacturer every time one happens.
         final_url = getattr(fetch_result.pages[0], "final_url", "") or candidate.domain
         final_domain = extract_domain(final_url)
+        resolved_domain: Optional[str] = None
         if final_domain and not domains_match(candidate.domain, final_domain):
             if not _shares_distinctive_token(candidate.title, extracted_name):
                 return ValidationResult(
                     candidate, False, extracted_name, extracted_country, None,
                     f"{REASON_OFF_DOMAIN_REDIRECT_PREFIX}: {candidate.domain} -> {final_domain}",
                 )
+            resolved_domain = final_domain
 
         haystack = f"{candidate.title} {candidate.snippet}".lower()
         normalised_extracted = normalise_company_name(extracted_name)
@@ -840,6 +857,7 @@ class CandidateValidator:
         return ValidationResult(
             candidate, True, extracted_name, extracted_country, score,
             f"{REASON_SUCCESS_PREFIX} (score={score:.0f}), product term found on page",
+            resolved_domain=resolved_domain,
         )
 
     def recover(

@@ -869,6 +869,21 @@ class TestOffDomainRedirectExclusion:
 
         assert result.validated is True
         assert result.extracted_name == "Dexter Group"
+        assert result.resolved_domain == "dextergroup.com"
+
+    def test_non_redirect_validated_candidate_leaves_resolved_domain_none(self):
+        """resolved_domain must stay None -- the default every existing
+        caller already relies on -- when there was no redirect at all."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Welcome to Acme Trailer Co, manufacturer of trailer axle assemblies.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is True
+        assert result.resolved_domain is None
 
     def test_unrelated_company_redirect_is_still_rejected(self):
         """The original case this gate was built for must still reject

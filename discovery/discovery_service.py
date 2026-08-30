@@ -715,7 +715,15 @@ class DiscoveryService:
 
         supplier_data = {
             "canonical_name": validation.extracted_name,
-            "domain": candidate.domain,
+            # validation.resolved_domain, when set, is the domain a
+            # same-company redirect actually landed on (see
+            # candidate_validator.ValidationResult's own doc) --
+            # candidate.domain alone would store the STALE pre-redirect
+            # domain, breaking the exact-domain-match dedup tier against
+            # an already-existing supplier under the real, current
+            # domain. Found live: dexteraxle.com -> dextergroup.com
+            # created a genuine duplicate golden record before this.
+            "domain": validation.resolved_domain or candidate.domain,
             "country": validation.extracted_country or country,
             "discovery_source": "discovery_service",
             # Grounded, not invented: validation gate #5 in

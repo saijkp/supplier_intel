@@ -117,6 +117,46 @@ class TestDiscoverCreatesNewSuppliers:
         assert supplier["domain"] == "acmetrailer.com"
         assert supplier["discovery_source"] == "discovery_service"
 
+    def test_a_validated_redirect_candidate_stores_the_resolved_domain(self, repo):
+        """Real bug found live: a candidate validated via gate 3.6's
+        same-company-redirect corroboration (dexteraxle.com ->
+        dextergroup.com) must store the RESOLVED domain on its golden
+        record, not the stale pre-redirect one -- otherwise the exact-
+        domain-match dedup tier can never recognise an already-existing
+        supplier under the real, current domain, creating a genuine
+        duplicate."""
+        from discovery.candidate_extractor import Candidate
+
+        candidate = Candidate(
+            title="Dexter Axle", link="https://dexteraxle.com/",
+            snippet="trailer axle manufacturer", domain="dexteraxle.com",
+        )
+        validator = FakeCandidateValidator(outcomes={
+            "dexteraxle.com": ValidationResult(
+                candidate, True, "Dexter Group", "US", 95.0, "validated",
+                resolved_domain="dextergroup.com",
+            ),
+        })
+        results = [_search_result("https://dexteraxle.com/", title="Dexter Axle", snippet="trailer axle manufacturer")]
+        service = _service(repo, results, "dexteraxle.com", candidate_validator=validator)
+
+        outcome = service.discover("trailer axle")
+
+        supplier = repo.get_supplier(outcome.new_supplier_ids[0])
+        assert supplier["domain"] == "dextergroup.com"
+
+    def test_a_non_redirect_validated_candidate_uses_its_own_domain_unchanged(self, repo):
+        """resolved_domain=None (the default, every existing test's
+        shape) must not change behaviour -- candidate.domain is used
+        exactly as before."""
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        service = _service(repo, results, "acmetrailer.com")
+
+        outcome = service.discover("trailer axle")
+
+        supplier = repo.get_supplier(outcome.new_supplier_ids[0])
+        assert supplier["domain"] == "acmetrailer.com"
+
     def test_discovered_supplier_is_findable_by_the_product_it_was_discovered_for(self, repo):
         """Real bug: without product_keywords set, a supplier discovered
         for "trailer axle" was invisible to search_suppliers_full's own
