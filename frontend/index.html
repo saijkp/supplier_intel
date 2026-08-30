@@ -533,7 +533,6 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
     <nav class="nav" id="nav">
       <button data-view="find" aria-current="page">Find suppliers</button>
       <button data-view="search">Search</button>
-      <button data-view="discover">Discover &amp; enrich</button>
       <button data-view="bulk">Bulk enrichment</button>
       <button data-view="jobs">Job history</button>
       <button data-view="source">Source</button>
@@ -568,6 +567,28 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
             <input type="checkbox" id="findRecoverDeadDomains">
             <span>Try to recover dead-domain candidates (1 extra paid search each)</span>
           </label>
+        </div>
+        <button class="btn btn-ghost btn-sm hidden" id="btnFindAdvancedToggle" style="margin:8px 0">Advanced options &rarr;</button>
+        <div class="field hidden" id="findAdvancedBlock">
+          <div class="field">
+            <label class="label" for="findCategory">Category (optional)</label>
+            <input class="input" id="findCategory" placeholder="e.g. Axles & Suspension" autocomplete="off">
+          </div>
+          <div class="field">
+            <label class="label" for="findCountry">Country (optional)</label>
+            <input class="input" id="findCountry" placeholder="e.g. China" autocomplete="off">
+          </div>
+          <div class="field">
+            <label class="label" for="findMaxCandidates">Max candidates (only used without a target count above)</label>
+            <input class="input" id="findMaxCandidates" type="number" min="1" max="50" placeholder="20">
+          </div>
+          <div class="field">
+            <label class="label" for="findSource">Source</label>
+            <select class="input" id="findSource">
+              <option value="serpapi">Real search results (default)</option>
+              <option value="llm">AI's own knowledge -- no search cost, less current/complete</option>
+            </select>
+          </div>
         </div>
         <button class="btn btn-ghost btn-sm" id="btnFindBulkToggle" style="margin:8px 0">Have a list instead? &rarr;</button>
         <div class="field hidden" id="findBulkBlock">
@@ -644,42 +665,6 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
           <span class="count" id="searchCount"></span>
         </div>
         <div class="results" id="searchResults"></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ══ DISCOVER & ENRICH ═════════════════════════════════ -->
-  <section id="view-discover" class="hidden">
-    <div class="split">
-      <aside class="rail" style="display:flex;flex-direction:column;gap:16px">
-        <div class="panel">
-          <div class="panel-head"><h2 class="panel-title">Discover suppliers</h2></div>
-          <div class="panel-body">
-            <div class="field">
-              <label class="label" for="dProduct">Product</label>
-              <input class="input" id="dProduct" placeholder="trailer axle" autocomplete="off">
-            </div>
-            <div class="field">
-              <label class="label" for="dCategory">Category</label>
-              <input class="input" id="dCategory" placeholder="Axles & Suspension" autocomplete="off">
-            </div>
-            <div class="field">
-              <label class="label" for="dCountry">Country</label>
-              <input class="input" id="dCountry" placeholder="China" autocomplete="off">
-            </div>
-            <div class="field">
-              <label class="label" for="dLimit">Max candidates</label>
-              <input class="input" id="dLimit" type="number" min="1" max="50" placeholder="20">
-            </div>
-            <button class="btn btn-primary btn-block" id="btnDiscover">Search the open web</button>
-            <p class="hint" style="margin-top:10px">Every result traces to a real search hit and a real fetched website. Costs a real search plus an AI read per candidate — start small.</p>
-          </div>
-        </div>
-
-      </aside>
-
-      <div>
-        <div id="discoverAlert"></div>
       </div>
     </div>
   </section>
@@ -981,7 +966,7 @@ $("nav").addEventListener("click", (e) => {
   const view = btn.dataset.view;
   document.querySelectorAll("#nav button").forEach(b =>
     b.setAttribute("aria-current", b === btn ? "page" : "false"));
-  ["find","search","discover","bulk","jobs","source","compare","audit"].forEach(v =>
+  ["find","search","bulk","jobs","source","compare","audit"].forEach(v =>
     $("view-" + v).classList.toggle("hidden", v !== view));
   if (view === "find") initFindView();
   if (view === "jobs") loadJobs();
@@ -1321,6 +1306,11 @@ function findRenderMode() {
   const isProductShaped = !findLooksLikeUrl(text) && !!text;
   $("findTargetCountField").classList.toggle("hidden", !isProductShaped);
   $("findRecoverField").classList.toggle("hidden", !isProductShaped);
+  $("btnFindAdvancedToggle").classList.toggle("hidden", !isProductShaped);
+  if (!isProductShaped) {
+    $("findAdvancedBlock").classList.add("hidden");
+    $("btnFindAdvancedToggle").textContent = "Advanced options →";
+  }
   if (!text) { row.innerHTML = ""; findAmbiguousChoice = null; $("findCostNote").textContent = ""; return; }
   const c = findClassifyInput(text);
   if (c.kind === "url") {
@@ -1371,6 +1361,10 @@ function findRenderCostNote(c) {
 $("btnFindBulkToggle").addEventListener("click", () => {
   const nowVisible = $("findBulkBlock").classList.toggle("hidden") === false;
   $("btnFindBulkToggle").textContent = nowVisible ? "Search a single company/product instead ←" : "Have a list instead? →";
+});
+$("btnFindAdvancedToggle").addEventListener("click", () => {
+  const nowVisible = $("findAdvancedBlock").classList.toggle("hidden") === false;
+  $("btnFindAdvancedToggle").textContent = nowVisible ? "Hide advanced options ←" : "Advanced options →";
 });
 $("findBulkRecoverDeadDomains").addEventListener("change", () => {
   $("findBulkRecoveryProductTermField").classList.toggle("hidden", !$("findBulkRecoverDeadDomains").checked);
@@ -1682,6 +1676,14 @@ $("btnFindGo").addEventListener("click", async () => {
       const body = { product: text };
       if (c.targetCount) { body.target_count = c.targetCount; }
       if ($("findRecoverDeadDomains").checked) { body.recover_dead_domains = true; }
+      const category = $("findCategory").value.trim();
+      const country = $("findCountry").value.trim();
+      const maxCandidates = $("findMaxCandidates").value.trim();
+      const source = $("findSource").value;
+      if (category) { body.category = category; }
+      if (country) { body.country = country; }
+      if (maxCandidates) { body.max_candidates = Number(maxCandidates); }  // ignored by the backend when target_count is set -- see DiscoveryJobRequest's own doc
+      if (source && source !== "serpapi") { body.source = source; }
       const job = await api("/discovery/jobs", { method: "POST", body: JSON.stringify(body) });
       pollFindDiscoveryJob(job.id);
     }
@@ -1860,33 +1862,10 @@ document.addEventListener("click", (e) => {
   }
 });
 
-/* ═══ Discover ══════════════════════════════════════════════ */
-$("btnDiscover").addEventListener("click", async () => {
-  const product = $("dProduct").value.trim();
-  if (!product) {
-    alertBox($("discoverAlert"), 1, "Product needed", "Enter what to search for, for example \"trailer axle\".");
-    return;
-  }
-  const btn = $("btnDiscover");
-  btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Searching`;
-  try {
-    await api("/discovery/jobs", {
-      method: "POST",
-      body: JSON.stringify({
-        product,
-        category: $("dCategory").value.trim() || null,
-        country: $("dCountry").value.trim() || null,
-        max_candidates: $("dLimit").value ? Number($("dLimit").value) : 20
-      })
-    });
-    alertBox($("discoverAlert"), 0);
-    loadJobs();
-  } catch (err) {
-    explain(err, $("discoverAlert"));
-  } finally {
-    btn.disabled = false; btn.textContent = "Search the open web";
-  }
-});
+// Discover suppliers retired from this tab -- its product/category/
+// country/max_candidates fields moved into Find Suppliers' own
+// "Advanced options" section (findSubmitProduct), same
+// /discovery/jobs endpoint, unchanged.
 
 /* ═══ Bulk enrichment ═══════════════════════════════════════
    Same collection.jobs/verification.jobs endpoints the per-card
