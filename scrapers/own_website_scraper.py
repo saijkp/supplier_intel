@@ -65,6 +65,18 @@ _CAPABILITY_LINK_KEYWORDS: tuple[str, ...] = (
     "quality", "certificat", "workshop", "contact",
 )
 
+# Same fix as collection/site_collector.py's _PRIORITY_LINK_KEYWORDS,
+# found there first via a real gap-analysis run: a genuine contact page
+# was consistently losing its `max_pages` budget slot to product/blog
+# links that merely appeared earlier in the homepage's raw HTML order
+# (confirmed live on dawson-group.com -- /contactus.html exists and has
+# a real address, but was the 4th capability-keyword link found, one
+# past the default max_pages=4 cap, so it was silently never fetched).
+# Ported here since verification/address_extractor.py's tiered search
+# depends on this scraper actually reaching the contact/about page in
+# the first place, not just correctly reading it once fetched.
+_PRIORITY_LINK_KEYWORDS: tuple[str, ...] = ("contact", "about", "company", "impressum", "imprint")
+
 # Filename/path fragments that mean an <img> is almost certainly not a
 # facility photo -- logos, icons, tracking pixels, decorative UI
 # assets. Deliberately a keyword filter, not a size/dimension check
@@ -199,7 +211,18 @@ class OwnWebsiteScraper:
             if normalised not in seen:
                 seen.add(normalised)
                 found.append(normalised)
-        return found
+        return self._prioritise_capability_links(found)
+
+    @staticmethod
+    def _prioritise_capability_links(links: List[str]) -> List[str]:
+        """Re-orders _find_capability_links' output so a contact/about
+        -tier page (_PRIORITY_LINK_KEYWORDS) gets first claim on
+        `max_pages`'s budget, instead of losing its slot to a
+        product/certificate/blog link that merely appeared earlier in
+        the homepage's HTML. Stable sort: within each tier, original
+        discovery order is preserved -- this only ever reorders, never
+        drops, a candidate."""
+        return sorted(links, key=lambda link: 0 if any(k in link.lower() for k in _PRIORITY_LINK_KEYWORDS) else 1)
 
     def _find_image_urls(self, base_url: str, html: str) -> List[str]:
         """Absolute URLs of images plausibly worth passing to

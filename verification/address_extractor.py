@@ -75,19 +75,36 @@ Return ONLY a JSON object with exactly this key, no other text:
 def address_candidate_sources(pages: List[Any]) -> List[tuple]:
     """Ordered (tier_label, url, text) candidates for address
     extraction -- contact page, footer text, impressum page, about
-    page, per the required preference order. Only the first page found
-    in each tier is used (at most one candidate per tier, so at most 4
-    LLM calls total per call -- see attempt_address_extraction, which
-    stops at the first tier that actually yields an address).
+    page, homepage, per the required preference order. Only the first
+    page found in each tier is used (at most one candidate per tier, so
+    at most 5 LLM calls total per call -- see attempt_address_extraction,
+    which stops at the first tier that actually yields an address).
 
-    "about page": a general company-info page is the LEAST authoritative
-    of the four tiers (a dedicated contact/impressum page states an
+    "about page": a general company-info page is the second-least
+    authoritative tier (a dedicated contact/impressum page states an
     address on purpose; an about page mentions one incidentally, if at
-    all) -- deliberately tried last, only once contact/footer/impressum
-    have all come up empty. Matches "about" OR "company" in the URL --
-    real sites use both conventions for the same page (e.g.
-    plasticmold.net/company/, hordrt.com/about-us-3/)."""
+    all) -- deliberately tried after contact/footer/impressum have all
+    come up empty. Matches "about" OR "company" in the URL -- real
+    sites use both conventions for the same page (e.g.
+    plasticmold.net/company/, hordrt.com/about-us-3/).
+
+    "homepage": the true last resort, only tried when none of the four
+    tiers above matched anything. Found live: a real qualified sourcing
+    candidate (a single-page site with no separate /contact or /about
+    page at all) had its address printed directly in the homepage's own
+    footer HTML -- but OwnWebsiteScraper (the cheap httpx crawler
+    sourcing_agent.py uses, unlike the Playwright-based SiteCollector
+    batch_service.py originally built this against) never populates a
+    distinct `footer_text` field, and the homepage's own URL never
+    matches the contact/impressum/about patterns. Without this
+    fallback, an address plainly present in already-fetched text was
+    silently never even attempted. `pages[0]` is always the homepage by
+    construction in both OwnWebsiteScraper.fetch() and
+    SiteCollector.collect() -- deliberately identity-checked against
+    every already-used page (not `==`) so a page that already served as
+    a more specific tier is never double-counted as the fallback too."""
     candidates: List[tuple] = []
+    used_pages: List[Any] = []
 
     contact_page = next(
         (p for p in pages if "contact" in (getattr(p, "url", "") or "").lower()
@@ -96,10 +113,12 @@ def address_candidate_sources(pages: List[Any]) -> List[tuple]:
     )
     if contact_page is not None:
         candidates.append(("contact page", contact_page.url, contact_page.text))
+        used_pages.append(contact_page)
 
     footer_page = next((p for p in pages if (getattr(p, "footer_text", "") or "").strip()), None)
     if footer_page is not None:
         candidates.append(("footer", footer_page.url, footer_page.footer_text))
+        used_pages.append(footer_page)
 
     impressum_page = next(
         (p for p in pages
@@ -109,6 +128,7 @@ def address_candidate_sources(pages: List[Any]) -> List[tuple]:
     )
     if impressum_page is not None:
         candidates.append(("impressum page", impressum_page.url, impressum_page.text))
+        used_pages.append(impressum_page)
 
     about_page = next(
         (p for p in pages
@@ -118,6 +138,15 @@ def address_candidate_sources(pages: List[Any]) -> List[tuple]:
     )
     if about_page is not None:
         candidates.append(("about page", about_page.url, about_page.text))
+        used_pages.append(about_page)
+
+    homepage = pages[0] if pages else None
+    if (
+        homepage is not None
+        and not any(homepage is p for p in used_pages)
+        and (getattr(homepage, "text", "") or "").strip()
+    ):
+        candidates.append(("homepage", homepage.url, homepage.text))
 
     return candidates
 

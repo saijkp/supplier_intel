@@ -84,6 +84,38 @@ class TestFetch:
         # /products has no capability-relevant keyword and must not be fetched
         assert "https://acme.example.com/products" not in urls
 
+    def test_contact_page_is_not_starved_by_max_pages_when_it_appears_last(self):
+        """Real gap found live on dawson-group.com: a genuine
+        /contactus.html link existed and had a real address, but it was
+        the 4th capability-keyword link found on the homepage (after
+        about/qualification/factory-show links appearing earlier in the
+        raw HTML) -- one past the default max_pages=4 cap, so it was
+        silently never fetched at all. _prioritise_capability_links
+        must give contact/about-tier links first claim on the page
+        budget regardless of their position in the homepage's HTML."""
+        html = """
+        <html><body>
+        <a href="/aboutus.html">About Us</a>
+        <a href="/qualification.html">Qualification</a>
+        <a href="/factory-show.html">Factory Show</a>
+        <a href="/contactus.html">Contact Us</a>
+        </body></html>
+        """
+        client = FakeOwnWebsiteClient({
+            "https://dawson-group.example.com": FakeResponse(html),
+            "https://dawson-group.example.com/aboutus.html": FakeResponse("<html><body>About.</body></html>"),
+            "https://dawson-group.example.com/qualification.html": FakeResponse("<html><body>Certs.</body></html>"),
+            "https://dawson-group.example.com/factory-show.html": FakeResponse("<html><body>Factory.</body></html>"),
+            "https://dawson-group.example.com/contactus.html": FakeResponse("<html><body>Contact, 1 Main St.</body></html>"),
+        })
+        scraper = OwnWebsiteScraper(http_client=client, enable_delays=False, max_pages=4)
+
+        result = scraper.fetch("dawson-group.example.com")
+
+        urls = {p.url for p in result.pages}
+        assert "https://dawson-group.example.com/contactus.html" in urls
+        assert len(result.pages) == 4  # still respects the cap -- one of the other three loses its slot instead
+
     def test_never_follows_off_domain_links(self):
         client = FakeOwnWebsiteClient({"https://acme.example.com": FakeResponse(HOMEPAGE_WITH_LINKS)})
         scraper = OwnWebsiteScraper(http_client=client, enable_delays=False)

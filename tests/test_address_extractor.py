@@ -96,14 +96,56 @@ class TestAddressCandidateSources:
         assert len(contact_candidates) == 1
         assert contact_candidates[0][1] == "https://x.com/contact"
 
-    def test_empty_footer_text_is_not_treated_as_a_candidate(self):
+    def test_empty_footer_text_is_not_treated_as_a_footer_candidate(self):
+        """Empty footer_text correctly yields no FOOTER-tier candidate --
+        but the homepage fallback tier still fires since this same page
+        (pages[0]) has non-empty body text."""
         pages = [FakePage("https://x.com/", "homepage text", footer_text="")]
         candidates = address_candidate_sources(pages)
-        assert candidates == []
+        assert candidates == [("homepage", "https://x.com/", "homepage text")]
 
-    def test_no_matching_pages_returns_empty_list(self):
+    def test_no_tier_match_falls_back_to_homepage(self):
         pages = [FakePage("https://x.com/products", "our products page")]
-        assert address_candidate_sources(pages) == []
+        assert address_candidate_sources(pages) == [("homepage", "https://x.com/products", "our products page")]
+
+    def test_no_pages_at_all_returns_empty_list(self):
+        assert address_candidate_sources([]) == []
+
+    def test_homepage_used_as_last_resort_when_no_other_tier_matches(self):
+        """The real gap found live: a single-page site (no separate
+        /contact or /about page) with its address printed directly in
+        the homepage's own footer HTML."""
+        pages = [FakePage(
+            "https://hinge-manufacturers.com/",
+            "Contact info\nAddress: Liuqing Industrial Area, Beiyuan Street, Yiwu, Jinhua, Zhejiang, China",
+        )]
+        candidates = address_candidate_sources(pages)
+        assert candidates == [(
+            "homepage", "https://hinge-manufacturers.com/",
+            "Contact info\nAddress: Liuqing Industrial Area, Beiyuan Street, Yiwu, Jinhua, Zhejiang, China",
+        )]
+
+    def test_contact_page_still_preferred_over_homepage_fallback(self):
+        """Regression guard: a site with a dedicated contact page must
+        still surface that tier first -- the homepage fallback is only
+        ever a later, lower-priority candidate, never a replacement."""
+        pages = [
+            FakePage("https://x.com/", "Homepage marketing copy, nothing address-shaped here."),
+            FakePage("https://x.com/contact", "Contact us: Acme Co, 1 Main St, Springfield, IL."),
+        ]
+        candidates = address_candidate_sources(pages)
+        assert candidates[0][0] == "contact page"
+        assert candidates[0][1] == "https://x.com/contact"
+        assert candidates[-1][0] == "homepage"
+
+    def test_homepage_is_not_duplicated_when_it_already_served_another_tier(self):
+        """pages[0] is always the homepage by construction -- when it
+        ALSO happens to be the page that matched a more specific tier
+        (e.g. the about-page test above), it must not appear a second
+        time under the "homepage" label."""
+        pages = [FakePage("https://x.com/contact", "Contact us: Acme Co, 1 Main St, Springfield, IL.")]
+        candidates = address_candidate_sources(pages)
+        assert candidates == [("contact page", "https://x.com/contact", "Contact us: Acme Co, 1 Main St, Springfield, IL.")]
 
     def test_falls_back_to_about_page_when_no_contact_footer_or_impressum(self):
         """Added after a real gap-analysis run against the 29 confirmed
@@ -214,6 +256,46 @@ class TestAttemptAddressExtraction:
         )]
         result = attempt_address_extraction(repo, llm, 1, pages, changed_by="sourcing_agent")
         assert result == "skipped"
+
+    def test_applies_from_homepage_when_no_dedicated_page_exists(self):
+        """Regression test for the real Maka Hinge Manufacturer candidate
+        found during a live sourcing-job test: a single-page site with
+        the address printed directly in the homepage's own footer HTML,
+        and no separate /contact or /about page at all."""
+        repo = FakeRepo({1: {"id": 1, "canonical_name": "Maka Hinge Manufacturer"}})
+        address = "Liuqing Industrial Area, Beiyuan Street, Yiwu, Jinhua, Zhejiang, China"
+        llm = FakeLLMClient(response={"address": address})
+        pages = [FakePage(
+            "https://hinge-manufacturers.com/",
+            f"Contact info\nAddress: {address}. We manufacture hinges for cabinets and doors worldwide.",
+        )]
+
+        result = attempt_address_extraction(repo, llm, 1, pages, changed_by="sourcing_agent")
+
+        assert result == "applied"
+        assert repo.suppliers[1]["address"] == address
+        prov = [p for p in repo.provenance if p["field_name"] == "address"]
+        assert prov[0]["source_url"] == "https://hinge-manufacturers.com/"
+
+    def test_applies_from_contact_page_not_homepage_when_both_present(self):
+        """Regression guard for the new homepage fallback: when a
+        dedicated contact page exists AND yields a real address, that
+        tier wins -- the homepage fallback is never consulted."""
+        repo = FakeRepo({1: {"id": 1, "canonical_name": "Acme Co"}})
+        llm = FakeLLMClient(response={"address": "1 Main St, Springfield, IL"})
+        pages = [
+            FakePage("https://acme.com/", "Homepage marketing copy about our great products, shipped worldwide every day."),
+            FakePage(
+                "https://acme.com/contact",
+                "Contact us: Acme Co, 1 Main St, Springfield, IL. We reply to every enquiry fast.",
+            ),
+        ]
+
+        result = attempt_address_extraction(repo, llm, 1, pages, changed_by="sourcing_agent")
+
+        assert result == "applied"
+        prov = [p for p in repo.provenance if p["field_name"] == "address"]
+        assert prov[0]["source_url"] == "https://acme.com/contact"
 
     def test_changed_by_is_threaded_through_to_the_audit_trail(self):
         """The whole reason changed_by is a parameter, not a hardcoded
