@@ -527,6 +527,29 @@ def build_tracker_workbook(
     return buffer.getvalue()
 
 
+def build_simple_tracker_workbook(supplier_ids: List[int], repo: Optional[SupplierRepository] = None) -> bytes:
+    """A single-sheet .xlsx wrapper around build_tracker_export -- for
+    an arbitrary supplier_id list with no category/roster/removed-
+    candidates concept of its own (e.g. GET /pipeline/jobs/{id}/export.xlsx,
+    a Find Suppliers run's own results). build_tracker_workbook above is
+    the category-tracker-specific three-tab shape (Supplier Audit /
+    Qualified / Removed Candidates); this is the one-tab equivalent for
+    any other caller that just wants "these supplier_ids, tracker
+    format, as a spreadsheet" without the category machinery."""
+    from openpyxl import Workbook
+
+    repo = repo or SupplierRepository()
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Suppliers"
+    _write_csv_text_to_sheet(sheet, build_tracker_export(supplier_ids, repo))
+
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
 def build_supplier_evidence_bundle(
     supplier_id: int, repo: Optional[SupplierRepository] = None,
 ) -> Optional[Dict[str, Any]]:

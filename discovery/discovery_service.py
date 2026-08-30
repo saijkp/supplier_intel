@@ -86,6 +86,7 @@ class DiscoveryOutcome:
     candidates_validated: int = 0  # DISTINCT companies validated -- always == len(new_supplier_ids) by construction (see _record_validation_outcome), never inflated by a candidate that re-validates and merges (same-run repeat across discover_to_target()'s rounds, or a match against a pre-existing supplier) -- that's candidates_duplicate's job, not this one
     candidates_rejected: int = 0
     candidates_duplicate: int = 0  # validated AND auto-merged into an existing supplier -- no new row
+    duplicate_supplier_ids: List[int] = field(default_factory=list)  # the EXISTING supplier ids a candidate merged into -- a real, validated match, just not a new row; see api/app.py's export endpoint, which combines this with new_supplier_ids for "every real match this run found"
     new_supplier_ids: List[int] = field(default_factory=list)  # a genuinely new row, whether outright ("created") or pending human review ("review_queued")
     review_queued_supplier_ids: List[int] = field(default_factory=list)  # subset of new_supplier_ids also awaiting dedup review
     website_resolved: int = 0  # candidates whose site fetched successfully (validate() gate 2), whether or not they went on to validate
@@ -129,6 +130,7 @@ class DiscoveryToTargetOutcome:
     candidates_validated: int = 0
     candidates_rejected: int = 0
     candidates_duplicate: int = 0
+    duplicate_supplier_ids: List[int] = field(default_factory=list)
     new_supplier_ids: List[int] = field(default_factory=list)
     review_queued_supplier_ids: List[int] = field(default_factory=list)
     reached_target: bool = False
@@ -456,6 +458,7 @@ class DiscoveryService:
             result.candidates_validated += outcome.candidates_validated
             result.candidates_rejected += outcome.candidates_rejected
             result.candidates_duplicate += outcome.candidates_duplicate
+            result.duplicate_supplier_ids.extend(outcome.duplicate_supplier_ids)
             result.new_supplier_ids.extend(outcome.new_supplier_ids)
             result.review_queued_supplier_ids.extend(outcome.review_queued_supplier_ids)
 
@@ -771,6 +774,12 @@ class DiscoveryService:
             # company count -- a live run showed "8 validated" for only 4
             # actual distinct companies.
             outcome.candidates_duplicate += 1
+            if supplier_id is not None:
+                # May already be in new_supplier_ids (a merge into a
+                # supplier THIS SAME run created in an earlier round --
+                # see the comment above) -- callers combining this with
+                # new_supplier_ids must dedupe, never assume disjoint.
+                outcome.duplicate_supplier_ids.append(supplier_id)
         elif supplier_id is not None:
             # "created" or "review_queued" -- both genuinely create a new
             # row (create_golden_record), review_queued just also flags it

@@ -295,6 +295,21 @@ class TestDiscoverDeduplication:
             count = conn.execute("SELECT COUNT(*) AS n FROM suppliers").fetchone()["n"]
         assert count == 1  # merged, not duplicated
 
+    def test_duplicate_supplier_ids_records_which_existing_supplier_was_matched(self, repo):
+        """A "duplicate" is a real, successful validation against an
+        already-existing supplier, not a failure -- the Find Suppliers
+        results screen needs to know WHICH supplier it was to show it
+        as a real match, not just a count."""
+        existing_id = repo.create_golden_record({
+            "canonical_name": "Acme Trailer Co", "domain": "acmetrailer.com", "country": "China",
+        })
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        service = _service(repo, results, "acmetrailer.com")
+
+        outcome = service.discover("trailer axle", country="China")
+
+        assert outcome.duplicate_supplier_ids == [existing_id]
+
 
 class TestDiscoverFaultIsolation:
 
@@ -700,6 +715,11 @@ class TestDiscoverToTarget:
         assert len(outcome.new_supplier_ids) == 1  # one real company, found twice
         assert outcome.candidates_duplicate == 1   # round 2's re-hit correctly recorded as a merge
         assert outcome.candidates_validated == 1   # NOT 2 -- must match new_supplier_ids, not raw validate() passes
+        # duplicate_supplier_ids records round 2's merge target -- which is
+        # THIS SAME RUN's own round-1 supplier, so it overlaps
+        # new_supplier_ids. A caller combining both lists (e.g. the Find
+        # Suppliers results screen) must dedupe, never assume disjoint.
+        assert outcome.duplicate_supplier_ids == outcome.new_supplier_ids
 
     def test_no_round_2_when_round_1_found_zero_raw_candidates(self, repo):
         google_scraper = FakeGoogleScraper(results=[])

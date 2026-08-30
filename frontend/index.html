@@ -1443,15 +1443,74 @@ function findStopReasonMessage(stats) {
 
 const FIND_DISCLAIMER = `<p class="hint" style="margin-top:10px">Sourcing-validated only — these results have not been through the A-D manual review in the Audit tab.</p>`;
 
-async function findRenderSupplierResults(host, supplierIds) {
-  if (!supplierIds.length) { host.innerHTML = ""; return; }
+// The end-of-run "answer screen" for a Find Suppliers job -- every
+// REAL match (new AND duplicate; a duplicate is a real, successful
+// validation against an already-existing supplier, not a failure --
+// see findMatchSummaryText's own comment) rendered as full evidence
+// via renderAuditDetail, reusing the exact same GET /audit/suppliers/{id}
+// bundle and rendering the Audit tab's own detail view already uses --
+// no new evidence-rendering code, no live-feed noise. Replaces the old
+// findRenderSupplierResults, which only ever showed new_supplier_ids
+// via the plain supplierCard() summary.
+async function findRenderResultsScreen(host, jobId, newIds, duplicateIds) {
+  const newSet = new Set(newIds);
+  const allIds = [...newIds, ...duplicateIds.filter(id => !newSet.has(id))];
+  if (!allIds.length) {
+    host.innerHTML = `<div class="empty"><div class="empty-title">No suppliers found</div>
+      <p class="empty-text">Try rephrasing the product term, removing a filter, or asking for fewer suppliers.</p></div>`;
+    return;
+  }
+  host.innerHTML = `<div class="empty"><div class="empty-title">Loading results…</div></div>`;
   try {
-    const suppliers = await Promise.all(supplierIds.map(id => api(`/suppliers/${id}`)));
-    host.innerHTML = `<div class="results">${suppliers.map(supplierCard).join("")}</div>` + FIND_DISCLAIMER;
+    const bundles = await Promise.all(allIds.map(id => api(`/audit/suppliers/${id}`)));
+    const cards = bundles.map(b => {
+      const isNew = newSet.has(b.supplier_id);
+      return `<div class="find-result-card" style="border:1px solid var(--rule);border-radius:8px;padding:14px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap">
+          <div>
+            <div class="card-name">${esc(b.canonical_name || "")}</div>
+            <div class="card-meta">${esc(b.domain || "")}${b.country ? " · " + esc(b.country) : ""}</div>
+          </div>
+          <span class="badge ${isNew ? "mfr" : "warn"}">${isNew ? "new" : "already in your database"}</span>
+        </div>
+        ${renderAuditDetail(b, {includeVerdict: false})}
+      </div>`;
+    }).join("");
+    host.innerHTML = `
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <button class="btn btn-ghost" data-download-job="${esc(jobId)}" data-format="csv">Download CSV</button>
+        <button class="btn btn-ghost" data-download-job="${esc(jobId)}" data-format="xlsx">Download XLSX</button>
+      </div>
+      ${cards}` + FIND_DISCLAIMER;
   } catch (err) {
     explain(err, host);
   }
 }
+
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-download-job]");
+  if (!btn) return;
+  const jobId = btn.dataset.downloadJob;
+  const format = btn.dataset.format || "csv";
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = "Downloading…";
+  try {
+    const res = await fetch(state.base + `/pipeline/jobs/${jobId}/export.${format}`, {
+      headers: { "Authorization": "Bearer " + state.token },
+    });
+    if (!res.ok) throw Object.assign(new Error("Export failed"), { status: res.status });
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `find_suppliers_${jobId}.${format}`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (err) {
+    alert(`Could not download ${format.toUpperCase()}: ` + err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = original;
+  }
+});
 
 async function pollSingleCompanyJob(jobId) {
   const btn = $("btnFindGo");
@@ -1483,7 +1542,7 @@ async function pollSingleCompanyJob(jobId) {
     return;
   }
   if (st.resolved_supplier_id != null) {
-    await findRenderSupplierResults($("findResults"), [st.resolved_supplier_id]);
+    await findRenderResultsScreen($("findResults"), jobId, [st.resolved_supplier_id], []);
   } else {
     alertBox($("findAlert"), 1, "Nothing resolved", "The enrichment ran but didn't produce a supplier record.");
   }
@@ -1530,16 +1589,10 @@ async function pollFindDiscoveryJob(jobId) {
   $("findProgressFeed").innerHTML = (p.events || []).slice().reverse().map(findEventRow).join("");
 
   const stopMsg = findStopReasonMessage(st);
-  const ids = st.new_supplier_ids || [];
   $("findResults").innerHTML = stopMsg;
-  if (!ids.length) {
-    $("findResults").innerHTML += `<div class="empty"><div class="empty-title">No suppliers found</div>
-      <p class="empty-text">Try rephrasing the product term, removing a filter, or asking for fewer suppliers.</p></div>`;
-    return;
-  }
   const resultsHost = document.createElement("div");
   $("findResults").appendChild(resultsHost);
-  await findRenderSupplierResults(resultsHost, ids);
+  await findRenderResultsScreen(resultsHost, jobId, st.new_supplier_ids || [], st.duplicate_supplier_ids || []);
 }
 
 $("btnFindGo").addEventListener("click", async () => {
@@ -2715,7 +2768,18 @@ async function openAuditDetail(supplierId, name) {
   }
 }
 
-function renderAuditDetail(b) {
+function renderAuditDetail(b, opts = {}) {
+  // opts.includeVerdict (default true, preserving every existing
+  // caller's behaviour unchanged): verdictSection() below emits
+  // page-unique element ids (id="verdictSection"/"verdictNotes"/
+  // "verdictStatus"), fine for the Audit modal's one-instance-at-a-time
+  // usage but a real duplicate-id violation (and a silently-broken
+  // wireVerdictControls, which uses getElementById) if this function
+  // is called more than once on the same page -- e.g. the Find
+  // Suppliers results screen, which renders several suppliers' full
+  // evidence inline at once and has no A-D/Qualified triage step for a
+  // just-discovered candidate anyway (that's the Audit tab's own,
+  // separate manual-review workflow, standing rule 2).
   const sections = [];
 
   sections.push(evidenceSection("Contact", [
@@ -2805,7 +2869,7 @@ function renderAuditDetail(b) {
     sections.push(evidenceSection("Discovery validation reason", `<div class="evidence-row">${esc(b.discovery_validation_reason)}</div>`));
   }
 
-  sections.push(verdictSection(b));
+  if (opts.includeVerdict !== false) sections.push(verdictSection(b));
 
   if (b.flagged) {
     sections.unshift(evidenceSection("⚠ Flagged in DB", `<div class="evidence-row">${esc(b.flag_reason || "(no reason recorded)")}</div>`));

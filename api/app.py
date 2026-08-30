@@ -767,6 +767,74 @@ def get_pipeline_job(job_id: str, repo: SupplierRepository = Depends(get_repo)) 
     return _to_job_response(job)
 
 
+def _job_result_supplier_ids(stats: Dict[str, Any]) -> List[int]:
+    """Every REAL match a completed Find Suppliers job produced --
+    genuinely new rows AND duplicates (a duplicate is a real,
+    successful validation against an already-existing supplier, not a
+    failure -- see DiscoveryOutcome.duplicate_supplier_ids's own
+    comment). Deduped: duplicate_supplier_ids can legitimately overlap
+    new_supplier_ids when a later round merges into a supplier the SAME
+    run already created (see discovery_service.py's own comment on
+    this). Covers both discovery job shapes (discover()/
+    discover_to_target(), via new_supplier_ids) and the single-company
+    enrichment job shape (resolved_supplier_id, always exactly one real
+    match either way, new or pre-existing)."""
+    ids = list(stats.get("new_supplier_ids") or []) + list(stats.get("duplicate_supplier_ids") or [])
+    if not ids and stats.get("resolved_supplier_id") is not None:
+        ids = [stats["resolved_supplier_id"]]
+    seen: set = set()
+    deduped = []
+    for supplier_id in ids:
+        if supplier_id not in seen:
+            seen.add(supplier_id)
+            deduped.append(supplier_id)
+    return deduped
+
+
+@app.get("/pipeline/jobs/{job_id}/export.csv", dependencies=[Depends(require_api_token)])
+def export_pipeline_job_csv(
+    job_id: str, repo: SupplierRepository = Depends(get_repo),
+) -> PlainTextResponse:
+    """Every real match ONE Find Suppliers run produced (new AND
+    duplicate -- see _job_result_supplier_ids), tracker-format CSV --
+    same columns/row-order as the category tracker exports
+    (build_tracker_export is category-agnostic, takes a raw id list).
+    Works for a still-running job too (whatever matches have landed so
+    far), same "don't gate on status='completed'" convention
+    /batch/{job_id}/export.csv already follows."""
+    from batch.tracker_exporter import build_tracker_export
+
+    job = repo.get_pipeline_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    ids = _job_result_supplier_ids(job.get("stats") or {})
+    csv_text = build_tracker_export(ids, repo)
+    return PlainTextResponse(
+        csv_text, media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=find_suppliers_{job_id}.csv"},
+    )
+
+
+@app.get("/pipeline/jobs/{job_id}/export.xlsx", dependencies=[Depends(require_api_token)])
+def export_pipeline_job_xlsx(
+    job_id: str, repo: SupplierRepository = Depends(get_repo),
+) -> Response:
+    """Same rows as export_pipeline_job_csv, single-sheet .xlsx (see
+    build_simple_tracker_workbook)."""
+    from batch.tracker_exporter import build_simple_tracker_workbook
+
+    job = repo.get_pipeline_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    ids = _job_result_supplier_ids(job.get("stats") or {})
+    excel_bytes = build_simple_tracker_workbook(ids, repo)
+    return Response(
+        excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=find_suppliers_{job_id}.xlsx"},
+    )
+
+
 @app.get("/pipeline/jobs", response_model=List[PipelineJobResponse], dependencies=[Depends(require_api_token)])
 def list_pipeline_jobs(
     limit: int = 50, repo: SupplierRepository = Depends(get_repo)

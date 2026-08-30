@@ -881,6 +881,85 @@ class TestSourcingRunCsvExportEndpoint:
         assert response.status_code == 401
 
 
+class TestPipelineJobExportEndpoints:
+    """GET /pipeline/jobs/{id}/export.csv|.xlsx -- the Find Suppliers
+    "Show results" step: every REAL match a run produced (new AND
+    duplicate -- a duplicate is a successful, name-corroborated
+    validation against an already-existing supplier, not a failure),
+    tracker-format, same columns/row-order the category tracker
+    exports use (build_tracker_export is category-agnostic)."""
+
+    def test_exports_both_new_and_duplicate_suppliers(self, client):
+        new_id = client.repo.create_golden_record({"canonical_name": "Brand New Co", "country": "China"})
+        existing_id = client.repo.create_golden_record({"canonical_name": "Already Known Co", "country": "China"})
+        client.repo.create_pipeline_job(job_id="job1", query="[discovery] trailer axle", options={})
+        client.repo.mark_pipeline_job_completed("job1", stats={
+            "new_supplier_ids": [new_id], "duplicate_supplier_ids": [existing_id],
+        })
+
+        response = client.get("/pipeline/jobs/job1/export.csv", headers=auth_headers())
+
+        assert response.status_code == 200
+        assert "text/csv" in response.headers["content-type"]
+        assert "Brand New Co" in response.text
+        assert "Already Known Co" in response.text
+
+    def test_dedupes_a_supplier_id_appearing_in_both_lists(self, client):
+        """Real case: a later round's duplicate can merge into a
+        supplier THIS SAME run already created -- the id then appears
+        in both new_supplier_ids and duplicate_supplier_ids, but must
+        only ever appear once in the export."""
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Shared Co", "country": "China"})
+        client.repo.create_pipeline_job(job_id="job2", query="[discovery] forklift", options={})
+        client.repo.mark_pipeline_job_completed("job2", stats={
+            "new_supplier_ids": [supplier_id], "duplicate_supplier_ids": [supplier_id],
+        })
+
+        response = client.get("/pipeline/jobs/job2/export.csv", headers=auth_headers())
+
+        assert response.text.count("Shared Co") == 1
+
+    def test_single_company_job_exports_its_resolved_supplier(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Solo Co", "country": "China"})
+        client.repo.create_pipeline_job(job_id="job3", query="[single-company] Solo Co", options={})
+        client.repo.mark_pipeline_job_completed("job3", stats={"resolved_supplier_id": supplier_id})
+
+        response = client.get("/pipeline/jobs/job3/export.csv", headers=auth_headers())
+
+        assert "Solo Co" in response.text
+
+    def test_job_with_no_matches_exports_header_only(self, client):
+        client.repo.create_pipeline_job(job_id="job4", query="[discovery] nonexistent widget", options={})
+        client.repo.mark_pipeline_job_completed("job4", stats={"new_supplier_ids": []})
+
+        response = client.get("/pipeline/jobs/job4/export.csv", headers=auth_headers())
+
+        lines = response.text.strip().splitlines()
+        assert len(lines) == 1  # header row only
+
+    def test_unknown_job_returns_404(self, client):
+        response = client.get("/pipeline/jobs/nonexistent/export.csv", headers=auth_headers())
+        assert response.status_code == 404
+        response = client.get("/pipeline/jobs/nonexistent/export.xlsx", headers=auth_headers())
+        assert response.status_code == 404
+
+    def test_xlsx_export_returns_spreadsheet_content_type(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme Co", "country": "China"})
+        client.repo.create_pipeline_job(job_id="job5", query="[discovery] trailer axle", options={})
+        client.repo.mark_pipeline_job_completed("job5", stats={"new_supplier_ids": [supplier_id]})
+
+        response = client.get("/pipeline/jobs/job5/export.xlsx", headers=auth_headers())
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    def test_requires_auth(self, client):
+        client.repo.create_pipeline_job(job_id="job6", query="[discovery] trailer axle", options={})
+        client.repo.mark_pipeline_job_completed("job6", stats={"new_supplier_ids": []})
+        assert client.get("/pipeline/jobs/job6/export.csv").status_code == 401
+        assert client.get("/pipeline/jobs/job6/export.xlsx").status_code == 401
+
+
 class TestVerificationHistoryAndChangeLogEndpoints:
 
     def test_verification_history_returns_recorded_entries(self, client):
