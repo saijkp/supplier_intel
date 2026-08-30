@@ -535,7 +535,6 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
       <button data-view="search">Search</button>
       <button data-view="bulk">Bulk enrichment</button>
       <button data-view="jobs">Job history</button>
-      <button data-view="source">Source</button>
       <button data-view="compare">Compare</button>
       <button data-view="audit">Audit</button>
     </nav>
@@ -589,6 +588,12 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
               <option value="llm">AI's own knowledge -- no search cost, less current/complete</option>
             </select>
           </div>
+        </div>
+        <button class="btn btn-ghost btn-sm hidden" id="btnFindBriefToggle" style="margin:8px 0">Paste a detailed brief instead &rarr;</button>
+        <div class="field hidden" id="findBriefBlock">
+          <label class="label" for="findBriefText">Detailed brief -- product, key specs, countries to prioritise, required certifications, how many suppliers you need, annual volume, and preferred payment terms</label>
+          <textarea class="input" id="findBriefText" rows="3" placeholder="e.g. find 15 genuine winch manufacturers for off-road trailer recovery, ISO 9001, prioritise China then India, annual volume 5000pcs, 30 day payment terms"></textarea>
+          <p class="hint" style="margin-top:6px">Checks suppliers already in your database first, at no cost, before spending on any fresh search. Each qualified supplier also gets a written procurement-fit assessment for this specific brief.</p>
         </div>
         <button class="btn btn-ghost btn-sm" id="btnFindBulkToggle" style="margin:8px 0">Have a list instead? &rarr;</button>
         <div class="field hidden" id="findBulkBlock">
@@ -706,19 +711,6 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
         <button class="btn btn-ghost btn-sm" id="btnRefreshJobs">Refresh</button>
       </div>
       <div id="jobList"></div>
-    </div>
-  </section>
-
-  <!-- ══ SOURCE (Sourcing Agent chat) ═══════════════════════ -->
-  <section id="view-source" class="hidden">
-    <div class="panel chat-panel">
-      <div class="panel-head"><h2 class="panel-title">Source suppliers</h2></div>
-      <div id="sourceLog" class="chat-log"></div>
-      <div class="chat-input-row">
-        <textarea class="input" id="sourceBriefInput" rows="2"
-          placeholder="e.g. find 15 genuine winch manufacturers for off-road trailer recovery, ISO 9001, prioritise China then India, annual volume 5000pcs, 30 day payment terms"></textarea>
-        <button class="btn btn-primary" id="btnSourceSend">Send</button>
-      </div>
     </div>
   </section>
 
@@ -966,11 +958,10 @@ $("nav").addEventListener("click", (e) => {
   const view = btn.dataset.view;
   document.querySelectorAll("#nav button").forEach(b =>
     b.setAttribute("aria-current", b === btn ? "page" : "false"));
-  ["find","search","bulk","jobs","source","compare","audit"].forEach(v =>
+  ["find","search","bulk","jobs","compare","audit"].forEach(v =>
     $("view-" + v).classList.toggle("hidden", v !== view));
   if (view === "find") initFindView();
   if (view === "jobs") loadJobs();
-  if (view === "source") initSourceView();
   if (view === "compare") initCompareView();
   if (view === "audit") initAuditView();
 });
@@ -1307,9 +1298,12 @@ function findRenderMode() {
   $("findTargetCountField").classList.toggle("hidden", !isProductShaped);
   $("findRecoverField").classList.toggle("hidden", !isProductShaped);
   $("btnFindAdvancedToggle").classList.toggle("hidden", !isProductShaped);
+  $("btnFindBriefToggle").classList.toggle("hidden", !isProductShaped);
   if (!isProductShaped) {
     $("findAdvancedBlock").classList.add("hidden");
     $("btnFindAdvancedToggle").textContent = "Advanced options →";
+    $("findBriefBlock").classList.add("hidden");
+    $("btnFindBriefToggle").textContent = "Paste a detailed brief instead →";
   }
   if (!text) { row.innerHTML = ""; findAmbiguousChoice = null; $("findCostNote").textContent = ""; return; }
   const c = findClassifyInput(text);
@@ -1358,13 +1352,29 @@ function findRenderCostNote(c) {
   }
 }
 
+// Bulk-upload and detailed-brief are mutually exclusive submission
+// modes (btnFindGo can only take one path) -- opening one closes the
+// other. Advanced options is independent of both (it only ever
+// modifies a plain product search, never bulk/brief).
 $("btnFindBulkToggle").addEventListener("click", () => {
   const nowVisible = $("findBulkBlock").classList.toggle("hidden") === false;
   $("btnFindBulkToggle").textContent = nowVisible ? "Search a single company/product instead ←" : "Have a list instead? →";
+  if (nowVisible) {
+    $("findBriefBlock").classList.add("hidden");
+    $("btnFindBriefToggle").textContent = "Paste a detailed brief instead →";
+  }
 });
 $("btnFindAdvancedToggle").addEventListener("click", () => {
   const nowVisible = $("findAdvancedBlock").classList.toggle("hidden") === false;
   $("btnFindAdvancedToggle").textContent = nowVisible ? "Hide advanced options ←" : "Advanced options →";
+});
+$("btnFindBriefToggle").addEventListener("click", () => {
+  const nowVisible = $("findBriefBlock").classList.toggle("hidden") === false;
+  $("btnFindBriefToggle").textContent = nowVisible ? "Search a plain product term instead ←" : "Paste a detailed brief instead →";
+  if (nowVisible) {
+    $("findBulkBlock").classList.add("hidden");
+    $("btnFindBulkToggle").textContent = "Have a list instead? →";
+  }
 });
 $("findBulkRecoverDeadDomains").addEventListener("change", () => {
   $("findBulkRecoveryProductTermField").classList.toggle("hidden", !$("findBulkRecoverDeadDomains").checked);
@@ -1461,6 +1471,44 @@ function findEvidenceCompletenessScore(b) {
   return contactCount + certCount + catalogueCount;
 }
 
+// A detailed-brief search (migrated from the retired Source tab) gets
+// a real per-brief procurement-fit assessment per qualified supplier
+// (sourcing/dossier_generator.py) -- confirmed genuinely grounded, not
+// the same starved-input problem composite_score/ai_confidence_score
+// had (its primary input is capability_extractor.py's own real quoted
+// evidence per supplier, not the cross-check score alone; verified
+// against 20 real production examples before shipping this). All 5
+// capability/process/experience/status fields shown whenever present;
+// volume_suitability/payment_terms_notes shown only when they contain
+// real signal -- every one of 20 real "no evidence" examples pulled
+// from production started with exactly one of these two phrases, so
+// this reliably distinguishes a genuine finding from a buyer brief
+// that simply never stated a volume/payment preference.
+function sourcingDossierIsBoilerplate(text) {
+  const t = (text || "").trim().toLowerCase();
+  return t.startsWith("no evidence") || t.startsWith("no payment terms");
+}
+
+function sourcingDossierSection(dossier) {
+  if (!dossier || !dossier.oem_odm_notes) return "";  // never run through a sourcing brief
+  const rows = [
+    evidenceRow("OEM/ODM capability", dossier.oem_odm_notes),
+    evidenceRow("Factory & manufacturing processes", dossier.factory_notes),
+    evidenceRow("Engineering & testing capability", dossier.engineering_notes),
+    evidenceRow("Export experience", dossier.export_notes),
+  ];
+  if (dossier.volume_suitability && !sourcingDossierIsBoilerplate(dossier.volume_suitability)) {
+    rows.push(evidenceRow("Annual volume suitability", dossier.volume_suitability));
+  }
+  if (dossier.payment_terms_notes && !sourcingDossierIsBoilerplate(dossier.payment_terms_notes)) {
+    rows.push(evidenceRow("Payment terms fit", dossier.payment_terms_notes));
+  }
+  if (dossier.verification_status) {
+    rows.push(evidenceRow("Verification status", dossier.verification_status));
+  }
+  return evidenceSection("Procurement fit for this brief", rows.join(""));
+}
+
 async function findRenderResultsScreen(host, jobId, newIds, duplicateIds) {
   // Real bug found live: a supplier id can repeat WITHIN
   // duplicateIds itself (two different candidates in the same run
@@ -1528,6 +1576,7 @@ async function findRenderResultsScreen(host, jobId, newIds, duplicateIds) {
           </div>
           <span class="badge ${isNew ? "mfr" : "warn"}">${isNew ? "new" : "already in your database"}</span>
         </div>
+        ${sourcingDossierSection(b.sourcing_dossier)}
         ${renderAuditDetail(b, {includeVerdict: false})}
       </div>`;
     }).join("");
@@ -1655,6 +1704,8 @@ async function pollFindDiscoveryJob(jobId) {
 $("btnFindGo").addEventListener("click", async () => {
   const bulkVisible = !$("findBulkBlock").classList.contains("hidden");
   if (bulkVisible) return findSubmitBulk();
+  const briefVisible = !$("findBriefBlock").classList.contains("hidden");
+  if (briefVisible) return findSubmitBrief();
 
   const text = $("findInput").value.trim();
   if (!text) { alertBox($("findAlert"), 1, "Nothing entered", "Type a company name, website, or product/category."); return; }
@@ -1775,6 +1826,69 @@ async function pollFindBulkJob(jobId) {
     explain(err, $("findAlert"));
     btn.disabled = false; btn.textContent = "Go";
   }
+}
+
+/* ═══ Find: detailed brief -- migrated from the retired Source tab.
+   Same POST /sourcing/runs (SourcingAgentService, unchanged: LLM brief
+   parsing, checks the existing database first at zero cost, THEN a
+   per-brief procurement dossier per qualified supplier), just routed
+   through Find Suppliers' own results screen instead of Source's plain
+   supplierCard() rendering -- so a detailed-brief search gets the same
+   evidence cards/ranking/summary-table/CSV-XLSX-download every other
+   Find Suppliers search already has. No second /sourcing/runs/{id}
+   fetch needed here (unlike the old Source-tab flow) -- job.stats
+   already carries qualified_supplier_ids directly, and
+   findRenderResultsScreen fetches its own full evidence bundle per
+   supplier anyway. */
+async function findSubmitBrief() {
+  const text = $("findBriefText").value.trim();
+  if (!text) { alertBox($("findAlert"), 1, "Nothing entered", "Describe what you're sourcing."); return; }
+
+  const btn = $("btnFindGo");
+  btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Starting`;
+  alertBox($("findAlert"), 0);
+  $("findResults").innerHTML = "";
+  $("findProgressPanel").style.display = "none";
+  $("findProgressFeed").innerHTML = "";
+
+  try {
+    const job = await api("/sourcing/runs", { method: "POST", body: JSON.stringify({ brief_text: text }) });
+    pollFindBriefJob(job.id);
+  } catch (err) {
+    explain(err, $("findAlert"));
+    btn.disabled = false; btn.textContent = "Go";
+  }
+}
+
+async function pollFindBriefJob(jobId) {
+  const btn = $("btnFindGo");
+  let job;
+  try {
+    job = await api(`/pipeline/jobs/${jobId}`);
+  } catch (err) {
+    explain(err, $("findAlert"));
+    btn.disabled = false; btn.textContent = "Go";
+    return;
+  }
+
+  if (job.status === "queued" || job.status === "running") {
+    btn.innerHTML = `<span class="spin"></span> Searching`;
+    const p = job.progress || {};
+    $("findProgressPanel").style.display = "";
+    $("findProgressCount").textContent = `examined ${p.examined ?? 0}, qualified ${p.qualified ?? 0}/${p.target ?? "?"}`;
+    setTimeout(() => pollFindBriefJob(jobId), 3000);
+    return;
+  }
+  btn.disabled = false; btn.textContent = "Go";
+
+  if (job.status === "failed") {
+    alertBox($("findAlert"), 1, "Sourcing run failed", esc(job.error || "Unknown error"));
+    return;
+  }
+
+  const st = job.stats || {};
+  $("findProgressPanel").style.display = "none";
+  await findRenderResultsScreen($("findResults"), jobId, st.qualified_supplier_ids || [], []);
 }
 
 function initFindView() {
@@ -2035,114 +2149,13 @@ function stopPolling() { if (state.jobTimer) { clearInterval(state.jobTimer); st
 
 $("btnRefreshJobs").addEventListener("click", loadJobs);
 
-/* ═══ Source (Sourcing Agent chat) ═══════════════════════════
-   One free-text brief -> POST /sourcing/runs -> poll GET
-   /pipeline/jobs/{id} (the SAME endpoint/interval class as every
-   other job in this app) for live progress via its `progress` field,
-   then GET /sourcing/runs/{run_id} once completed to render the
-   qualified suppliers with the existing supplierCard() renderer. */
-function chatBubble(kind, html) {
-  const el = document.createElement("div");
-  el.className = "chat-bubble " + kind;
-  el.innerHTML = html;
-  return el;
-}
-
-function scrollChatToBottom() {
-  const log = $("sourceLog");
-  log.scrollTop = log.scrollHeight;
-}
-
-function sourcingResultsHtml(run) {
-  const suppliers = run.qualified_suppliers || [];
-  const header = `<div style="margin-bottom:${suppliers.length ? 10 : 0}px">
-    <strong>${suppliers.length}</strong> of <strong>${run.target_count}</strong> requested supplier${run.target_count === 1 ? "" : "s"} qualified
-    (examined ${run.examined_count}).
-    ${suppliers.length ? `<button class="btn btn-ghost btn-sm" data-download-run="${run.id}" style="margin-left:8px">Download CSV</button>` : ""}
-  </div>`;
-  if (!suppliers.length) {
-    return header + `<p class="hint" style="margin:0">No supplier cleared every check within the search budget. Try loosening a requirement, adding a country, or asking for fewer suppliers.</p>`;
-  }
-  // evidenceOnly: true -- see subCheckEvidenceBlock's own comment for why
-  // a Source-tab candidate's score/recommendation would otherwise mislead.
-  return header + `<div class="results">${suppliers.map((s, i) => supplierCard(s, i, { evidenceOnly: true })).join("")}</div>`;
-}
-
-async function pollSourcingJob(jobId, agentBubble) {
-  let job;
-  try {
-    job = await api(`/pipeline/jobs/${jobId}`);
-  } catch (err) {
-    explain(err, agentBubble);
-    return;
-  }
-
-  if (job.status === "queued" || job.status === "running") {
-    const p = job.progress || {};
-    agentBubble.innerHTML = `<span class="spin"></span> Searching… examined ${p.examined ?? 0}, qualified ${p.qualified ?? 0}/${p.target ?? "?"}`;
-    setTimeout(() => pollSourcingJob(jobId, agentBubble), 3000);
-    return;
-  }
-
-  if (job.status === "failed") {
-    alertBox(agentBubble, 1, "Sourcing run failed", esc(job.error || "Unknown error"));
-    scrollChatToBottom();
-    return;
-  }
-
-  const runId = job.stats && job.stats.run_id;
-  if (runId == null) {
-    alertBox(agentBubble, 1, "Something went wrong", "The run completed but returned no result id.");
-    return;
-  }
-  try {
-    const run = await api(`/sourcing/runs/${runId}`);
-    agentBubble.classList.add("wide");
-    agentBubble.innerHTML = sourcingResultsHtml(run);
-  } catch (err) {
-    explain(err, agentBubble);
-  }
-  scrollChatToBottom();
-}
-
-function initSourceView() {
-  if ($("sourceLog").children.length) return;
-  $("sourceLog").appendChild(chatBubble("agent",
-    `Tell me what you're sourcing — product, key specs, countries to prioritise, required certifications, ` +
-    `how many suppliers you need, annual volume, and preferred payment terms. I'll search, reject traders, ` +
-    `enrich contact details, and verify each one before handing back a downloadable list.`));
-}
-
-async function sendSourcingBrief() {
-  const text = $("sourceBriefInput").value.trim();
-  if (!text) return;
-  const log = $("sourceLog");
-  const btn = $("btnSourceSend");
-
-  log.appendChild(chatBubble("user", esc(text)));
-  $("sourceBriefInput").value = "";
-  const agentBubble = chatBubble("agent", `<span class="spin"></span> Starting…`);
-  log.appendChild(agentBubble);
-  scrollChatToBottom();
-
-  btn.disabled = true;
-  try {
-    const job = await api("/sourcing/runs", { method: "POST", body: JSON.stringify({ brief_text: text }) });
-    pollSourcingJob(job.id, agentBubble);
-  } catch (err) {
-    explain(err, agentBubble);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-$("btnSourceSend").addEventListener("click", sendSourcingBrief);
-$("sourceBriefInput").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    sendSourcingBrief();
-  }
-});
+// Source tab retired -- its brief-parsing/database-first-check/
+// procurement-dossier flow moved into Find Suppliers' own "Paste a
+// detailed brief instead" option (findSubmitBrief/pollFindBriefJob),
+// same POST /sourcing/runs, now rendered through Find Suppliers' own
+// results screen instead of a separate chat UI. The data-download-run
+// click handler below stays -- Job History's own [sourcing]-type rows
+// still use it, independent of this tab's retirement.
 
 document.addEventListener("click", async (e) => {
   const btn = e.target.closest("[data-download-run]");

@@ -928,6 +928,20 @@ class TestPipelineJobExportEndpoints:
 
         assert "Solo Co" in response.text
 
+    def test_sourcing_job_exports_its_qualified_suppliers(self, client):
+        """SourcingOutcome uses qualified_supplier_ids, not
+        new_supplier_ids/duplicate_supplier_ids -- a sourcing/brief-
+        search job's own stats shape, distinct from a discovery job's."""
+        id_a = client.repo.create_golden_record({"canonical_name": "Winch Co A", "country": "China"})
+        id_b = client.repo.create_golden_record({"canonical_name": "Winch Co B", "country": "China"})
+        client.repo.create_pipeline_job(job_id="job7", query="[sourcing] find 2 winch manufacturers", options={})
+        client.repo.mark_pipeline_job_completed("job7", stats={"qualified_supplier_ids": [id_a, id_b]})
+
+        response = client.get("/pipeline/jobs/job7/export.csv", headers=auth_headers())
+
+        assert "Winch Co A" in response.text
+        assert "Winch Co B" in response.text
+
     def test_job_with_no_matches_exports_header_only(self, client):
         client.repo.create_pipeline_job(job_id="job4", query="[discovery] nonexistent widget", options={})
         client.repo.mark_pipeline_job_completed("job4", stats={"new_supplier_ids": []})
@@ -1119,3 +1133,26 @@ class TestAuditVerdictEndpoint:
         response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
         assert response.status_code == 200
         assert response.json()["verdicts"]["A"]["value"] == "Fail"
+
+    def test_get_audit_supplier_bundle_includes_sourcing_dossier(self, client):
+        """Real per-brief procurement-fit fields (sourcing/dossier_generator.py),
+        needed so the Find Suppliers results screen can show them for a
+        detailed-brief search -- previously not exposed by this bundle
+        at all."""
+        supplier_id = client.repo.create_golden_record({
+            "canonical_name": "Acme Winch Co",
+            "sourcing_oem_odm_notes": "Acme asserts OEM capability with in-house tooling.",
+            "sourcing_verification_status": "verified",
+        })
+
+        response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
+
+        assert response.status_code == 200
+        dossier = response.json()["sourcing_dossier"]
+        assert dossier["oem_odm_notes"] == "Acme asserts OEM capability with in-house tooling."
+        assert dossier["verification_status"] == "verified"
+
+    def test_sourcing_dossier_fields_are_none_when_never_run(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Never Sourced Co"})
+        response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
+        assert response.json()["sourcing_dossier"]["oem_odm_notes"] is None

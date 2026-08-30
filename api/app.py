@@ -775,13 +775,19 @@ def _job_result_supplier_ids(stats: Dict[str, Any]) -> List[int]:
     comment). Deduped: duplicate_supplier_ids can legitimately overlap
     new_supplier_ids when a later round merges into a supplier the SAME
     run already created (see discovery_service.py's own comment on
-    this). Covers both discovery job shapes (discover()/
-    discover_to_target(), via new_supplier_ids) and the single-company
-    enrichment job shape (resolved_supplier_id, always exactly one real
-    match either way, new or pre-existing)."""
+    this). Covers discovery job shapes (discover()/discover_to_target(),
+    via new_supplier_ids), the single-company enrichment job shape
+    (resolved_supplier_id, always exactly one real match either way,
+    new or pre-existing), and the sourcing/brief-search job shape
+    (SourcingOutcome.qualified_supplier_ids -- a brief search doesn't
+    distinguish new-vs-already-existing matches at all, so every
+    qualified id is treated as one flat list, same as the job itself
+    already does)."""
     ids = list(stats.get("new_supplier_ids") or []) + list(stats.get("duplicate_supplier_ids") or [])
     if not ids and stats.get("resolved_supplier_id") is not None:
         ids = [stats["resolved_supplier_id"]]
+    if not ids and stats.get("qualified_supplier_ids"):
+        ids = list(stats["qualified_supplier_ids"])
     seen: set = set()
     deduped = []
     for supplier_id in ids:

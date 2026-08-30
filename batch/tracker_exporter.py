@@ -653,4 +653,19 @@ def build_supplier_evidence_bundle(
         "reputation_search_attempted_at": supplier.get("reputation_search_attempted_at"),
         "discovery_validation_reason": _discovery_validation_reason(repo, supplier_id),
         "verdicts": repo.get_audit_verdicts(supplier_id),
+        # Only ever populated by sourcing/dossier_generator.py -- a
+        # per-BRIEF procurement-fit assessment (sourcing/sourcing_agent.py),
+        # deliberately separate from every other field in this bundle
+        # (which answer "what evidence exists," not "does this supplier
+        # fit what THIS buyer asked for"). None on every field for a
+        # supplier that was never run through a sourcing brief.
+        "sourcing_dossier": {
+            "oem_odm_notes": supplier.get("sourcing_oem_odm_notes"),
+            "factory_notes": supplier.get("sourcing_factory_notes"),
+            "engineering_notes": supplier.get("sourcing_engineering_notes"),
+            "export_notes": supplier.get("sourcing_export_notes"),
+            "volume_suitability": supplier.get("sourcing_volume_suitability"),
+            "payment_terms_notes": supplier.get("sourcing_payment_terms_notes"),
+            "verification_status": supplier.get("sourcing_verification_status"),
+        },
     }
