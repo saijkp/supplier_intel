@@ -147,6 +147,37 @@ def _rows_to_dicts(rows: List[sqlite3.Row], json_fields: Sequence[str] = ()) -> 
     return [_row_to_dict(r, json_fields) for r in rows]
 
 
+# Curated country-name-alias equivalence for find_by_country's own
+# fuzzy-dedup candidate pool below -- same "only pairs a real case has
+# proven matter" discipline as discovery/candidate_validator.py's
+# _SPELLING_VARIANTS/_UK_COUNTRY_SYNONYMS, not a general gazetteer.
+# Found live: a real dedup miss between "USA" (an existing supplier,
+# #826) and "US" (a freshly-discovered candidate for the SAME real
+# company, resolved via gate 3.6's redirect-corroboration fix) meant
+# find_by_country's own exact-string WHERE clause excluded the real
+# match's row from the candidate pool entirely -- SupplierMatcher's
+# fuzzy name scoring (Level 3) never even got a chance to run on it,
+# even though the two canonical_name values were identical.
+_COUNTRY_ALIAS_GROUPS: tuple[frozenset, ...] = (
+    frozenset({"us", "usa", "u.s.", "u.s.a.", "united states", "united states of america"}),
+    frozenset({"uk", "u.k.", "united kingdom", "great britain"}),
+)
+
+
+def _country_aliases(country: str) -> frozenset:
+    """Every known-equivalent spelling of `country` (itself included,
+    case-insensitively), or an empty set for a blank input -- callers
+    treat an empty result the same way an empty `country` string was
+    always handled (match everything, never silently exclude)."""
+    normalised = (country or "").strip().lower()
+    if not normalised:
+        return frozenset()
+    for group in _COUNTRY_ALIAS_GROUPS:
+        if normalised in group:
+            return group
+    return frozenset({normalised})
+
+
 class SupplierRepository:
     """Data access layer. Instantiate once per script/CLI run; each
     method manages its own short-lived connection."""
@@ -273,12 +304,18 @@ class SupplierRepository:
         """Used by the fuzzy name matcher to narrow the candidate pool
         before running string similarity. Returns all suppliers when
         country is empty, since an unknown country shouldn't silently
-        exclude every possible match."""
+        exclude every possible match. Matches every known-equivalent
+        spelling of `country` (see _country_aliases), not just the
+        exact literal string -- a supplier stored as "USA" and a fresh
+        candidate resolved as "US" are the same real country, not a
+        mismatch that should hide one from the other."""
         with connection_scope(self.db_path) as conn:
-            if country:
+            aliases = _country_aliases(country)
+            if aliases:
+                placeholders = ",".join("?" for _ in aliases)
                 rows = conn.execute(
-                    "SELECT * FROM suppliers WHERE country = ? LIMIT ?",
-                    (country, limit),
+                    f"SELECT * FROM suppliers WHERE LOWER(country) IN ({placeholders}) LIMIT ?",
+                    (*aliases, limit),
                 ).fetchall()
             else:
                 rows = conn.execute(

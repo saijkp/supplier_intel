@@ -306,6 +306,38 @@ class TestSupplierGoldenRecords:
         repo.create_golden_record({"canonical_name": "B", "country": "India"})
         assert len(repo.find_by_country("")) == 2
 
+    def test_find_by_country_matches_known_alias_spellings(self, repo):
+        """Real bug found live: "USA" (an existing supplier) and "US"
+        (a freshly-discovered candidate for the SAME real company)
+        were treated as different countries by this method's own exact-
+        string WHERE clause, hiding the real match from
+        SupplierMatcher's fuzzy name scoring entirely -- a genuine
+        duplicate golden record resulted (#826/#2203, both "Dexter
+        Group")."""
+        repo.create_golden_record({"canonical_name": "Dexter Group", "country": "USA"})
+
+        found_via_us = repo.find_by_country("US")
+        found_via_usa = repo.find_by_country("USA")
+        found_via_united_states = repo.find_by_country("United States")
+
+        assert [s["canonical_name"] for s in found_via_us] == ["Dexter Group"]
+        assert [s["canonical_name"] for s in found_via_usa] == ["Dexter Group"]
+        assert [s["canonical_name"] for s in found_via_united_states] == ["Dexter Group"]
+
+    def test_find_by_country_alias_match_is_case_insensitive(self, repo):
+        repo.create_golden_record({"canonical_name": "Acme Ltd", "country": "United Kingdom"})
+        assert [s["canonical_name"] for s in repo.find_by_country("uk")] == ["Acme Ltd"]
+        assert [s["canonical_name"] for s in repo.find_by_country("UK")] == ["Acme Ltd"]
+
+    def test_find_by_country_unknown_country_still_matches_only_itself(self, repo):
+        """A country with no curated alias group must still exclude an
+        unrelated country -- never a silent match-everything -- while
+        also being case-insensitive, same as the curated groups above."""
+        repo.create_golden_record({"canonical_name": "Nihon Co", "country": "Japan"})
+        repo.create_golden_record({"canonical_name": "Other Co", "country": "China"})
+        assert [s["canonical_name"] for s in repo.find_by_country("Japan")] == ["Nihon Co"]
+        assert [s["canonical_name"] for s in repo.find_by_country("japan")] == ["Nihon Co"]
+
     def test_merge_into_golden_fills_empty_scalar_fields(self, repo):
         supplier_id = repo.create_golden_record({
             "canonical_name": "Foo Co", "country": "China",

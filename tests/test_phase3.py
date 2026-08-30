@@ -232,6 +232,22 @@ class TestFindMatch:
         assert found_id == supplier_id
         assert signals.get("city_match") is True
 
+    def test_fuzzy_match_survives_a_country_format_mismatch(self, repo, matcher):
+        """The exact real bug this guards against: "Dexter Group" was
+        stored as country="USA" (#826), and a freshly-discovered
+        candidate for the SAME real company resolved country="US"
+        (#2203) -- find_by_country's own exact-string WHERE clause
+        excluded #826 from the candidate pool entirely before fuzzy
+        name scoring ever ran, so an identical canonical_name still
+        produced no match and a genuine duplicate golden record."""
+        supplier_id = repo.create_golden_record({"canonical_name": "Dexter Group", "country": "USA"})
+        candidate = {"canonical_name": "Dexter Group", "country": "US"}
+
+        found_id, confidence, signals = matcher.find_match(candidate)
+
+        assert found_id == supplier_id
+        assert confidence == 1.0  # identical normalised names -> perfect fuzzy score
+
     def test_no_match_for_dissimilar_names(self, repo, matcher):
         repo.create_golden_record({"canonical_name": "Shenzhen Widget Factory", "country": "China"})
         candidate = {"canonical_name": "Completely Unrelated Aerospace Corp", "country": "China"}
