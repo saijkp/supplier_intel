@@ -287,12 +287,18 @@ class BatchService:
             # Lazy, only-constructed-if-needed -- same OwnWebsiteScraper-backed
             # convention discovery_service.py already uses for the identical
             # purpose (CandidateValidator needs a lightweight .fetch(domain)
-            # object, not the heavier Playwright-based SiteCollector this
-            # class otherwise uses for a row's real collection).
+            # object as its PRIMARY fetcher, not the heavier Playwright-based
+            # SiteCollector this class otherwise uses for a row's real
+            # collection). playwright_fetcher below is only a FALLBACK,
+            # tried automatically when that cheap primary fetch fails --
+            # same standard-by-default wiring discovery_service.py uses,
+            # see CandidateValidator's own playwright_fetcher doc.
             from scrapers.own_website_scraper import OwnWebsiteScraper
+            from scrapers.playwright_website_scraper import PlaywrightWebsiteScraper
 
             self.candidate_validator = CandidateValidator(
                 website_fetcher=OwnWebsiteScraper(), llm_client=self.llm_client,
+                playwright_fetcher=PlaywrightWebsiteScraper(),
             )
 
     def run_batch(

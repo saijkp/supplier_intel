@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 from discovery.candidate_extractor import Candidate
 from discovery.candidate_validator import (
+    REASON_FETCH_UNSUCCESSFUL_PREFIX,
     CandidateValidator,
     _core_product_term,
     _countries_plausibly_match,
@@ -159,6 +160,125 @@ class TestCandidateValidator:
         assert result.validated is False
 
 
+class TestPlaywrightRetry:
+    """Found live: several large, obviously-real trailer-axle
+    manufacturers (Lippert -- all three of its own domain variants --
+    and Dexter Axle/Group) were lost entirely to httpx-level fetch
+    failures during candidate validation. playwright_fetcher, when
+    configured, retries the SAME domain via a real headless browser
+    before the candidate is given up on -- never a domain-search
+    (that's recover()'s job, tested separately below)."""
+
+    def test_playwright_retry_recovers_a_fetch_exception(self):
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        playwright_fetcher = FakeWebsiteFetcher(
+            pages=[SimpleNamespace(text="Welcome to Acme Trailer Co, manufacturer of trailer axle assemblies.")],
+        )
+        validator = CandidateValidator(
+            website_fetcher=ExplodingWebsiteFetcher(), llm_client=llm, playwright_fetcher=playwright_fetcher,
+        )
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is True
+        assert playwright_fetcher.calls == ["acmetrailer.com"]
+
+    def test_playwright_retry_recovers_an_unsuccessful_fetch(self):
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        primary = FakeWebsiteFetcher(success=False, error="blocked by WAF")
+        playwright_fetcher = FakeWebsiteFetcher(
+            pages=[SimpleNamespace(text="Welcome to Acme Trailer Co, manufacturer of trailer axle assemblies.")],
+        )
+        validator = CandidateValidator(
+            website_fetcher=primary, llm_client=llm, playwright_fetcher=playwright_fetcher,
+        )
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is True
+
+    def test_playwright_retry_recovers_a_blank_page(self):
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        primary = FakeWebsiteFetcher(pages=[SimpleNamespace(text="")])
+        playwright_fetcher = FakeWebsiteFetcher(
+            pages=[SimpleNamespace(text="Welcome to Acme Trailer Co, manufacturer of trailer axle assemblies.")],
+        )
+        validator = CandidateValidator(
+            website_fetcher=primary, llm_client=llm, playwright_fetcher=playwright_fetcher,
+        )
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is True
+
+    def test_no_retry_when_httpx_fetch_already_succeeded(self):
+        """The retry must never fire when the cheap fetch already
+        worked -- Playwright is a fallback, not a second opinion."""
+        primary = FakeWebsiteFetcher(
+            pages=[SimpleNamespace(text="Welcome to Acme Trailer Co, manufacturer of trailer axle assemblies.")],
+        )
+        playwright_fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(text="should never be used")])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(
+            website_fetcher=primary, llm_client=llm, playwright_fetcher=playwright_fetcher,
+        )
+
+        validator.validate(_candidate(), "trailer axle")
+
+        assert playwright_fetcher.calls == []
+
+    def test_no_retry_configured_preserves_original_failure_reason(self):
+        """Every existing reason-string assertion (test_fetch_failure_is_
+        not_validated, test_empty_page_text_is_not_validated, etc.) must
+        keep working when playwright_fetcher is None (the default) --
+        this is the exact backward-compatibility guarantee those tests
+        already prove; this test documents WHY explicitly."""
+        fetcher = FakeWebsiteFetcher(success=False, error="404 not found")
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=FakeLLMClient())
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is False
+        assert result.reason.startswith(REASON_FETCH_UNSUCCESSFUL_PREFIX)
+
+    def test_playwright_also_failing_preserves_the_original_httpx_reason(self):
+        """The final failure reason must stay the ORIGINAL httpx-level
+        reason (so discovery_service.py's is_dead_domain classification
+        is unaffected), not the retry's own failure detail."""
+        primary = FakeWebsiteFetcher(success=False, error="404 not found")
+        playwright_fetcher = ExplodingWebsiteFetcher()
+        validator = CandidateValidator(
+            website_fetcher=primary, llm_client=FakeLLMClient(), playwright_fetcher=playwright_fetcher,
+        )
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is False
+        assert result.reason.startswith(REASON_FETCH_UNSUCCESSFUL_PREFIX)
+
+    def test_playwright_retry_returning_blank_text_is_still_a_failure(self):
+        primary = FakeWebsiteFetcher(success=False, error="blocked")
+        playwright_fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(text="")])
+        validator = CandidateValidator(
+            website_fetcher=primary, llm_client=FakeLLMClient(), playwright_fetcher=playwright_fetcher,
+        )
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is False
+        assert result.reason.startswith(REASON_FETCH_UNSUCCESSFUL_PREFIX)
+
+    def test_playwright_retry_exception_does_not_propagate(self):
+        primary = FakeWebsiteFetcher(success=False, error="blocked")
+        validator = CandidateValidator(
+            website_fetcher=primary, llm_client=FakeLLMClient(), playwright_fetcher=ExplodingWebsiteFetcher(),
+        )
+
+        result = validator.validate(_candidate(), "trailer axle")  # must not raise
+
+        assert result.validated is False
+
+
 class TestCoreProductTerm:
     """_core_product_term strips one trailing qualifier word --
     query_builder.py's own templates always append one
@@ -298,6 +418,78 @@ class TestMentionsProductTerm:
         assert not _mentions_product_term(
             "We manufacture air suspension solutions for trailers, trucks and buses.",
             "metal jacks and propstand",
+        )
+
+
+class TestSignificantWordsGeneralFallback:
+    """The generalisation built after _PRODUCT_TERM_SYNONYM_PHRASES's
+    per-term-tuple pattern needed a second curated entry (Material
+    Handling) and would have needed a third (trailer axle, for Timbren
+    Industries -- a genuine axle-LESS trailer-suspension manufacturer
+    that can never literally say "axle" on its own site). This fallback
+    is a default, word-level check -- every significant word of the
+    term must independently appear on the page, any order, stopwords
+    excluded, with a small curated per-WORD synonym table -- so a NEW
+    product category gets this recall improvement for free, without a
+    new phrase-tuple entry. Strictly additive under the existing
+    exact-phrase/curated-tuple checks (tested above): every one of
+    those tests already passed before this fallback existed, proving it
+    cannot be the reason they pass now either way."""
+
+    def test_axle_synonym_matches_an_axle_less_suspension_manufacturer(self):
+        """The exact real case this fallback was built for: Timbren
+        Industries sells axle-less independent trailer suspension --
+        the literal word "axle" never appears anywhere on their site."""
+        assert _mentions_product_term(
+            "Timbren manufactures independent trailer suspension kits for RVs and utility "
+            "trailers, eliminating traditional running gear entirely.",
+            "trailer axle",
+        )
+
+    def test_literal_axle_still_matches_without_needing_the_synonym(self):
+        assert _mentions_product_term(
+            "We are a leading manufacturer of trailer axle assemblies for the RV industry.",
+            "trailer axle",
+        )
+
+    def test_handling_lifting_synonym_applies_to_any_term_not_just_the_curated_phrase(self):
+        """Proves the synonym is keyed to the WORD "handling", reusable
+        across any product term containing it -- not tied to the one
+        pre-existing curated "material handling equipment" phrase key."""
+        assert _mentions_product_term(
+            "We design custom material lifting systems for modern warehouses.",
+            "material handling systems",
+        )
+
+    def test_words_match_in_any_order_for_an_uncurated_term(self):
+        """No curated phrase/synonym entry exists for "wheel hub
+        assembly" at all -- this must still match purely via the
+        general word-presence fallback, order-independent."""
+        assert _mentions_product_term(
+            "Our hub and wheel assemblies are precision manufactured for commercial trucks.",
+            "wheel hub assembly",
+        )
+
+    def test_stopwords_are_never_required_as_literal_words(self):
+        assert _mentions_product_term(
+            "We stock a full range of shelving and racks for industrial warehouses.",
+            "racks and shelving for warehouses",
+        )
+
+    def test_plural_singular_fold_applies_to_any_uncurated_term(self):
+        assert _mentions_product_term("Heavy duty prop jack for construction sites.", "prop jacks")
+        assert _mentions_product_term("We sell prop jacks in bulk.", "prop jack")
+
+    def test_missing_significant_word_still_rejects(self):
+        assert not _mentions_product_term(
+            "Our hub assemblies are precision manufactured for commercial trucks.",  # no "wheel" anywhere
+            "wheel hub assembly",
+        )
+
+    def test_unrelated_page_rejected_even_with_a_synonym_table_entry(self):
+        assert not _mentions_product_term(
+            "We sell handling equipment for the postal industry.",  # "trailer"/"axle"/"suspension" nowhere
+            "trailer axle",
         )
 
 

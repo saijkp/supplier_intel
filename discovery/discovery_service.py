@@ -179,6 +179,7 @@ class DiscoveryService:
         china_1688_scraper: Optional[Any] = None,
         companies_house_client: Optional[Any] = None,
         companies_house_sic_source: Optional[CompaniesHouseSicSource] = None,
+        playwright_fetcher: Optional[Any] = None,
     ):
         self.repo = repo or SupplierRepository()
         if google_scraper is not None:
@@ -193,6 +194,19 @@ class DiscoveryService:
             from scrapers.own_website_scraper import OwnWebsiteScraper
 
             self.website_fetcher = OwnWebsiteScraper()
+        # Defaults to a real fetcher (not None) -- unlike
+        # companies_house_client below, this retry is meant to be the
+        # STANDARD path for every discovery run, not an opt-in a caller
+        # has to remember to request. See CandidateValidator's own
+        # playwright_fetcher constructor doc / _fetch_candidate_site's
+        # docstring for the real candidates (Lippert, Dexter Axle) lost
+        # to httpx-level fetch failures this recovers.
+        if playwright_fetcher is not None:
+            self.playwright_fetcher = playwright_fetcher
+        else:
+            from scrapers.playwright_website_scraper import PlaywrightWebsiteScraper
+
+            self.playwright_fetcher = PlaywrightWebsiteScraper()
         # companies_house_client stays None unless the caller explicitly
         # passes one (main.py discover --require-uk-registration) --
         # see candidate_validator.CandidateValidator's own "Gate 3.5"
@@ -200,6 +214,7 @@ class DiscoveryService:
         # way website_fetcher/llm_client do above.
         self.candidate_validator = candidate_validator or CandidateValidator(
             website_fetcher=self.website_fetcher, companies_house_client=companies_house_client,
+            playwright_fetcher=self.playwright_fetcher,
         )
         self.matcher = matcher or SupplierMatcher(self.repo)
         self.llm_candidate_source = llm_candidate_source or LLMCandidateSource()

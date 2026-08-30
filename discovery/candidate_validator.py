@@ -43,7 +43,18 @@ A candidate is "validated" only if every gate passes:
    insensitive for known British/American variants (_SPELLING_VARIANTS,
    e.g. "moulding"/"molding") -- found via a real run that the strict
    original check was rejecting genuine manufacturers on wording
-   alone, not a real signal they weren't manufacturers.
+   alone, not a real signal they weren't manufacturers. Default check
+   (see _significant_words_all_match) is word-level, not phrase-level:
+   every significant word of the term (stopwords like "and"/"for"
+   excluded) must appear somewhere on the page, in any order, with a
+   small curated per-word synonym table (_WORD_SYNONYMS) for a handful
+   of known head-noun substitutions (e.g. "axle" also accepts
+   "suspension"/"running gear" -- a real axle-LESS trailer-suspension
+   manufacturer can never say the literal word "axle" about its own
+   product). _PRODUCT_TERM_SYNONYM_PHRASES's curated exact-phrase/
+   word-pair overrides are tried first and still apply unchanged --
+   the word-level check is a strictly additive fallback under them,
+   not a replacement.
 
 Gate 3.5 -- UK Companies House registration, opt-in via
 `companies_house_client` (None by default -- every other product
@@ -281,6 +292,84 @@ _PRODUCT_TERM_SYNONYM_PHRASES: dict = {
     ),
 }
 
+# Generalisation of the pattern _PRODUCT_TERM_SYNONYM_PHRASES exists
+# for: instead of a NEW curated phrase-tuple entry per full product
+# term (which only ever helps the exact term it was written for),
+# _significant_words_all_match below treats "no real company repeats
+# the exact query phrasing" as the DEFAULT expectation for every
+# category, not a per-category exception -- built once after the same
+# gap showed up on a second, unrelated category (Material Handling:
+# neither Interroll nor Mercia Lifting Gear used the compound phrase;
+# trailer axle: Timbren Industries sells axle-LESS suspension systems,
+# so "trailer axle" as a literal phrase can never appear on their own
+# site even though they are a genuine, obvious manufacturer in this
+# exact category).
+#
+# Keyed by individual WORD, not full phrase -- "axle" now carries its
+# synonym set into ANY product term containing that word ("trailer
+# axle", "leaf spring axle", etc.), not just one exact historical
+# query string. A word with no entry here is still required literally
+# (see _significant_words_all_match) -- this is a curated ADDITION to
+# precision-limiting cases actually found live, same discipline as
+# _SPELLING_VARIANTS, not a general thesaurus guessed in advance.
+_WORD_SYNONYMS: dict = {
+    "axle": ("axle", "suspension", "running gear", "running-gear"),
+    "handling": ("handling", "lifting"),
+}
+
+# Small, conservative -- conjunctions/prepositions/articles only, never
+# a word that could carry real product-identifying meaning on its own.
+_STOPWORDS: frozenset = frozenset({
+    "and", "or", "for", "of", "with", "the", "a", "an", "to", "&",
+})
+
+
+def _significant_words(term: str) -> list[str]:
+    """Lowercase word tokens from `term` with _STOPWORDS removed --
+    "metal jacks and propstand" -> ["metal", "jacks", "propstand"].
+    Order is not semantically meaningful here (see
+    _significant_words_all_match, which checks presence independently,
+    never a contiguous phrase)."""
+    return [w for w in re.findall(r"[a-z0-9]+", term.lower()) if w not in _STOPWORDS]
+
+
+def _word_matches_haystack(word: str, haystack: str) -> bool:
+    """True if `word` -- or a simple singular/plural fold of it, or one
+    of its curated synonyms (see _WORD_SYNONYMS) -- appears anywhere in
+    `haystack`. The plural fold is deliberately naive (just a trailing
+    "s", plus the "y"/"ies" pattern -- "assembly"/"assemblies" -- not a
+    real lemmatiser) -- enough to cover "jacks" on the query side
+    matching "jack" on a real page and vice versa, the exact real
+    mismatch _PRODUCT_TERM_SYNONYM_PHRASES's "metal jacks and
+    propstand" entry originally had to spell out by hand."""
+    forms = {word}
+    if word.endswith("ies"):
+        forms.add(f"{word[:-3]}y")
+    elif word.endswith("y"):
+        forms.add(f"{word[:-1]}ies")
+    if word.endswith("s"):
+        forms.add(word[:-1])
+    else:
+        forms.add(f"{word}s")
+    forms.update(_WORD_SYNONYMS.get(word, ()))
+    return any(form in haystack for form in forms)
+
+
+def _significant_words_all_match(product_term: str, page_text: str) -> bool:
+    """The generalised default for gate 6: every significant word of
+    the (qualifier-stripped) product term must independently appear
+    somewhere on the page, in any order -- never a contiguous-phrase
+    requirement. Purely ADDITIVE to _mentions_product_term's existing
+    exact-phrase/curated-tuple checks (an OR, tried after them) -- can
+    only ever accept a real candidate those stricter checks would have
+    rejected, never reject one they would have accepted, so this
+    cannot regress either of the two already-proven curated cases."""
+    words = _significant_words(_core_product_term(product_term))
+    if not words:
+        return False
+    haystack = (page_text or "").lower()
+    return all(_word_matches_haystack(word, haystack) for word in words)
+
 
 # Deliberately lower than uk_company_verification_service's
 # _CLEAN_MATCH_THRESHOLD (85) -- see that constant's `min_confidence`
@@ -419,7 +508,10 @@ def _mentions_product_term(page_text: str, product_term: str) -> bool:
                 return True
         elif candidate in haystack:
             return True
-    return False
+
+    # Generalised default fallback -- see _significant_words_all_match's
+    # own docstring for why this is additive, not a replacement.
+    return _significant_words_all_match(product_term, page_text)
 
 
 # Named, not just inline f-strings, so discovery_service.py can classify
@@ -497,6 +589,7 @@ class CandidateValidator:
     def __init__(
         self, website_fetcher: Any, llm_client: Optional[LLMClient] = None,
         companies_house_client: Optional[Any] = None,
+        playwright_fetcher: Optional[Any] = None,
     ):
         # Anything with `.fetch(domain) -> result with .success/.pages[0].text`
         # -- OwnWebsiteScraper or collection.SiteCollector both qualify,
@@ -510,6 +603,80 @@ class CandidateValidator:
         # --require-uk-registration), not silently on for every product
         # category just because a key happens to be configured.
         self.companies_house_client = companies_house_client
+        # Same `.fetch(domain)` interface as website_fetcher above --
+        # None (default for a test/fake-only caller) means no retry
+        # happens at all, same "constructible without the real thing,
+        # opt-in only when actually configured" contract as
+        # companies_house_client. Production callers (discovery_service.py,
+        # batch_service.py) default this to a real
+        # scrapers.playwright_website_scraper.PlaywrightWebsiteScraper()
+        # so the retry below is the STANDARD path, not a manually-gated
+        # extra step -- see _fetch_candidate_site's own docstring for why.
+        self.playwright_fetcher = playwright_fetcher
+
+    def _fetch_candidate_site(self, domain: str) -> tuple[Optional[Any], Optional[str]]:
+        """Returns (fetch_result, None) on success, or (None, reason)
+        on failure. Tries `website_fetcher` (cheap httpx) first; if it
+        fails for exactly the "unreachable"/"no readable text" reasons
+        (an exception, no success/no pages, or blank page text) AND a
+        `playwright_fetcher` is configured, retries the SAME domain via
+        a real headless browser before giving up.
+
+        Found live: several large, obviously-real trailer-axle
+        manufacturers (Lippert, across all three of its own domain
+        variants, and Dexter Axle/Group) were being lost entirely to
+        httpx-level fetch failures -- a bot-challenge page, a WAF
+        blocking httpx's own User-Agent/TLS fingerprint, or a JS-only
+        page that renders its real content client-side, none of which
+        say anything about whether the company is real. A real browser
+        routinely gets past exactly this class of failure.
+
+        Deliberately NOT the same thing as recover() below -- this is
+        always the SAME domain, just a heavier fetch method; recover()
+        searches for a DIFFERENT domain entirely, for when the original
+        one is genuinely gone. This retry runs first, automatically,
+        for every candidate reaching this gate (not opt-in like
+        recover()) -- see playwright_fetcher's own constructor doc for
+        why production defaults it to a real fetcher rather than None.
+
+        Preserves the exact REASON_FETCH_EXCEPTION_PREFIX/
+        REASON_FETCH_UNSUCCESSFUL_PREFIX/REASON_EMPTY_PAGE reason
+        strings on a final failure (the original httpx attempt's
+        reason, not the retry's) so discovery_service.py's own
+        is_dead_domain/website_did_not_resolve classification -- and
+        every existing test asserting on those exact prefixes --
+        continues to work unchanged."""
+        try:
+            primary = self.website_fetcher.fetch(domain)
+            primary_reason: Optional[str] = None
+        except Exception as e:
+            primary = None
+            primary_reason = f"{REASON_FETCH_EXCEPTION_PREFIX}: {e}"
+
+        if primary is not None:
+            if not primary.success or not primary.pages:
+                primary_reason = (
+                    f"{REASON_FETCH_UNSUCCESSFUL_PREFIX}: {getattr(primary, 'error', 'unknown error')}"
+                )
+            elif not (primary.pages[0].text or "").strip():
+                primary_reason = REASON_EMPTY_PAGE
+            else:
+                return primary, None  # httpx fetch succeeded with real text -- no retry needed
+
+        if self.playwright_fetcher is None:
+            return None, primary_reason
+
+        logger.info(
+            "discovery: retrying %s via Playwright after httpx-level failure (%s)", domain, primary_reason,
+        )
+        try:
+            retry = self.playwright_fetcher.fetch(domain)
+        except Exception as e:
+            logger.warning("discovery: playwright retry failed for %s: %s", domain, e)
+            return None, primary_reason
+        if not retry.success or not retry.pages or not (retry.pages[0].text or "").strip():
+            return None, primary_reason
+        return retry, None
 
     def validate(
         self, candidate: Candidate, product_term: str, skip_soft_trader_signals: bool = False,
@@ -550,21 +717,11 @@ class CandidateValidator:
                 f"{REASON_MARKETPLACE_HOST_PREFIX}: {candidate.domain}",
             )
 
-        try:
-            fetch_result = self.website_fetcher.fetch(candidate.domain)
-        except Exception as e:
-            logger.warning("discovery: fetch failed for %s: %s", candidate.domain, e)
-            return ValidationResult(candidate, False, None, None, None, f"{REASON_FETCH_EXCEPTION_PREFIX}: {e}")
-
-        if not fetch_result.success or not fetch_result.pages:
-            return ValidationResult(
-                candidate, False, None, None, None,
-                f"{REASON_FETCH_UNSUCCESSFUL_PREFIX}: {getattr(fetch_result, 'error', 'unknown error')}",
-            )
+        fetch_result, fetch_failure_reason = self._fetch_candidate_site(candidate.domain)
+        if fetch_result is None:
+            return ValidationResult(candidate, False, None, None, None, fetch_failure_reason)
 
         page_text = fetch_result.pages[0].text
-        if not page_text or not page_text.strip():
-            return ValidationResult(candidate, False, None, None, None, REASON_EMPTY_PAGE)
 
         # gate 3.6 -- catches a fetch that silently landed on a
         # DIFFERENT real company's site (found live: duraauto.com's own

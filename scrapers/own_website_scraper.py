@@ -190,7 +190,8 @@ class OwnWebsiteScraper:
         final_url = str(getattr(response, "url", "") or "") or url
         return response.text, final_url
 
-    def _find_capability_links(self, base_url: str, html: str) -> List[str]:
+    @staticmethod
+    def _find_capability_links(base_url: str, html: str) -> List[str]:
         soup = BeautifulSoup(html, "html.parser")
         found: List[str] = []
         seen: set[str] = set()
@@ -211,7 +212,7 @@ class OwnWebsiteScraper:
             if normalised not in seen:
                 seen.add(normalised)
                 found.append(normalised)
-        return self._prioritise_capability_links(found)
+        return OwnWebsiteScraper._prioritise_capability_links(found)
 
     @staticmethod
     def _prioritise_capability_links(links: List[str]) -> List[str]:
