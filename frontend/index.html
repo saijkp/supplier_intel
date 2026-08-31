@@ -216,6 +216,13 @@ body{background:var(--steel-900)}
 .badge.trader{color:var(--danger-dark);border-color:var(--danger);background:var(--danger-bg)}
 .badge.neutral{color:var(--steel-700);border-color:var(--rule);background:var(--paper)}
 .badge.warn{color:var(--tier-claimed);border-color:var(--tier-claimed);background:var(--tier-claimed-bg)}
+/* Same green as .badge.mfr, own class -- "we've fully audited this
+   category" (batch/category_roster.py's CATEGORY_ROSTERS) is a
+   different claim than "verified manufacturer" even though the two
+   happen to share a colour today. */
+.badge.proven{color:var(--tier-verified);border-color:var(--tier-verified);background:var(--tier-verified-bg)}
+.category-chip{cursor:pointer;user-select:none}
+.category-chip.active{border-color:var(--orange);color:var(--orange-dark)}
 
 /* Audit tab: supplier list view, section 2 of the visual redesign.
    Scoped entirely to #view-audit -- reuses the existing steel/orange
@@ -651,7 +658,9 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
         <div class="field hidden" id="findAdvancedBlock">
           <div class="field">
             <label class="label" for="findCategory">Category (optional)</label>
-            <input class="input" id="findCategory" placeholder="e.g. Axles & Suspension" autocomplete="off">
+            <div id="findCategoryChips" style="margin-bottom:8px"></div>
+            <input class="input" id="findCategory" placeholder="e.g. Injection Moulding" autocomplete="off">
+            <p class="hint">"Proven" means a completed audit roster exists for that category (Injection Moulding, Material Handling) -- the others are real sourcing work, just not through that same audit process yet.</p>
           </div>
           <div class="field">
             <label class="label" for="findCountry">Country (optional)</label>
@@ -1339,6 +1348,38 @@ function supplierCard(s, i, opts) {
    alongside every result below. */
 
 const FIND_COUNT_PATTERNS = [/\bneed\s+(\d+)\b/i, /\bfind\s+(\d+)\b/i, /\bsource\s+(\d+)\b/i, /\b(\d+)\s+suppliers?\b/i];
+
+// The two categories with a completed, checked-in audit roster --
+// same definition as the backend's own batch/category_roster.py
+// CATEGORY_ROSTERS (confirmed via GET /audit/categories), not a
+// separate frontend guess at what counts as "proven". Everything else
+// here is real product-sourcing work, just not yet through that same
+// audit process.
+const PROVEN_CATEGORIES = ["Injection Moulding", "Material Handling"];
+// Categories actually in real use across this app (ad-hoc search
+// terms, not a formal taxonomy) -- offered as quick-select chips so a
+// user doesn't have to remember exact spelling/casing, never a
+// restriction: the category field stays free text underneath.
+const FIND_CATEGORIES = [
+  "Injection Moulding", "Material Handling",
+  "Weld Mesh", "Metal Pressing", "Brake Cable", "Trailer Axle",
+];
+
+function findCategoryChipsHtml() {
+  return FIND_CATEGORIES.map(cat => {
+    const proven = PROVEN_CATEGORIES.includes(cat);
+    return `<button type="button" class="btn btn-ghost btn-sm category-chip" data-find-category-chip="${esc(cat)}" style="margin:0 6px 6px 0">${esc(cat)}${
+      proven ? ` <span class="badge proven" style="margin-left:4px">Proven</span>` : ""
+    }</button>`;
+  }).join("");
+}
+$("findCategoryChips").innerHTML = findCategoryChipsHtml();
+$("findCategoryChips").addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-find-category-chip]");
+  if (!chip) return;
+  $("findCategory").value = chip.dataset.findCategoryChip;
+  $("findCategoryChips").querySelectorAll(".category-chip").forEach(c => c.classList.toggle("active", c === chip));
+});
 
 function findLooksLikeUrl(text) {
   text = (text || "").trim();
@@ -2476,9 +2517,18 @@ async function initAuditView() {
   const sel = $("auditCategory");
   try {
     const data = await api("/audit/categories");
-    sel.innerHTML = (data.categories || []).map(c =>
-      `<option value="${esc(c.name)}" ${c.available ? "" : "disabled"}>${esc(c.name)}${c.available ? "" : " (no roster)"}</option>`
-    ).join("") || `<option value="">No categories available</option>`;
+    sel.innerHTML = (data.categories || []).map(c => {
+      // <option> text can't hold a styled badge -- same "Proven" concept
+      // as Find Suppliers' category chips, appended as plain text since
+      // that's all an <option> can render. Every category listed here
+      // already comes from CATEGORY_ROSTERS (categories with a
+      // completed audit roster), so today this will mark all of them --
+      // that's expected, not a bug: it's what makes it obvious this
+      // dropdown IS the fully-audited set, not a subset of a larger list.
+      const proven = PROVEN_CATEGORIES.some(p => p.toLowerCase() === c.name.toLowerCase());
+      const suffix = c.available ? (proven ? " ✓ Proven" : "") : " (no roster)";
+      return `<option value="${esc(c.name)}" ${c.available ? "" : "disabled"}>${esc(c.name)}${suffix}</option>`;
+    }).join("") || `<option value="">No categories available</option>`;
     auditCategoriesLoaded = true;
   } catch (err) {
     explain(err, $("auditAlert"));
