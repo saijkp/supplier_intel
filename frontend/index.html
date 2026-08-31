@@ -2329,7 +2329,7 @@ function renderCompareTable() {
     <tbody>${sorted.map((s, i) => `
       <tr>
         <td class="mono">${i + 1}</td>
-        <td><strong>${esc(s.canonical_name)}</strong></td>
+        <td><a href="#" style="font-weight:600" data-view-audit-id="${s.id}" data-view-audit-name="${esc(s.canonical_name)}" onclick="event.preventDefault()">${esc(s.canonical_name)}</a></td>
         <td>${esc(s.country || "")}</td>
         <td class="mono">${s.ai_confidence_score ?? "—"}</td>
         <td>${recommendationBadge(s)}</td>
