@@ -1795,6 +1795,7 @@ async function findSubmitBulk() {
     });
     if (!res.ok) throw Object.assign(new Error("Upload failed"), { status: res.status });
     const job = await res.json();
+    store.set("si.findBulkJobId", job.id);
     pollFindBulkJob(job.id);
   } catch (err) {
     explain(err, $("findAlert"));
@@ -1802,6 +1803,12 @@ async function findSubmitBulk() {
   }
 }
 
+// jobId is persisted via `store` (not just this closure) so a page
+// refresh mid-batch can find and resume polling it -- the backend job
+// itself already runs fully server-side via BackgroundTasks, decoupled
+// from this polling connection; only the frontend's reference to which
+// job to poll was ever at risk of being lost. See init()'s resume check
+// below and the two terminal branches here that clear it.
 async function pollFindBulkJob(jobId) {
   const btn = $("btnFindGo");
   try {
@@ -1809,10 +1816,11 @@ async function pollFindBulkJob(jobId) {
     if (job.status === "queued" || job.status === "running") {
       const p = job.progress || {};
       $("findResults").innerHTML = `<p class="hint">Processing… ${p.processed ?? 0}/${p.total_rows ?? "?"} row(s) (${p.succeeded ?? 0} succeeded, ${p.failed ?? 0} failed so far)</p>`;
-      btn.innerHTML = `<span class="spin"></span> Processing`;
+      btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Processing`;
       setTimeout(() => pollFindBulkJob(jobId), 3000);
       return;
     }
+    store.set("si.findBulkJobId", "");
     btn.disabled = false; btn.textContent = "Go";
     if (job.status === "completed") {
       const st = job.stats || {};
@@ -2891,6 +2899,10 @@ function renderAuditDetail(b, opts = {}) {
 (async function init() {
   await checkHealth();
   initFindView();
+  const resumeJobId = store.get("si.findBulkJobId");
+  if (resumeJobId && state.connected) {
+    pollFindBulkJob(resumeJobId);
+  }
   if (!state.base) {
     const connectPrompt = `<div class="empty">
       <div class="empty-title">Connect to get started</div>
