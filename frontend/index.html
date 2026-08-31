@@ -691,12 +691,12 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
             <span>Redo suppliers already processed</span>
           </label>
         </div>
-        <button class="btn btn-ghost btn-block" id="btnBulkCollect">Collect all pending</button>
-        <button class="btn btn-ghost btn-block" id="btnBulkVerify" style="margin-top:8px">Verify all pending (AI)</button>
+        <button class="btn btn-ghost btn-block" id="btnBulkCollect" title="Visits each supplier's own website and fetches its pages -- the raw material every other enrichment stage below reads from.">Collect all pending</button>
+        <button class="btn btn-ghost btn-block" id="btnBulkVerify" style="margin-top:8px" title="Runs an AI cross-check of already-collected evidence to assess whether a supplier looks real and manufacturer-verified.">Verify all pending (AI)</button>
         <button class="btn btn-ghost btn-block" id="btnBulkContacts" style="margin-top:8px"
-          data-apollo-gated
+          data-apollo-gated title="Looks up named procurement/sales/CEO contacts (name, title, email) via Apollo.io."
         >Find contacts (Apollo)</button>
-        <button class="btn btn-ghost btn-block" id="btnBulkFactoryFacts" style="margin-top:8px">Extract factory facts</button>
+        <button class="btn btn-ghost btn-block" id="btnBulkFactoryFacts" style="margin-top:8px" title="Pulls production-line, machinery, and factory-ownership details from already-collected pages.">Extract factory facts</button>
         <p class="hint" style="margin-top:10px">Each supplier costs a real headless-browser visit (collect), a real OpenAI call (verify, factory facts), or up to 3 Apollo credits (contacts) — start small.</p>
       </div>
     </div>
