@@ -419,9 +419,46 @@ class TestNamedRowSuccessPath:
         )
         assert outcome.failed == 2
         assert outcome.total_rows == 2
+        assert outcome.processed == outcome.succeeded + outcome.failed
         for row in repo.rows.values():
             assert row["status"] == "failed"
             assert "dedup blew up" in row["error_message"]
+
+
+class TestProgressReconciliation:
+    """`processed` must always equal `succeeded + failed` so the UI's
+    "X/total (Y succeeded, Z failed)" progress line reconciles -- a row
+    that never reaches processed (needs_url) must never count toward
+    succeeded/failed either, and every row that does count toward
+    succeeded/failed must have incremented processed first, regardless
+    of which of the several failure branches it exits through."""
+
+    def test_processed_reconciles_across_every_outcome_branch(self):
+        class ExplodingMatcher(FakeMatcher):
+            def resolve_and_store(self, candidate):
+                if candidate.get("canonical_name") == "Explode Co":
+                    raise RuntimeError("dedup blew up")
+                return super().resolve_and_store(candidate)
+
+        repo = FakeRepo()
+        matcher = ExplodingMatcher(repo)
+        service, _ = _make_service(repo=repo, matcher=matcher)
+
+        outcome = service.run_batch(
+            [
+                _row(row_index=0, company_name="No Website Co", website=None),  # needs_url
+                _row(row_index=1, company_name="Marketplace Co", website="https://www.alibaba.com"),  # failed, pre-resolve
+                _row(row_index=2, company_name="Explode Co", website="https://explode.com"),  # failed, resolve exception
+                _row(row_index=3, company_name="Real Co", website="https://real.com"),  # succeeded
+            ],
+            "job-1",
+        )
+
+        assert outcome.needs_url == 1
+        assert outcome.processed == outcome.succeeded + outcome.failed
+        assert outcome.processed == 3  # marketplace + explode + real, not the needs_url row
+        assert outcome.succeeded == 1
+        assert outcome.failed == 2
 
 
 class TestPlaceholderRows:
@@ -1635,6 +1672,7 @@ class TestMarketplaceRootRejection:
 
         assert outcome.failed == 1
         assert outcome.succeeded == 0
+        assert outcome.processed == outcome.succeeded + outcome.failed
         assert matcher.calls == []       # never even attempted dedup/resolve
         assert collection.calls == []    # never attempted a fetch
         row = next(iter(repo.rows.values()))

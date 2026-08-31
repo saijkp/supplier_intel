@@ -345,6 +345,13 @@ class BatchService:
                 self._report(progress_callback, outcome)
                 continue
 
+            # From here on, every remaining exit path ends in succeeded or
+            # failed (never needs_url again) -- increment processed once,
+            # here, rather than at each individual success/fail site below,
+            # so `processed` can never drift from `succeeded + failed` (see
+            # batch progress counter reconciliation fix).
+            outcome.processed += 1
+
             if is_platform_subdomain(domain):
                 # A marketplace ROOT (or any *.alibaba.com/etc. subdomain --
                 # see is_platform_subdomain's own docstring) has no company-
@@ -388,7 +395,6 @@ class BatchService:
             self.repo.update_batch_upload_row(batch_row_id, {
                 "status": "processing", "supplier_id": supplier_id, "name_source": name_source,
             })
-            outcome.processed += 1
 
             if is_repeat:
                 # Same domain already collected earlier in this batch --
