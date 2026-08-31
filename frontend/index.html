@@ -1146,10 +1146,10 @@ function factoryFactsBlock(s) {
     </div>`;
 }
 
-function scoreBlock(label, value, cls) {
+function scoreBlock(label, value, cls, title) {
   const na = value === null || value === undefined;
   return `
-    <div class="score ${cls || ""}">
+    <div class="score ${cls || ""}"${title ? ` title="${esc(title)}"` : ""}>
       <span class="score-label">${esc(label)}</span>
       <span class="score-val${na ? " na" : ""}">${na ? "—" : value}</span>
     </div>`;
@@ -1219,8 +1219,8 @@ function supplierCard(s, i, opts) {
           <div class="card-meta">${contactLine(s)}</div>
         </div>
         <div class="scores">
-          ${!evidenceOnly ? scoreBlock("Technical", s.composite_score) : ""}
-          ${!evidenceOnly && s.ai_confidence_score != null ? scoreBlock("AI Confidence", s.ai_confidence_score, "ai") : ""}
+          ${!evidenceOnly ? scoreBlock("Composite", s.composite_score, "", "Rule-based score from marketplace track record, certifications, and verification signals (verification/scorer.py) -- separate from AI Confidence") : ""}
+          ${!evidenceOnly && s.ai_confidence_score != null ? scoreBlock("AI Confidence", s.ai_confidence_score, "ai", "Cross-checked evidence score from the AI verification layer (verification_ai/) -- separate from Composite") : ""}
         </div>
       </div>
       ${badges(s)}
