@@ -19,7 +19,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from batch.batch_service import BatchService
-from batch.csv_parser import ParsedRow, parse_csv
+from batch.csv_parser import ParsedRow, parse_batch_upload_file
 from collection.collection_service import CollectionService
 from deduplication.domain_utils import looks_like_url
 from discovery.discovery_service import DiscoveryService
@@ -131,10 +131,11 @@ def run_collection_job(job_id: str, options: Dict[str, Any]) -> None:
 def run_batch_job(
     job_id: str, csv_bytes: bytes,
     recover_dead_domains: bool = False, recovery_product_term: Optional[str] = None,
-    default_region: Optional[str] = None,
+    default_region: Optional[str] = None, filename: Optional[str] = None,
 ) -> None:
     """The HTTP equivalent of `main.py batch-upload` -- parses the
-    uploaded CSV (batch.csv_parser.parse_csv) and runs every row through
+    uploaded file (batch.csv_parser.parse_batch_upload_file, CSV or
+    .xlsx by `filename`'s extension) and runs every row through
     BatchService.run_batch(), which is just SupplierMatcher.
     resolve_and_store() + CollectionService.collect() per row (no
     second extraction pipeline -- see batch/batch_service.py's own
@@ -161,7 +162,7 @@ def run_batch_job(
     repo = SupplierRepository()
     repo.mark_pipeline_job_running(job_id)
     try:
-        parsed = parse_csv(csv_bytes)
+        parsed = parse_batch_upload_file(csv_bytes, filename)
         service = BatchService(repo=repo, default_region_fallback=default_region)
 
         def _on_progress(outcome) -> None:

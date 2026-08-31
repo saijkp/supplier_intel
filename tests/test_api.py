@@ -9,8 +9,11 @@ injection, auth, and JSON serialisation path a real client would hit.
 
 from __future__ import annotations
 
+import io
+
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
 
 TOKEN = "test-token-123"
 
@@ -112,10 +115,11 @@ def client(tmp_path, monkeypatch):
     batch_job_calls = []
 
     def fake_run_batch_job(job_id, csv_bytes, recover_dead_domains=False, recovery_product_term=None,
-                            default_region=None):
+                            default_region=None, filename=None):
         batch_job_calls.append({
             "job_id": job_id, "recover_dead_domains": recover_dead_domains,
             "recovery_product_term": recovery_product_term, "default_region": default_region,
+            "filename": filename,
         })
         test_repo.mark_pipeline_job_running(job_id)
         test_repo.mark_pipeline_job_completed(job_id, stats={"processed": 0})
@@ -428,6 +432,29 @@ class TestBatchUploadEndpoint:
         assert client.batch_job_calls[-1]["recover_dead_domains"] is False
         assert client.batch_job_calls[-1]["recovery_product_term"] is None
         assert client.batch_job_calls[-1]["default_region"] is None
+
+    def test_xlsx_upload_is_accepted_and_filename_threaded_through(self, client):
+        """Find Suppliers' bulk-upload flow accepts .xlsx now, not just
+        CSV -- the endpoint itself doesn't parse the file (that's
+        run_batch_job's job, in the background task), so this only
+        confirms the upload is accepted and file.filename reaches
+        run_batch_job so it can pick the right parser."""
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["Company Name", "Website"])
+        ws.append(["Acme Co", "https://acme.example.com"])
+        buf = io.BytesIO()
+        wb.save(buf)
+        response = client.post(
+            "/batch/upload",
+            files={"file": (
+                "suppliers.xlsx", buf.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )},
+            headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        assert client.batch_job_calls[-1]["filename"] == "suppliers.xlsx"
 
     def test_empty_file_is_rejected(self, client):
         response = client.post(

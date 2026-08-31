@@ -93,26 +93,12 @@ def _best_column_match(headers: List[str], aliases: tuple) -> Optional[str]:
     return best_header if best_score >= _FUZZY_MATCH_THRESHOLD else None
 
 
-def parse_csv(file_content: bytes) -> ParseResult:
-    """Never raises for ordinary messy input (empty file, no recognisable
-    header, malformed rows) -- returns an empty/partial ParseResult
-    instead, matching every other source's "return partial data, don't
-    lose the batch to a parsing bug" discipline already established in
-    this codebase (see normalizers/base_normalizer.py)."""
+def _build_parse_result(headers: List[str], row_dicts: List[Dict[str, str]]) -> ParseResult:
+    """Shared by parse_csv and parse_xlsx once each has reduced its own
+    file format down to (headers, one stripped-string dict per row) --
+    fuzzy column detection and per-row extraction/dedup only need to be
+    written, and tested, once."""
     result = ParseResult()
-    if not file_content:
-        return result
-
-    try:
-        text = file_content.decode("utf-8-sig")  # -sig strips a BOM, common in Excel-exported CSVs
-    except UnicodeDecodeError:
-        text = file_content.decode("utf-8", errors="replace")
-
-    try:
-        reader = csv.DictReader(io.StringIO(text))
-        headers = reader.fieldnames or []
-    except csv.Error:
-        return result
     if not headers:
         return result
 
@@ -124,9 +110,7 @@ def parse_csv(file_content: bytes) -> ParseResult:
     result.country_column = country_col
 
     seen_keys: set = set()
-    for i, raw_row in enumerate(reader):
-        original = {k: (v or "").strip() for k, v in raw_row.items() if k is not None}
-
+    for i, original in enumerate(row_dicts):
         company_name = (original.get(company_col) or "").strip() or None if company_col else None
         website = (original.get(website_col) or "").strip() or None if website_col else None
         country = (original.get(country_col) or "").strip() or None if country_col else None
@@ -143,3 +127,83 @@ def parse_csv(file_content: bytes) -> ParseResult:
         ))
 
     return result
+
+
+def parse_csv(file_content: bytes) -> ParseResult:
+    """Never raises for ordinary messy input (empty file, no recognisable
+    header, malformed rows) -- returns an empty/partial ParseResult
+    instead, matching every other source's "return partial data, don't
+    lose the batch to a parsing bug" discipline already established in
+    this codebase (see normalizers/base_normalizer.py)."""
+    if not file_content:
+        return ParseResult()
+
+    try:
+        text = file_content.decode("utf-8-sig")  # -sig strips a BOM, common in Excel-exported CSVs
+    except UnicodeDecodeError:
+        text = file_content.decode("utf-8", errors="replace")
+
+    try:
+        reader = csv.DictReader(io.StringIO(text))
+        headers = reader.fieldnames or []
+    except csv.Error:
+        return ParseResult()
+    if not headers:
+        return ParseResult()
+
+    row_dicts = [
+        {k: (v or "").strip() for k, v in raw_row.items() if k is not None}
+        for raw_row in reader
+    ]
+    return _build_parse_result(headers, row_dicts)
+
+
+def parse_xlsx(file_content: bytes) -> ParseResult:
+    """Same fuzzy header-detection/per-row extraction as parse_csv, just
+    reading the first worksheet of an uploaded .xlsx workbook instead of
+    decoding CSV text -- POST /batch/upload's Find Suppliers bulk-upload
+    flow accepts either now (see parse_batch_upload_file). Never raises
+    for a malformed/empty/password-protected workbook -- returns an
+    empty ParseResult, matching parse_csv's own discipline."""
+    if not file_content:
+        return ParseResult()
+
+    from openpyxl import load_workbook
+
+    try:
+        workbook = load_workbook(io.BytesIO(file_content), read_only=True, data_only=True)
+        sheet = workbook.active
+        if sheet is None:
+            return ParseResult()
+        rows_iter = sheet.iter_rows(values_only=True)
+        header_row = next(rows_iter, None)
+    except Exception:  # noqa: BLE001 -- any corrupt/unreadable workbook degrades to empty, never raises
+        return ParseResult()
+
+    if not header_row:
+        return ParseResult()
+
+    headers = [str(h).strip() if h is not None else "" for h in header_row]
+    row_dicts = []
+    for raw_row in rows_iter:
+        if raw_row is None or all(v is None for v in raw_row):
+            continue  # openpyxl can yield a fully-blank trailing row
+        row_dicts.append({
+            headers[idx]: (str(v).strip() if v is not None else "")
+            for idx, v in enumerate(raw_row) if idx < len(headers)
+        })
+    return _build_parse_result(headers, row_dicts)
+
+
+def parse_batch_upload_file(file_content: bytes, filename: Optional[str] = None) -> ParseResult:
+    """The single entry point POST /batch/upload uses -- dispatches to
+    parse_xlsx or parse_csv by the uploaded file's extension so the
+    caller doesn't need to know which format it got. Defaults to CSV
+    when the filename is missing or unrecognised, matching this
+    endpoint's original CSV-only behaviour exactly. Deliberately does
+    NOT route legacy .xls (openpyxl only reads .xlsx/.xlsm -- adding
+    real .xls support would need a second library, not requested)."""
+    ext = filename.rsplit(".", 1)[-1].lower() if filename and "." in filename else ""
+    if ext == "xlsx":
+        return parse_xlsx(file_content)
+    return parse_csv(file_content)

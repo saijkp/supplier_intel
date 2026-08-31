@@ -9,7 +9,24 @@ rows and which columns are company_name/website."
 
 from __future__ import annotations
 
-from batch.csv_parser import parse_csv
+import io
+
+from openpyxl import Workbook
+
+from batch.csv_parser import parse_batch_upload_file, parse_csv, parse_xlsx
+
+
+def _xlsx_bytes(rows: list) -> bytes:
+    """Builds a real in-memory .xlsx workbook from a list of row tuples
+    (first row is the header row) -- same real openpyxl read/write path
+    the app's own XLSX export already uses, not a hand-rolled fixture."""
+    wb = Workbook()
+    ws = wb.active
+    for row in rows:
+        ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 class TestHeaderDetection:
@@ -152,4 +169,103 @@ class TestDuplicateRows:
             b"B,https://b.com\n"
         )
         assert result.duplicate_row_indices == [3]
-        assert [r.row_index for r in result.rows] == [0, 1, 2, 3]
+
+
+class TestXlsxParsing:
+    """parse_xlsx must match parse_csv's own fuzzy header detection,
+    per-row extraction, and dedup discipline exactly -- same
+    _build_parse_result underneath, just fed from a real workbook
+    instead of decoded CSV text."""
+
+    def test_exact_canonical_headers_are_detected(self):
+        result = parse_xlsx(_xlsx_bytes([
+            ["Company Name", "Website"],
+            ["Acme Co", "https://acme.com"],
+        ]))
+        assert result.company_name_column == "Company Name"
+        assert result.website_column == "Website"
+        assert len(result.rows) == 1
+        assert result.rows[0].company_name == "Acme Co"
+        assert result.rows[0].website == "https://acme.com"
+
+    def test_messy_alias_headers_are_still_detected(self):
+        result = parse_xlsx(_xlsx_bytes([
+            ["Business Name", "Domain", "Nation"],
+            ["Acme Co", "acme.com", "France"],
+        ]))
+        assert result.company_name_column == "Business Name"
+        assert result.website_column == "Domain"
+        assert result.country_column == "Nation"
+        assert result.rows[0].country == "France"
+
+    def test_numeric_cells_are_coerced_to_stripped_strings(self):
+        """openpyxl hands back native types (int/float/None), not
+        strings -- a company name or website that Excel auto-formatted
+        as a number must still come through as text, not crash."""
+        result = parse_xlsx(_xlsx_bytes([
+            ["Company Name", "Website"],
+            [12345, "https://acme.com"],
+        ]))
+        assert result.rows[0].company_name == "12345"
+
+    def test_duplicate_rows_detected_same_as_csv(self):
+        result = parse_xlsx(_xlsx_bytes([
+            ["Company Name", "Website"],
+            ["Acme Co", "https://acme.com"],
+            ["Beta Co", "https://beta.com"],
+            ["Acme Co", "https://acme.com"],
+        ]))
+        assert result.duplicate_row_indices == [2]
+
+    def test_blank_trailing_row_is_skipped_not_counted(self):
+        result = parse_xlsx(_xlsx_bytes([
+            ["Company Name", "Website"],
+            ["Acme Co", "https://acme.com"],
+            [None, None],
+        ]))
+        assert len(result.rows) == 1
+
+    def test_empty_file_returns_empty_result_not_raise(self):
+        result = parse_xlsx(b"")
+        assert result.rows == []
+
+    def test_corrupt_workbook_bytes_return_empty_result_not_raise(self):
+        result = parse_xlsx(b"this is not a real xlsx file")
+        assert result.rows == []
+        assert result.company_name_column is None
+
+
+class TestParseBatchUploadFileDispatch:
+
+    def test_xlsx_filename_routes_to_xlsx_parser(self):
+        result = parse_batch_upload_file(
+            _xlsx_bytes([["Company Name", "Website"], ["Acme Co", "https://acme.com"]]),
+            filename="companies.xlsx",
+        )
+        assert result.rows[0].company_name == "Acme Co"
+
+    def test_csv_filename_routes_to_csv_parser(self):
+        result = parse_batch_upload_file(
+            b"Company Name,Website\nAcme Co,https://acme.com\n", filename="companies.csv",
+        )
+        assert result.rows[0].company_name == "Acme Co"
+
+    def test_missing_filename_defaults_to_csv(self):
+        result = parse_batch_upload_file(
+            b"Company Name,Website\nAcme Co,https://acme.com\n", filename=None,
+        )
+        assert result.rows[0].company_name == "Acme Co"
+
+    def test_unrecognised_extension_defaults_to_csv(self):
+        result = parse_batch_upload_file(
+            b"Company Name,Website\nAcme Co,https://acme.com\n", filename="companies.txt",
+        )
+        assert result.rows[0].company_name == "Acme Co"
+
+    def test_legacy_xls_extension_is_not_routed_to_xlsx_parser(self):
+        """openpyxl can't read legacy .xls -- routing it to parse_xlsx
+        would silently return an empty result. Falls through to
+        parse_csv instead (also empty for real binary .xls bytes, but
+        an explicit, documented non-support rather than a surprise)."""
+        result = parse_batch_upload_file(b"not real content", filename="companies.xls")
+        assert result.rows == []

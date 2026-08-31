@@ -365,11 +365,13 @@ async def create_batch_upload_job(
     ),
     repo: SupplierRepository = Depends(get_repo),
 ) -> PipelineJobResponse:
-    """CSV batch upload -- one job per uploaded file, processed row by
-    row through batch.batch_service.BatchService (each row going
-    through the exact same SupplierMatcher.resolve_and_store() +
-    CollectionService.collect() single-company path every other source
-    already uses, see that module's own docstring). Poll
+    """Batch upload -- CSV or .xlsx, dispatched by filename extension
+    (see batch.csv_parser.parse_batch_upload_file) -- one job per
+    uploaded file, processed row by row through
+    batch.batch_service.BatchService (each row going through the exact
+    same SupplierMatcher.resolve_and_store() + CollectionService.
+    collect() single-company path every other source already uses, see
+    that module's own docstring). Poll
     GET /pipeline/jobs/{id} for progress/completion, same as every
     other job type; download results via GET /batch/{id}/export.csv
     once status is 'completed'. The only endpoint in this API that
@@ -397,7 +399,7 @@ async def create_batch_upload_job(
     background_tasks.add_task(
         run_batch_job, job_id, csv_bytes,
         recover_dead_domains=recover_dead_domains, recovery_product_term=recovery_product_term,
-        default_region=default_region,
+        default_region=default_region, filename=file.filename,
     )
     job = repo.get_pipeline_job(job_id)
     return _to_job_response(job)
