@@ -1381,6 +1381,30 @@ $("findCategoryChips").addEventListener("click", (e) => {
   $("findCategoryChips").querySelectorAll(".category-chip").forEach(c => c.classList.toggle("active", c === chip));
 });
 
+// Plain keyword match, not discovery/candidate_validator.py's heavier
+// NLP-ish product-term matcher -- this only decides whether to SHOW a
+// UI disclosure, never gates an actual verification step, so a simple
+// substring check against a short curated list is enough.
+const INJECTION_MOULDING_TERMS = ["injection moulding", "injection molding", "plastic injection", "injection mould"];
+function isInjectionMouldingCategory(categoryText) {
+  const t = (categoryText || "").trim().toLowerCase();
+  return INJECTION_MOULDING_TERMS.some(term => t.includes(term));
+}
+
+// Real production data checked before writing this (400+ live supplier
+// rows sampled via GET /suppliers/search, including a product=injection
+// filtered sample): "China" is the only spelling ever actually stored,
+// no "PRC"/other variant found -- matches storage/repository.py's own
+// _COUNTRY_ALIAS_GROUPS, which has likewise never needed a China entry.
+// A plain case-insensitive exact match is therefore sufficient here.
+function chinaLegalEntityCaveatSection(b, category) {
+  if (!isInjectionMouldingCategory(category)) return "";
+  if ((b.country || "").trim().toLowerCase() !== "china") return "";
+  return evidenceSection("Legal-entity verification", `<div class="evidence-row">
+    Legal-entity verification (Qichacha / China's national business registry, GSXT) isn't available for this candidate -- the manufacturer-status evidence above is based on website and platform signals only, not a government registry check.
+  </div>`);
+}
+
 function findLooksLikeUrl(text) {
   text = (text || "").trim();
   return text.length > 0 && !text.includes(" ") && text.includes(".");
@@ -1630,7 +1654,7 @@ function sourcingDossierSection(dossier) {
   return evidenceSection("Procurement fit for this brief", rows.join(""));
 }
 
-async function findRenderResultsScreen(host, jobId, newIds, duplicateIds) {
+async function findRenderResultsScreen(host, jobId, newIds, duplicateIds, category) {
   // Real bug found live: a supplier id can repeat WITHIN
   // duplicateIds itself (two different candidates in the same run
   // both merging into the SAME existing supplier -- e.g. "Dexter
@@ -1698,7 +1722,7 @@ async function findRenderResultsScreen(host, jobId, newIds, duplicateIds) {
           <span class="badge ${isNew ? "mfr" : "warn"}">${isNew ? "new" : "already in your database"}</span>
         </div>
         ${sourcingDossierSection(b.sourcing_dossier)}
-        ${renderAuditDetail(b, {includeVerdict: false})}
+        ${renderAuditDetail(b, {includeVerdict: false, category})}
       </div>`;
     }).join("");
     host.innerHTML = `
@@ -1775,7 +1799,7 @@ async function pollSingleCompanyJob(jobId) {
   }
 }
 
-async function pollFindDiscoveryJob(jobId) {
+async function pollFindDiscoveryJob(jobId, category) {
   const btn = $("btnFindGo");
   let job;
   try {
@@ -1792,7 +1816,7 @@ async function pollFindDiscoveryJob(jobId) {
     $("findProgressPanel").style.display = "";
     $("findProgressCount").textContent = findMatchSummaryText(p);
     $("findProgressFeed").innerHTML = (p.events || []).slice().reverse().map(findEventRow).join("");
-    setTimeout(() => pollFindDiscoveryJob(jobId), 3000);
+    setTimeout(() => pollFindDiscoveryJob(jobId, category), 3000);
     return;
   }
   btn.disabled = false; btn.textContent = "Go";
@@ -1819,7 +1843,7 @@ async function pollFindDiscoveryJob(jobId) {
   $("findResults").innerHTML = stopMsg;
   const resultsHost = document.createElement("div");
   $("findResults").appendChild(resultsHost);
-  await findRenderResultsScreen(resultsHost, jobId, st.new_supplier_ids || [], st.duplicate_supplier_ids || []);
+  await findRenderResultsScreen(resultsHost, jobId, st.new_supplier_ids || [], st.duplicate_supplier_ids || [], category);
 }
 
 $("btnFindGo").addEventListener("click", async () => {
@@ -1857,7 +1881,7 @@ $("btnFindGo").addEventListener("click", async () => {
       if (maxCandidates) { body.max_candidates = Number(maxCandidates); }  // ignored by the backend when target_count is set -- see DiscoveryJobRequest's own doc
       if (source && source !== "serpapi") { body.source = source; }
       const job = await api("/discovery/jobs", { method: "POST", body: JSON.stringify(body) });
-      pollFindDiscoveryJob(job.id);
+      pollFindDiscoveryJob(job.id, category);
     }
   } catch (err) {
     explain(err, $("findAlert"));
@@ -2556,7 +2580,7 @@ async function loadAuditSuppliers() {
     } else {
       host.innerHTML = data.suppliers.map(auditSupplierCard).join("");
       host.querySelectorAll("[data-audit-id]").forEach(el => {
-        el.addEventListener("click", () => openAuditDetail(el.dataset.auditId, el.dataset.auditName));
+        el.addEventListener("click", () => openAuditDetail(el.dataset.auditId, el.dataset.auditName, category));
       });
     }
     if (data.drifted_to_excluded.length || data.missing.length) {
@@ -2909,13 +2933,13 @@ function wireTriageCard(bundle) {
   document.addEventListener("keydown", triageKeydownHandler);
 }
 
-async function openAuditDetail(supplierId, name) {
+async function openAuditDetail(supplierId, name, category) {
   $("auditDetailTitle").textContent = name || "Supplier";
   $("auditDetailBody").innerHTML = `<div class="empty"><div class="empty-title">Loading…</div></div>`;
   $("auditDetailDialog").showModal();
   try {
     const b = await api("/audit/suppliers/" + supplierId);
-    $("auditDetailBody").innerHTML = renderAuditDetail(b);
+    $("auditDetailBody").innerHTML = renderAuditDetail(b, {category});
     wireVerdictControls(supplierId);
   } catch (err) {
     $("auditDetailBody").innerHTML = `<div id="auditDetailErr"></div>`;
@@ -2936,6 +2960,9 @@ function renderAuditDetail(b, opts = {}) {
   // just-discovered candidate anyway (that's the Audit tab's own,
   // separate manual-review workflow, standing rule 2).
   const sections = [];
+
+  const legalEntityCaveat = chinaLegalEntityCaveatSection(b, opts.category);
+  if (legalEntityCaveat) sections.push(legalEntityCaveat);
 
   sections.push(evidenceSection("Contact", [
     evidenceRow("Address", b.contact.address, b.source_urls.address, "Not stated on site"),
