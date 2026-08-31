@@ -1166,7 +1166,7 @@ function supplierMeta(s) {
 
 function contactLine(s) {
   if (s.primary_email) return `<a href="mailto:${esc(s.primary_email)}">${esc(s.primary_email)}</a>`;
-  if (s.primary_phone) return esc(s.primary_phone);
+  if (s.primary_phone) return `<a href="tel:${esc(s.primary_phone)}">${esc(s.primary_phone)}</a>`;
   if (s.contact_form_url) return `No email found — <a href="${esc(s.contact_form_url)}" target="_blank" rel="noopener">contact form</a>`;
   return `<span style="color:var(--steel-300)">No contact found</span>`;
 }
@@ -1552,8 +1552,8 @@ async function findRenderResultsScreen(host, jobId, newIds, duplicateIds) {
       <td>${esc(b.canonical_name || "")}</td>
       <td>${b.domain ? `<a href="https://${esc(b.domain)}" target="_blank" rel="noopener">${esc(b.domain)}</a>` : ""}</td>
       <td>${esc(b.contact.address || "")}</td>
-      <td>${esc(b.contact.phone || "")}</td>
-      <td>${esc(b.contact.email || "")}</td>
+      <td>${b.contact.phone ? `<a href="tel:${esc(b.contact.phone)}">${esc(b.contact.phone)}</a>` : ""}</td>
+      <td>${b.contact.email ? `<a href="mailto:${esc(b.contact.email)}">${esc(b.contact.email)}</a>` : ""}</td>
     </tr>`).join("");
     const summaryTable = `<table class="find-summary-table" style="width:100%;border-collapse:collapse;margin-bottom:16px">
       <thead><tr>
@@ -1572,7 +1572,7 @@ async function findRenderResultsScreen(host, jobId, newIds, duplicateIds) {
         <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap">
           <div>
             <div class="card-name">${esc(b.canonical_name || "")}</div>
-            <div class="card-meta">${esc(b.domain || "")}${b.country ? " · " + esc(b.country) : ""}</div>
+            <div class="card-meta">${b.domain ? `<a href="https://${esc(b.domain)}" target="_blank" rel="noopener">${esc(b.domain)}</a>` : ""}${b.country ? " · " + esc(b.country) : ""}</div>
           </div>
           <span class="badge ${isNew ? "mfr" : "warn"}">${isNew ? "new" : "already in your database"}</span>
         </div>
@@ -2438,7 +2438,7 @@ function auditSupplierCard(s) {
     <div class="card-head">
       <div>
         <div class="card-name">${esc(s.canonical_name)}</div>
-        <div class="card-meta">${esc(s.domain)}${s.country ? " · " + esc(s.country) : ""}</div>
+        <div class="card-meta">${s.domain ? `<a href="https://${esc(s.domain)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${esc(s.domain)}</a>` : ""}${s.country ? " · " + esc(s.country) : ""}</div>
       </div>
       <div class="scores">
         <div class="score">
@@ -2671,7 +2671,7 @@ function renderTriageCard(b) {
     <div class="triage-head">
       <div>
         <div class="card-name">${esc(b.canonical_name || "")}</div>
-        <div class="card-meta">${esc(b.domain || "")}${b.country ? " · " + esc(b.country) : ""} · ${triageIndex + 1} of ${triageQueue.length}</div>
+        <div class="card-meta">${b.domain ? `<a href="https://${esc(b.domain)}" target="_blank" rel="noopener">${esc(b.domain)}</a>` : ""}${b.country ? " · " + esc(b.country) : ""} · ${triageIndex + 1} of ${triageQueue.length}</div>
       </div>
     </div>
     <div class="triage-fact">${esc(triageStrongestFact(b))}</div>
@@ -2802,9 +2802,9 @@ function renderAuditDetail(b, opts = {}) {
   sections.push(evidenceSection("Contact", [
     evidenceRow("Address", b.contact.address, b.source_urls.address, "Not stated on site"),
     evidenceRow("Factory location", b.contact.factory_location, b.source_urls.factory_location, "Not stated on site"),
-    evidenceRow("Phone", b.contact.phone, null, "Not stated on site"),
+    evidenceRow("Phone", b.contact.phone, `tel:${b.contact.phone}`, "Not stated on site"),
     evidenceRow("Phone source page(s)", b.source_urls.phone_source_pages),
-    evidenceRow("Email", b.contact.email, null, "Not stated on site"),
+    evidenceRow("Email", b.contact.email, `mailto:${b.contact.email}`, "Not stated on site"),
     evidenceRow("Email source page(s)", (b.source_urls.email_source_pages || []).join("; ")),
   ].join("")));
 
