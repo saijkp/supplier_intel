@@ -2265,7 +2265,15 @@ function certificationEvidence(s) {
 function riskValue(s) { return 100 - (s.ai_confidence_score ?? 0); }
 
 function recommendationBadge(s) {
-  if (!s.procurement_recommendation) return `<span class="badge neutral">Not yet assessed</span>`;
+  if (!s.procurement_recommendation) {
+    // Navigation only, never a judgment -- this supplier has no
+    // procurement_recommendation on file (no Verify job has run yet),
+    // so there is nothing to display here except a way to go look.
+    // Reuses the same data-view-audit-id delegated click handler
+    // supplierCard()'s own "View in Audit" button uses -- no new job
+    // or AI call is triggered by clicking this.
+    return `<span class="badge neutral" style="cursor:pointer" title="Opens this supplier's Audit detail for your own manual review -- not an automated recommendation" data-view-audit-id="${s.id}" data-view-audit-name="${esc(s.canonical_name)}">Review in Audit →</span>`;
+  }
   const meta = PROCUREMENT_RECOMMENDATION_META[s.procurement_recommendation]
     || { label: s.procurement_recommendation.replace(/_/g, " "), cls: "neutral" };
   return `<span class="badge ${meta.cls}">${esc(meta.label)}</span>`;
