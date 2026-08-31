@@ -507,6 +507,86 @@ dialog#auditDetailDialog .verdict-status{
 dialog#auditDetailDialog .verdict-status.ok{color:var(--good)}
 dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
 
+/* ── Compare / Search / Bulk enrichment / Job history: dark/coral skin
+   extended from the Audit detail dialog above -- same token set
+   (ink shades, text-hi/text-lo, accent, good, warn), scoped to these
+   four view sections via :is() so Find Suppliers and the Audit tab's
+   own list view (still the original steel/orange theme) are
+   unaffected. */
+#view-compare, #view-search, #view-bulk, #view-jobs{
+  --ink-950:#0a0e14; --ink-900:#12161c; --ink-800:#1a1f28; --ink-700:#262d38;
+  --text-hi:#f4f6f9; --text-lo:#8892a0;
+  --accent:#ff5a4a; --accent-dim:#7a2f28;
+  --good:#4ade80; --warn:#fbbf24;
+}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .panel,
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .card{
+  background:var(--ink-900);border-color:var(--ink-700);
+}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .panel-head{
+  background:var(--ink-950);border-color:var(--ink-700);
+}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .panel-title,
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .card-name,
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .tbl td{
+  color:var(--text-hi);
+}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .label,
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .hint,
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .count,
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .card-meta,
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .score-label,
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .tbl th,
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .empty-text{
+  color:var(--text-lo);
+}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .card-meta a{color:var(--text-lo)}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .card-meta a:hover{color:var(--text-hi)}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .empty-title{color:var(--text-hi)}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .empty{
+  background:var(--ink-900);border-color:var(--ink-700);
+}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .input{
+  background:var(--ink-900);border-color:var(--ink-700);color:var(--text-hi);
+}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .input::placeholder{color:var(--text-lo)}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .input:focus{
+  border-color:var(--accent);box-shadow:0 0 0 3px rgba(255,90,74,.14);
+}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) a{color:var(--accent)}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .check{color:var(--text-hi)}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .check input{accent-color:var(--accent)}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .btn-ghost{
+  border-color:var(--ink-700);color:var(--text-lo);background:transparent;
+}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .btn-ghost:hover{border-color:var(--accent);color:var(--text-hi)}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .btn-primary{background:var(--accent);box-shadow:none}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .btn-primary:hover{background:#e6503f}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .card-head,
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .tbl th,
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .tbl td{
+  border-color:var(--ink-700);
+}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .score{
+  background:var(--ink-950);border-color:var(--ink-700);
+}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .score-val{color:var(--accent)}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .badge.neutral{
+  background:var(--ink-800);border-color:var(--ink-700);color:var(--text-lo);
+}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .status.queued{
+  background:var(--ink-800);border-color:var(--ink-700);color:var(--text-lo);
+}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .status.running{
+  background:rgba(255,90,74,.1);border-color:var(--accent-dim);color:var(--accent);
+}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .status.completed{
+  background:rgba(74,222,128,.12);border-color:var(--good);color:var(--good);
+}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .status.failed{
+  background:rgba(255,90,74,.12);border-color:var(--accent);color:var(--accent);
+}
+
 .spin{
   display:inline-block;width:12px;height:12px;border:2px solid rgba(255,255,255,.35);
   border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;
