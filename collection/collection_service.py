@@ -97,6 +97,7 @@ from config.settings import (
     COLLECTION_PARALLEL_WORKERS,
 )
 from deduplication.domain_utils import domains_match, extract_domain
+from deduplication.name_utils import names_plausibly_corroborate
 from storage.repository import SupplierRepository
 from verification.website_contact_extractor import (
     best_contact_method,
@@ -246,14 +247,37 @@ class CollectionService:
         else:
             on_domain_pages = result.pages
 
+        # A same-company domain migration (e.g. a hyphenation change or
+        # rebrand -- found live: scutprotection.com redirecting to
+        # scut-protection.com, the same real company) must not be
+        # hard-failed just because the URL changed -- same corroboration
+        # discipline as discovery/candidate_validator.py's gate 3.6
+        # (Dexter Axle -> Dexter Group). No LLM extraction happens in
+        # this collect() path, so there's no freshly-extracted name to
+        # compare against the way gate 3.6 does; the closest grounded
+        # signal available is the supplier's own already-stored
+        # canonical_name against the domain the crawl actually landed
+        # on. names_plausibly_corroborate (not the bare
+        # _shares_distinctive_token) specifically to avoid the "IK Eng
+        # Ltd" class of false-positive corroboration when one side has
+        # no real distinctive word to compare on -- see that function's
+        # own docstring. A landed domain with no real word overlap
+        # (e.g. Providence Enterprise's own domain redirecting to an
+        # unrelated documentary site) is still correctly rejected below.
+        if off_domain_pages and not on_domain_pages:
+            canonical_name = supplier.get("canonical_name") or ""
+            landed_domains = {extract_domain(p.url) for p in off_domain_pages if extract_domain(p.url)}
+            if any(names_plausibly_corroborate(canonical_name, d) for d in landed_domains):
+                on_domain_pages, off_domain_pages = off_domain_pages, []
+
         if off_domain_pages:
             self._record_off_domain_pages(supplier_id, domain, off_domain_pages)
 
-        # Every page redirected off-domain -- nothing here can be
-        # trusted as this supplier's own site, regardless of what
-        # SiteCollector itself reported. Hard-fail, same "nothing
-        # genuinely verified" discipline as batch_service.py's
-        # marketplace-root gate.
+        # Every page redirected off-domain (and didn't corroborate above)
+        # -- nothing here can be trusted as this supplier's own site,
+        # regardless of what SiteCollector itself reported. Hard-fail,
+        # same "nothing genuinely verified" discipline as
+        # batch_service.py's marketplace-root gate.
         success = result.success and bool(on_domain_pages)
         status = "success" if success else "failed"
         error = result.error

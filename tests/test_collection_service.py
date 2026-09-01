@@ -612,6 +612,50 @@ class TestOffDomainRedirectProtection:
         assert repo.get_supplier(supplier_id)["primary_email"] == "sales@acme.example.com"
         assert repo.get_field_provenance(supplier_id, "off_domain_redirect") == []
 
+    def test_same_company_redirect_with_shared_distinctive_word_is_trusted(self, repo):
+        """A genuine same-company domain migration (found live: a
+        supplier's canonical_name -> distinctive-word overlap against
+        the landed domain, e.g. Scut Protection's own
+        scutprotection.com redirecting to scut-protection.com) must be
+        trusted as the same company, not hard-failed just because the
+        registered host changed -- same corroboration discipline as
+        discovery/candidate_validator.py's gate 3.6 (Dexter Axle ->
+        Dexter Group)."""
+        supplier_id = repo.create_golden_record({"canonical_name": "Scut Protection Srl", "domain": "scutprotection.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "scutprotection.com": CollectionResult(domain="scutprotection.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://scut-protection.com/", text="Email: office@scut-protection.com", has_contact_form=False),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        outcome = service.collect(supplier_id, return_pages=True)
+
+        assert outcome["status"] == "success"
+        assert outcome["pages_visited"] == 1
+        assert repo.get_supplier(supplier_id)["primary_email"] == "office@scut-protection.com"
+        assert repo.get_field_provenance(supplier_id, "off_domain_redirect") == []
+
+    def test_redirect_with_no_shared_distinctive_word_still_rejected(self, repo):
+        """The corroboration check must not overreach: a redirect to a
+        genuinely unrelated site (no shared distinctive word with the
+        supplier's own canonical_name) stays hard-failed exactly as
+        before -- found live: providence-ent.com redirecting to an
+        unrelated documentary site."""
+        supplier_id = repo.create_golden_record({"canonical_name": "Providence Enterprise", "domain": "providence-ent.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "providence-ent.com": CollectionResult(domain="providence-ent.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://atwarwiththedinosaurs.com/", text="An Anti-Apocalyptic Documentary", has_contact_form=False),
+            ]),
+        })
+        service = CollectionService(repo=repo, site_collector=fake)
+
+        outcome = service.collect(supplier_id, return_pages=True)
+
+        assert outcome["status"] == "failed"
+        assert "atwarwiththedinosaurs.com" in outcome["error"]
+        assert outcome["pages"] == []
+
 
 class TestCertificateDocuments:
     """SiteCollector already downloaded/saved certificate files during

@@ -13,6 +13,8 @@ in tests/test_phase1.py alongside the rest of the write-path tests.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from storage.database import initialise_schema
 from storage.repository import SupplierRepository
 
@@ -198,7 +200,8 @@ class TestGetSuppliersNeedingReverification:
     def test_recently_verified_supplier_is_excluded(self, tmp_path):
         repo = _make_repo(tmp_path)
         supplier_id = repo.create_golden_record({"canonical_name": "Acme"})
-        repo.update_supplier_fields(supplier_id, {"last_verified": "2026-08-01T00:00:00+00:00"})
+        recently = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+        repo.update_supplier_fields(supplier_id, {"last_verified": recently})
         results = repo.get_suppliers_needing_reverification(older_than_days=30)
         assert results == []
 
