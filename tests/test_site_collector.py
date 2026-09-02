@@ -24,6 +24,8 @@ from collection.site_collector import (
     _build_candidate_urls,
     _extract_facility_photo_urls,
     _extract_footer_text,
+    _extract_sitemap_locs,
+    _filter_relevant_sitemap_urls,
     _find_certificate_candidates,
     _find_download_links,
     _find_mailto_emails,
@@ -99,21 +101,69 @@ class _QuietHandler(http.server.SimpleHTTPRequestHandler):
         pass  # silence per-request logging, keeps test output readable
 
 
-@pytest.fixture()
-def local_site(tmp_path):
+def _serve_files(tmp_path, files: dict):
+    """Shared boilerplate behind local_site/sitemap_only_site -- writes
+    `files` to a fresh temp dir and serves them over a real local
+    http.server. Caller is responsible for shutting the server down."""
     site_dir = tmp_path / "site"
     site_dir.mkdir()
-    for name, content in _SITE_FILES.items():
+    for name, content in files.items():
         (site_dir / name).write_text(content, encoding="utf-8")
-    (site_dir / "images").mkdir()
+    (site_dir / "images").mkdir(exist_ok=True)
 
     handler = lambda *args, **kwargs: _QuietHandler(*args, directory=str(site_dir), **kwargs)
     server = http.server.HTTPServer(("127.0.0.1", 0), handler)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    return server, thread, f"http://127.0.0.1:{port}"
+
+
+@pytest.fixture()
+def local_site(tmp_path):
+    server, thread, base_url = _serve_files(tmp_path, _SITE_FILES)
     try:
-        yield f"http://127.0.0.1:{port}"
+        yield base_url
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+# A page reachable ONLY via /sitemap.xml -- deliberately not linked
+# anywhere in index.html's nav, and its filename/anchor-text would
+# never exist since there's no anchor at all. Mirrors the real gap
+# found live (Mansfield Engineered Components' "Commitment" page):
+# capability evidence sitting on a page the homepage simply never
+# points at with matching link text.
+_SITEMAP_ONLY_SITE_FILES = {
+    "index.html": """
+        <html><head><title>Acme Trailer Co</title></head>
+        <body>
+            <h1>Acme Trailer Co</h1>
+            <nav>
+                <a href="/contact.html">Contact</a>
+            </nav>
+        </body></html>
+    """,
+    "contact.html": "<html><body><h1>Contact Us</h1></body></html>",
+    "sitemap.xml": """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<url><loc>/commitment.html</loc></url>
+</urlset>""",
+    "commitment.html": """
+        <html><body>
+            <h1>Our Commitment</h1>
+            <p>Founded in 1962, we added metal stamping to our capabilities in 1965.</p>
+        </body></html>
+    """,
+}
+
+
+@pytest.fixture()
+def sitemap_only_site(tmp_path):
+    server, thread, base_url = _serve_files(tmp_path, _SITEMAP_ONLY_SITE_FILES)
+    try:
+        yield base_url
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -241,6 +291,36 @@ class TestSiteCollectorRealBrowser:
         assert any("impressum.html" in u for u in urls)
         impressum_page = next(p for p in result.pages if "impressum.html" in p.url)
         assert "5 Impressum Str, 10115 Berlin, Germany" in impressum_page.text
+
+
+@pytest.mark.slow
+class TestSitemapDiscovery:
+    """Real Playwright + real local HTTP server -- proves a page no
+    homepage anchor names usefully (not in index.html's nav at all,
+    here) still gets visited when /sitemap.xml lists it. The real gap
+    this closes: Mansfield Engineered Components' own "Commitment"
+    (company history) page was linked from its homepage nav but neither
+    its URL nor anchor text matched any capability keyword, so
+    _find_relevant_links alone never surfaced it -- yet it was the only
+    page on the whole site that said the company does metal stamping."""
+
+    def test_sitemap_only_page_is_discovered_and_visited(self, sitemap_only_site, artifact_store):
+        collector = SiteCollector(artifact_store=artifact_store, max_pages=6)
+        result = collector.collect(supplier_id=1, domain=sitemap_only_site)
+
+        assert result.success is True
+        urls = {p.url for p in result.pages}
+        assert any("commitment.html" in u for u in urls)
+        commitment_page = next(p for p in result.pages if "commitment.html" in p.url)
+        assert "metal stamping" in commitment_page.text
+
+    def test_sitemap_missing_entirely_is_not_fatal(self, local_site, artifact_store):
+        """local_site's fixture files have no sitemap.xml at all -- a
+        404 there must not affect collection of the rest of the site."""
+        collector = SiteCollector(artifact_store=artifact_store, max_pages=6)
+        result = collector.collect(supplier_id=1, domain=local_site)
+        assert result.success is True
+        assert any("contact.html" in p.url for p in result.pages)
 
 
 @pytest.mark.slow
@@ -402,6 +482,59 @@ class TestExtractionHelpers:
         links = ["https://acme.example.com/x/", "https://acme.example.com/y/", "https://acme.example.com/contact/"]
         assert set(_prioritise_relevant_links(links)) == set(links)
         assert len(_prioritise_relevant_links(links)) == len(links)
+
+    def test_prioritise_relevant_links_moves_history_tier_first_too(self):
+        """The company-history tier (found live: Mansfield Engineered
+        Components' "Commitment" page) deserves the same budget
+        priority as contact/about/impressum -- it's exactly the kind of
+        page that can carry evidence no other page on the site has."""
+        links = ["https://acme.example.com/blog/", "https://acme.example.com/commitment/"]
+        assert _prioritise_relevant_links(links) == [
+            "https://acme.example.com/commitment/",
+            "https://acme.example.com/blog/",
+        ]
+
+    def test_extract_sitemap_locs_from_a_plain_urlset(self):
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<url><loc>https://acme.example.com/about/</loc></url>
+<url><loc>https://acme.example.com/contact/</loc></url>
+</urlset>"""
+        assert _extract_sitemap_locs(xml) == [
+            "https://acme.example.com/about/",
+            "https://acme.example.com/contact/",
+        ]
+
+    def test_extract_sitemap_locs_from_a_sitemap_index(self):
+        """Same function, same <loc> tag -- a sitemap INDEX's <sitemap>
+        entries use the identical tag, so no special-casing is needed
+        to pull out the sub-feed URLs themselves."""
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<sitemap><loc>https://acme.example.com/page-sitemap.xml</loc></sitemap>
+<sitemap><loc>https://acme.example.com/post-sitemap.xml</loc></sitemap>
+</sitemapindex>"""
+        assert _extract_sitemap_locs(xml) == [
+            "https://acme.example.com/page-sitemap.xml",
+            "https://acme.example.com/post-sitemap.xml",
+        ]
+
+    def test_extract_sitemap_locs_empty_for_malformed_xml(self):
+        assert _extract_sitemap_locs("not xml at all") == []
+
+    def test_filter_relevant_sitemap_urls_keeps_only_keyword_matches(self):
+        urls = [
+            "https://acme.example.com/commitment/",
+            "https://acme.example.com/blog/2024/whats-new/",
+            "https://acme.example.com/about/",
+        ]
+        assert _filter_relevant_sitemap_urls(urls) == [
+            "https://acme.example.com/commitment/",
+            "https://acme.example.com/about/",
+        ]
+
+    def test_filter_relevant_sitemap_urls_empty_when_nothing_matches(self):
+        assert _filter_relevant_sitemap_urls(["https://acme.example.com/blog/random-post/"]) == []
 
     def test_find_social_links(self):
         html = '<a href="https://linkedin.com/company/acme">LI</a><a href="/about.html">About</a>'

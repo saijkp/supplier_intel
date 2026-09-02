@@ -30,9 +30,21 @@ Homepage, plus internal links whose href/anchor text matches
 own_website_scraper's own capability keywords ("about", "capabilit",
 "manufactur", "factory", "facilit", "production", "quality",
 "certificat", "workshop", "contact") EXTENDED with "product", "catalog",
-"download", "cert" -- richer than OwnWebsiteScraper's own set since
-Collection Service's brief explicitly wants product pages and
-downloads/catalogues, not just capability-adjacent pages.
+"download", "cert", and a company-history tier ("history", "heritage",
+"legacy", "commitment", "responsibility", "milestone", "story") --
+richer than OwnWebsiteScraper's own set since Collection Service's
+brief explicitly wants product pages and downloads/catalogues, not
+just capability-adjacent pages.
+
+Homepage-anchor discovery (_find_relevant_links) is the primary path,
+but a real gap was found live: a page can be linked from the homepage
+nav yet match none of these keywords in either its URL or anchor text
+(Mansfield Engineered Components' "Commitment" and "Single Source
+Responsibility" pages -- the only pages on the whole site that said the
+company does metal stamping). _fetch_sitemap_page_urls supplements
+discovery with whatever /sitemap.xml (or /sitemap_index.xml) lists,
+relevance-filtered the same way, so a page the homepage's own anchor
+text doesn't name usefully still gets a chance.
 
 _find_image_urls/_has_contact_form are reimplemented here (not imported
 from OwnWebsiteScraper) because they're private instance methods on
@@ -45,6 +57,7 @@ there and is imported directly.
 from __future__ import annotations
 
 import logging
+import re
 import urllib.parse
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
@@ -69,6 +82,20 @@ _RELEVANT_LINK_KEYWORDS: Tuple[str, ...] = (
     "impressum", "imprint",  # legal-disclosure page (DE/AT/CH etc.) -- a
                               # reliable address source batch_service.py's
                               # address extraction looks for specifically.
+    "history", "heritage", "legacy", "commitment", "responsibility", "milestone", "story",
+    # A company-history/heritage page is real evidence-bearing content
+    # (founding date, when a capability was added, headcount) that
+    # neither a generic "about" keyword nor anchor text catches once a
+    # site names it something else -- found live: Mansfield Engineered
+    # Components' own "Commitment" (history) and "Single Source
+    # Responsibility" pages, neither of which contain "about",
+    # "capabilit", or "manufactur" in URL or anchor text, ended up the
+    # ONLY pages on the whole site that actually said the company does
+    # metal stamping -- a real supplier nearly got tagged
+    # "miscategorised" over a page-discovery gap, not a real absence of
+    # evidence. See _fetch_sitemap_page_urls below for the other half
+    # of this fix -- these pages weren't linked with matching anchor
+    # text from the homepage at all, only reachable via the sitemap.
 )
 # "company" (added alongside "about" -- gap found auditing Nifco/nifco.com):
 # batch_service.py's _address_candidate_sources' about-tier already
@@ -88,7 +115,10 @@ _RELEVANT_LINK_KEYWORDS: Tuple[str, ...] = (
 # exists (a real gap-analysis finding: a genuine contact page was
 # consistently losing its budget slot to blog/product links that
 # merely appeared earlier in the homepage's HTML).
-_PRIORITY_LINK_KEYWORDS: Tuple[str, ...] = ("contact", "about", "company", "impressum", "imprint")
+_PRIORITY_LINK_KEYWORDS: Tuple[str, ...] = (
+    "contact", "about", "company", "impressum", "imprint",
+    "history", "heritage", "legacy", "commitment", "responsibility", "milestone", "story",
+)
 
 # Same non-facility-image filter own_website_scraper._find_image_urls uses.
 _NON_FACILITY_IMAGE_KEYWORDS: Tuple[str, ...] = (
@@ -215,6 +245,104 @@ def _prioritise_relevant_links(links: List[str]) -> List[str]:
     discovery order is preserved, so this only ever reorders, never
     drops, a candidate."""
     return sorted(links, key=lambda link: 0 if any(k in link.lower() for k in _PRIORITY_LINK_KEYWORDS) else 1)
+
+
+# WordPress/Yoast-style sitemap locations, cheapest/most common first --
+# tried the same way _build_candidate_urls tries homepage variants: stop
+# at the first one that actually returns content.
+_SITEMAP_PATHS: Tuple[str, ...] = ("/sitemap.xml", "/sitemap_index.xml")
+
+# A sitemap INDEX (root <sitemapindex> wrapping several <sitemap><loc>
+# entries pointing at other feeds -- the common WordPress/Yoast shape,
+# e.g. mansfieldec.com/sitemap.xml wrapping sitemap-misc.xml/
+# page-sitemap.xml/feeds/sitemap.xml) is followed one level deep, capped
+# here so a site with dozens of paginated post-sitemaps can't consume
+# the whole page-visit budget on sitemap fetches before a single real
+# page is even visited.
+_MAX_SITEMAP_SUB_FEEDS = 5
+
+
+def _extract_sitemap_locs(xml_text: str) -> List[str]:
+    """Every <loc> URL in a sitemap or sitemap-index XML document, in
+    document order. A plain regex, not an XML parser -- a sitemap feed
+    is simple enough (no attributes worth reading, no structure beyond
+    the wrapping <urlset>/<sitemapindex> tag) that pulling in a real XML
+    parser isn't worth it, and a mildly malformed real-world feed (a
+    stray unescaped character elsewhere in the document) still degrades
+    gracefully here instead of raising."""
+    return re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", xml_text, flags=re.IGNORECASE)
+
+
+def _fetch_sitemap_page_urls(context: Any, base_url: str, timeout_ms: int) -> List[str]:
+    """Same-domain page URLs discovered via /sitemap.xml (or
+    /sitemap_index.xml), fetched as a raw HTTP GET on the already-open
+    browser context (context.request, same technique
+    _download_certificates uses) rather than a full page navigation --
+    a sitemap is a plain XML file with nothing to render, so it doesn't
+    cost a page-visit-budget slot to check.
+
+    Strictly an additive fallback alongside _find_relevant_links'
+    homepage-anchor discovery, which stays the primary path -- this
+    exists for pages no homepage link reaches with matching URL/anchor
+    text at all. Found live: Mansfield Engineered Components' own
+    "Commitment" (company history) and "Single Source Responsibility"
+    pages are both linked from its homepage nav, but neither the URL
+    slug nor the anchor text matched any capability keyword, so
+    _find_relevant_links never surfaced them -- yet those two pages
+    were the ONLY place on the entire site that said the company does
+    metal stamping. The sitemap lists every page regardless of how (or
+    whether) the homepage links to it, so it catches exactly this gap.
+
+    Never raises -- a missing, 404, or malformed sitemap is a normal,
+    common case, not an error worth surfacing."""
+    parsed_base = urllib.parse.urlsplit(base_url)
+    root = f"{parsed_base.scheme}://{parsed_base.netloc}"
+
+    def _fetch(url: str) -> str:
+        try:
+            response = context.request.get(url, timeout=timeout_ms)
+            if not response.ok:
+                return ""
+            return response.text()
+        except Exception:
+            return ""
+
+    xml_text = ""
+    for path in _SITEMAP_PATHS:
+        xml_text = _fetch(root + path)
+        if xml_text:
+            break
+    if not xml_text:
+        return []
+
+    locs = _extract_sitemap_locs(xml_text)
+    if "<sitemapindex" in xml_text.lower():
+        page_urls: List[str] = []
+        for sub_feed_url in locs[:_MAX_SITEMAP_SUB_FEEDS]:
+            sub_xml = _fetch(urllib.parse.urljoin(root, sub_feed_url))
+            if sub_xml:
+                page_urls.extend(_extract_sitemap_locs(sub_xml))
+        locs = page_urls
+
+    same_domain: List[str] = []
+    seen: set = set()
+    for loc in locs:
+        absolute = urllib.parse.urljoin(root, loc)
+        parsed = urllib.parse.urlsplit(absolute)
+        if parsed.netloc != parsed_base.netloc:
+            continue  # never follow off-domain links, same rule _find_relevant_links applies
+        normalised = absolute.split("#")[0]
+        if normalised not in seen:
+            seen.add(normalised)
+            same_domain.append(normalised)
+    return same_domain
+
+
+def _filter_relevant_sitemap_urls(urls: List[str]) -> List[str]:
+    """Same _RELEVANT_LINK_KEYWORDS filter _find_relevant_links applies
+    to homepage anchors (href + anchor text), but against the URL alone
+    -- a sitemap entry carries no anchor text to match against."""
+    return [u for u in urls if any(k in u.lower() for k in _RELEVANT_LINK_KEYWORDS)]
 
 
 def _extract_footer_text(html: str) -> str:
@@ -497,7 +625,22 @@ class SiteCollector:
             # _visit_and_collect), not `base_url` (the pre-redirect
             # candidate that was requested) -- see _visit_and_collect's
             # own comment for why this matters for the same-domain check.
-            relevant_links = _prioritise_relevant_links(_find_relevant_links(homepage_page.url, homepage_html))
+            relevant_links = _find_relevant_links(homepage_page.url, homepage_html)
+
+            # Sitemap-discovered pages are a supplementary source, not a
+            # replacement -- homepage-anchor discovery above stays
+            # primary and keeps its original order; anything the
+            # sitemap finds that isn't already in that list is appended
+            # (still relevance-filtered) so it competes fairly in
+            # _prioritise_relevant_links below rather than jumping the
+            # whole queue. See _fetch_sitemap_page_urls for why this
+            # exists.
+            sitemap_urls = _fetch_sitemap_page_urls(context, homepage_page.url, self.page_timeout_ms)
+            for url in _filter_relevant_sitemap_urls(sitemap_urls):
+                if url not in relevant_links:
+                    relevant_links.append(url)
+
+            relevant_links = _prioritise_relevant_links(relevant_links)
             for i, link in enumerate(relevant_links, start=1):
                 if len(pages) >= self.max_pages:
                     break
