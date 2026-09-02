@@ -779,6 +779,116 @@ class TestDiscoverToTarget:
         assert all(e.round == 1 for e in events)
 
 
+class TestDiscoverToTargetExistingDatabasePhase:
+    """Phase 0 -- the database-first check before spending on fresh
+    discovery, same mechanism sourcing.sourcing_agent.
+    SourcingAgentService.run()'s own Phase 1 already uses
+    (search_suppliers_full(product_query=...)). No formal category tag
+    involved: a supplier's product_keywords already carries the exact
+    product string from whichever prior discovery run found it (see
+    discovery_service.py's _record_validation_outcome), so a plain
+    product-term search here is already the right shape of match."""
+
+    def test_existing_match_reduces_target_before_round_1(self, repo):
+        repo.create_golden_record({"canonical_name": "Acme Trailer Axles", "domain": "acme-axles.example.com", "product_keywords": ["trailer axle"]})
+        google_scraper = FakeGoogleScraper(results=[
+            _search_result("https://newco.example.com/", title="New Co", snippet="trailer axle manufacturer"),
+        ])
+        from discovery.candidate_extractor import Candidate
+        outcome_map = {
+            "newco.example.com": ValidationResult(
+                Candidate(title="New Co", link="https://newco.example.com/", snippet="", domain="newco.example.com"),
+                True, "New Co", "UK", 90.0, "validated: name corroborated (score=90), product term found on page",
+            ),
+        }
+        validator = FakeCandidateValidator(outcomes=outcome_map)
+        service = DiscoveryService(
+            repo=repo, google_scraper=google_scraper, website_fetcher=SimpleNamespace(),
+            candidate_validator=validator, matcher=SupplierMatcher(repo),
+        )
+
+        outcome = service.discover_to_target("trailer axle", target_count=2)
+
+        assert outcome.existing_supplier_ids != []
+        assert outcome.rounds_run == 1  # only the shortfall (1, not 2) needed fresh discovery
+        assert outcome.reached_target is True
+        assert len(outcome.new_supplier_ids) == 1  # exactly the shortfall, not the full target_count
+
+    def test_database_alone_reaches_target_no_fresh_discovery_spent(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme Trailer Axles", "domain": "acme-axles.example.com", "product_keywords": ["trailer axle"]})
+        google_scraper = FakeGoogleScraper(results=[
+            _search_result("https://newco.example.com/", title="New Co", snippet="trailer axle manufacturer"),
+        ])
+        validator = FakeCandidateValidator(outcomes={})
+        service = DiscoveryService(
+            repo=repo, google_scraper=google_scraper, website_fetcher=SimpleNamespace(),
+            candidate_validator=validator, matcher=SupplierMatcher(repo),
+        )
+
+        outcome = service.discover_to_target("trailer axle", target_count=1)
+
+        assert outcome.existing_supplier_ids == [supplier_id]
+        assert outcome.rounds_run == 0
+        assert outcome.reached_target is True
+        assert outcome.stopped_reason == "target_reached_from_existing_database"
+        assert google_scraper.queries == []  # zero spend -- discover() never ran at all
+
+    def test_no_existing_match_behaves_exactly_as_before(self, repo):
+        """No pre-existing supplier at all -- Phase 0 finds nothing,
+        remaining_target == target_count, rounds proceed unchanged."""
+        service, validator = _multi_candidate_service(repo, n=5)
+
+        outcome = service.discover_to_target("trailer axle", target_count=2)
+
+        assert outcome.existing_supplier_ids == []
+        assert outcome.rounds_run == 1
+        assert len(outcome.new_supplier_ids) == 2
+
+    def test_flagged_existing_supplier_never_counted(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Old Broker Co", "domain": "oldbroker.example.com", "product_keywords": ["trailer axle"]})
+        repo.update_supplier_fields_with_history(
+            supplier_id, {"flagged": True, "flag_reason": "not a real manufacturer"}, changed_by="manual",
+        )
+        service, validator = _multi_candidate_service(repo, n=5)
+
+        outcome = service.discover_to_target("trailer axle", target_count=2)
+
+        assert outcome.existing_supplier_ids == []
+        assert supplier_id not in outcome.existing_supplier_ids
+
+    def test_category_param_also_matches_via_primary_categories(self, repo):
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Acme Fasteners", "domain": "acme-fasteners.example.com",
+            "primary_categories": ["Metal Pressing"],
+        })
+        google_scraper = FakeGoogleScraper(results=[])
+        validator = FakeCandidateValidator(outcomes={})
+        service = DiscoveryService(
+            repo=repo, google_scraper=google_scraper, website_fetcher=SimpleNamespace(),
+            candidate_validator=validator, matcher=SupplierMatcher(repo),
+        )
+
+        outcome = service.discover_to_target("fasteners", target_count=1, category="Metal Pressing")
+
+        assert outcome.existing_supplier_ids == [supplier_id]
+
+    def test_progress_events_fired_for_existing_matches_at_round_zero(self, repo):
+        repo.create_golden_record({"canonical_name": "Acme Trailer Axles", "domain": "acme-axles.example.com", "product_keywords": ["trailer axle"]})
+        google_scraper = FakeGoogleScraper(results=[])
+        validator = FakeCandidateValidator(outcomes={})
+        service = DiscoveryService(
+            repo=repo, google_scraper=google_scraper, website_fetcher=SimpleNamespace(),
+            candidate_validator=validator, matcher=SupplierMatcher(repo),
+        )
+        events = []
+
+        service.discover_to_target("trailer axle", target_count=1, progress_callback=events.append)
+
+        assert len(events) == 1
+        assert events[0].round == 0
+        assert events[0].status == "existing"
+
+
 class FakeLLMCandidateSource:
     """Mirrors FakeGoogleScraper's convention: a fixed return value,
     recording every call for assertion."""

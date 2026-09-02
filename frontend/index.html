@@ -1535,7 +1535,13 @@ function findEventRow(ev) {
   // Same "warn" (not "trader"/red) bucket badges() already uses for
   // collection_status==="failed" -- a fetch problem, not a verdict.
   let badgeClass, badgeLabel;
-  if (ev.status === "validated") {
+  if (ev.status === "existing") {
+    // discover_to_target's Phase 0 -- a database match found BEFORE
+    // any fresh-discovery spend, zero cost. Same "already known" pill
+    // the final results cards use (isNew ? "mfr" : "warn"), so this
+    // reads consistently between the live feed and the results screen.
+    badgeClass = "warn"; badgeLabel = "already in database";
+  } else if (ev.status === "validated") {
     badgeClass = "mfr"; badgeLabel = "validated";
   } else if (ev.status === "duplicate") {
     badgeClass = "warn"; badgeLabel = "duplicate";
@@ -1545,10 +1551,11 @@ function findEventRow(ev) {
     badgeClass = "trader"; badgeLabel = "rejected";
   }
   const label = ev.extracted_name || ev.candidate_title || ev.domain;
+  const roundSuffix = ev.round === 0 ? " · zero cost" : (ev.round > 1 ? ` · round ${ev.round}` : "");
   return `<div style="padding:8px 0;border-bottom:1px solid var(--rule)">
     <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
       <strong>${esc(label)}</strong>
-      <span class="badge ${badgeClass}">${esc(badgeLabel)}${ev.round > 1 ? ` · round ${ev.round}` : ""}</span>
+      <span class="badge ${badgeClass}">${esc(badgeLabel)}${roundSuffix}</span>
     </div>
     <div class="hint" style="margin-top:2px">${esc(ev.domain)} — ${esc(ev.reason)}</div>
   </div>`;
@@ -1564,20 +1571,33 @@ function findMatchSummaryText(stats) {
   // target" -- as if almost nothing had been found. Report the real
   // total instead, with an honest new-vs-already-known breakdown.
   const newCount = stats.candidates_validated ?? 0;
-  const dup = stats.candidates_duplicate ?? 0;
-  const total = newCount + dup;
+  // duplicate_supplier_ids (a fresh candidate that re-validated into an
+  // existing supplier) and existing_supplier_ids (discover_to_target's
+  // Phase 0 zero-cost database match, found before any fresh-discovery
+  // spend) both mean "already in your database" from a buyer's point of
+  // view -- summed for this five-second-read line; the underlying stats
+  // keep them as separate, correctly-labelled fields for anything that
+  // needs the distinction (see api/jobs.py's candidates_existing).
+  const alreadyKnown = (stats.candidates_duplicate ?? 0)
+    + (stats.candidates_existing ?? (stats.existing_supplier_ids || []).length);
+  const total = newCount + alreadyKnown;
   const target = stats.target_count ?? stats.target;
   const targetSuffix = target ? ` / ${target} target` : "";
   if (total === 0) return `0 matches found${targetSuffix}`;
   const parts = [];
   if (newCount) parts.push(`${newCount} new`);
-  if (dup) parts.push(`${dup} already in your database`);
+  if (alreadyKnown) parts.push(`${alreadyKnown} already in your database`);
   return `${total} real match${total === 1 ? "" : "es"} found (${parts.join(", ")})${targetSuffix}`;
 }
 
 function findStopReasonMessage(stats) {
-  if (!stats.stopped_reason || stats.stopped_reason === "target_reached") return "";
-  const found = (stats.candidates_validated ?? 0) + (stats.candidates_duplicate ?? 0);
+  // target_reached_from_existing_database: discover_to_target's Phase 0
+  // alone satisfied the whole target -- a success, not a shortfall, so
+  // this gets the same "nothing to report" treatment as target_reached.
+  if (!stats.stopped_reason || stats.stopped_reason === "target_reached"
+      || stats.stopped_reason === "target_reached_from_existing_database") return "";
+  const found = (stats.candidates_validated ?? 0) + (stats.candidates_duplicate ?? 0)
+    + (stats.existing_supplier_ids || []).length;
   const target = stats.target_count ?? "?";
   const ceiling = stats.ceiling ?? "?";
   if (stats.stopped_reason === "no_new_candidates_found") {
@@ -1835,6 +1855,11 @@ async function pollFindDiscoveryJob(jobId, category) {
   $("findProgressCount").textContent = findMatchSummaryText({
     candidates_validated: st.candidates_validated ?? p.candidates_validated ?? 0,
     candidates_duplicate: st.candidates_duplicate ?? p.candidates_duplicate ?? 0,
+    // job.stats (st) is the real, final DiscoveryToTargetOutcome by
+    // this point (job.status is already past queued/running above) --
+    // existing_supplier_ids is its authoritative count, no need for
+    // findMatchSummaryText's live-progress candidates_existing fallback.
+    existing_supplier_ids: st.existing_supplier_ids ?? [],
     target_count: st.target_count ?? p.target,
   });
   $("findProgressFeed").innerHTML = (p.events || []).slice().reverse().map(findEventRow).join("");
@@ -1843,7 +1868,16 @@ async function pollFindDiscoveryJob(jobId, category) {
   $("findResults").innerHTML = stopMsg;
   const resultsHost = document.createElement("div");
   $("findResults").appendChild(resultsHost);
-  await findRenderResultsScreen(resultsHost, jobId, st.new_supplier_ids || [], st.duplicate_supplier_ids || [], category);
+  // existing_supplier_ids (discover_to_target's zero-cost Phase 0
+  // database matches, found BEFORE any fresh-discovery spend) render
+  // identically to duplicate_supplier_ids from here on -- both mean
+  // "this supplier was already known before this search," just via a
+  // different mechanism (a free DB match vs. a freshly re-validated
+  // candidate). findRenderResultsScreen's own newSet/isNew split
+  // already treats "not new" uniformly, so folding them into the same
+  // list needs no change inside that function.
+  const alreadyKnownIds = [...(st.duplicate_supplier_ids || []), ...(st.existing_supplier_ids || [])];
+  await findRenderResultsScreen(resultsHost, jobId, st.new_supplier_ids || [], alreadyKnownIds, category);
 }
 
 $("btnFindGo").addEventListener("click", async () => {

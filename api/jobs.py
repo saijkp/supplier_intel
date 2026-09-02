@@ -293,7 +293,10 @@ def run_discovery_job(job_id: str, options: Dict[str, Any]) -> None:
         target_count = options.get("target_count")
 
         events: list = []
-        progress_state = {"round": 1, "completed_examined": 0, "completed_validated": 0, "duplicate_count": 0}
+        progress_state = {
+            "round": 1, "completed_examined": 0, "completed_validated": 0,
+            "duplicate_count": 0, "existing_count": 0,
+        }
 
         def on_progress(event) -> None:
             if event.round != progress_state["round"]:
@@ -314,12 +317,23 @@ def run_discovery_job(job_id: str, options: Dict[str, Any]) -> None:
             # new rows toward what the user asked to find.
             if event.status == "duplicate":
                 progress_state["duplicate_count"] += 1
+            # discover_to_target()'s Phase 0 (round=0, status="existing")
+            # fires one of these per zero-cost database match, BEFORE any
+            # fresh-discovery spend -- round_examined/round_validated are
+            # always 0 on these (see discover_to_target's own comment),
+            # so they never inflate the examined/validated totals above;
+            # tracked separately here purely so the live summary line can
+            # say "N already in your database" the moment Phase 0 finishes,
+            # not just once round 1's own events start arriving.
+            if event.status == "existing":
+                progress_state["existing_count"] += 1
             events.append(dataclasses.asdict(event))
             repo.update_pipeline_job_progress(job_id, {
                 "events": events[-200:],
                 "examined": progress_state["completed_examined"] + event.round_examined,
                 "candidates_validated": progress_state["completed_validated"] + event.round_validated,
                 "candidates_duplicate": progress_state["duplicate_count"],
+                "candidates_existing": progress_state["existing_count"],
                 "round": event.round,
                 "target": target_count,
             })

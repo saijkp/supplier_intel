@@ -408,6 +408,7 @@ class SupplierRepository:
         self,
         *,
         product_query: Optional[str] = None,
+        category_query: Optional[str] = None,
         required_capabilities: Optional[List[str]] = None,
         manufacturers_only: bool = False,
         min_capability_confidence: float = 0.0,
@@ -425,6 +426,16 @@ class SupplierRepository:
         (`search_suppliers`, `find_suppliers_by_capability`,
         `is_manufacturer`) -- this is the join that was missing, not a
         new capability.
+
+        `category_query`, when given alongside `product_query`, is OR'd
+        against the same four columns as its own independent group --
+        either term matching is enough, not both. Added for
+        discovery_service.py's discover_to_target Phase 0 (the
+        database-first check before spending on fresh discovery for a
+        plain product/category search, which has a category label but
+        no formal per-supplier category tag to join against -- the same
+        LIKE-based text match this whole method already does is the
+        fit, not a new tagging concept).
 
         `required_capabilities` is AND, not OR: a request for
         `["e-mark approval", "sub-assembly"]` returns only suppliers
@@ -477,13 +488,27 @@ class SupplierRepository:
         clauses: List[str] = ["flagged = 0"]
         params: List[Any] = []
 
-        if product_query:
-            pattern = f"%{product_query}%"
-            clauses.append(
-                "(canonical_name LIKE ? OR product_keywords LIKE ? "
-                "OR primary_categories LIKE ? OR trailer_components LIKE ?)"
-            )
-            params.extend([pattern, pattern, pattern, pattern])
+        if product_query or category_query:
+            # Two independent OR'd groups, not one combined AND -- a
+            # zero-cost "does this supplier match either the product
+            # term or the category label" check (discovery_service.py's
+            # discover_to_target Phase 0) wants either to be enough, the
+            # same way a plain product-term search already is one match
+            # away from a hit. Each group is identical in shape to the
+            # single-term clause this replaces, so passing only
+            # product_query (every existing caller) produces the exact
+            # same SQL as before.
+            groups: List[str] = []
+            for term in (product_query, category_query):
+                if not term:
+                    continue
+                pattern = f"%{term}%"
+                groups.append(
+                    "(canonical_name LIKE ? OR product_keywords LIKE ? "
+                    "OR primary_categories LIKE ? OR trailer_components LIKE ?)"
+                )
+                params.extend([pattern, pattern, pattern, pattern])
+            clauses.append("(" + " OR ".join(groups) + ")")
 
         if manufacturers_only:
             clauses.append("is_manufacturer = 1")

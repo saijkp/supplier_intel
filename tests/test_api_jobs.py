@@ -550,6 +550,47 @@ class TestRunDiscoveryJob:
         assert job["progress"]["candidates_duplicate"] == 2
         assert job["stats"]["candidates_duplicate"] == 2
 
+    def test_existing_status_events_accumulate_into_candidates_existing(self, repo, monkeypatch):
+        """discover_to_target()'s Phase 0 (round=0, status="existing")
+        fires one event per zero-cost database match before any
+        fresh-discovery round runs. round_examined/round_validated are
+        always 0 on these (see discover_to_target's own comment), so
+        they must never inflate examined/candidates_validated -- only
+        the new, separately-tracked candidates_existing counter."""
+        from discovery.discovery_service import DiscoveryProgressEvent, DiscoveryToTargetOutcome
+
+        class ExistingMatchFiringDiscoveryService(FakeDiscoveryService):
+            def discover_to_target(self, product, target_count, category=None, country=None, max_multiplier=5,
+                                    progress_callback=None, recover_dead_domains=False):
+                if progress_callback:
+                    progress_callback(DiscoveryProgressEvent(
+                        domain="already-in-db.com", candidate_title="Known Co", extracted_name="Known Co",
+                        status="existing", reason="already in the database -- matched via product/category, zero cost",
+                        badge="existing", round=0, round_examined=0, round_validated=0,
+                    ))
+                    progress_callback(DiscoveryProgressEvent(
+                        domain="freshco.com", candidate_title="Fresh Co", extracted_name="Fresh Co",
+                        status="validated", reason="validated", badge="validated",
+                        round=1, round_examined=1, round_validated=1,
+                    ))
+                return DiscoveryToTargetOutcome(
+                    product=product, target_count=target_count, ceiling=target_count * max_multiplier,
+                    rounds_run=1, candidates_validated=1, reached_target=True,
+                    stopped_reason="target_reached", new_supplier_ids=[20], existing_supplier_ids=[99],
+                )
+
+        monkeypatch.setattr(jobs_module, "DiscoveryService", ExistingMatchFiringDiscoveryService)
+
+        repo.create_pipeline_job(job_id="job60", query="[discovery] forklift",
+                                  options={"product": "forklift", "target_count": 2})
+        jobs_module.run_discovery_job("job60", {"product": "forklift", "target_count": 2})
+
+        job = repo.get_pipeline_job("job60")
+        assert job["progress"]["candidates_existing"] == 1
+        assert job["progress"]["examined"] == 1  # the round=0 event's 0 must not inflate this
+        assert job["progress"]["candidates_validated"] == 1
+        assert job["stats"]["existing_supplier_ids"] == [99]
+
     def test_progress_is_written_incrementally(self, repo, monkeypatch):
         """The new capability: unlike every other existing behaviour
         here, this job type previously had NO progress callback at all

@@ -931,6 +931,25 @@ class TestPipelineJobExportEndpoints:
         assert "Brand New Co" in response.text
         assert "Already Known Co" in response.text
 
+    def test_exports_existing_supplier_ids_from_discover_to_target_phase_0(self, client):
+        """discover_to_target()'s Phase 0 -- a zero-cost database match
+        found before any fresh-discovery spend -- must appear in the
+        export the same as a new or duplicate match, not silently
+        dropped from the file the results screen's own download buttons
+        are backed by."""
+        new_id = client.repo.create_golden_record({"canonical_name": "Brand New Co", "country": "China"})
+        existing_id = client.repo.create_golden_record({"canonical_name": "Already In DB Co", "country": "China"})
+        client.repo.create_pipeline_job(job_id="job8", query="[discovery] trailer axle", options={"target_count": 2})
+        client.repo.mark_pipeline_job_completed("job8", stats={
+            "new_supplier_ids": [new_id], "existing_supplier_ids": [existing_id],
+        })
+
+        response = client.get("/pipeline/jobs/job8/export.csv", headers=auth_headers())
+
+        assert response.status_code == 200
+        assert "Brand New Co" in response.text
+        assert "Already In DB Co" in response.text
+
     def test_dedupes_a_supplier_id_appearing_in_both_lists(self, client):
         """Real case: a later round's duplicate can merge into a
         supplier THIS SAME run already created -- the id then appears

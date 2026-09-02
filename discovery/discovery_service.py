@@ -109,10 +109,10 @@ class DiscoveryProgressEvent:
     domain: str
     candidate_title: str  # candidate.title from the search hit -- best label before/without a validated name
     extracted_name: Optional[str]
-    status: str   # "validated" | "rejected" | "duplicate"
+    status: str   # "validated" | "rejected" | "duplicate" | "existing" (Phase 0 database match, round=0 -- see discover_to_target)
     reason: str
-    badge: str    # "marketplace" | "trader" | "term_missing" | "uk_not_registered" | "fetch_failed" | "name_mismatch" | "validated" | "duplicate" | "other"
-    round: int = 1              # stamped by discover_to_target() when orchestrating multiple rounds; 1 for a bare discover() call
+    badge: str    # "marketplace" | "trader" | "term_missing" | "uk_not_registered" | "fetch_failed" | "name_mismatch" | "validated" | "duplicate" | "existing" | "other"
+    round: int = 1              # stamped by discover_to_target() when orchestrating multiple rounds; 1 for a bare discover() call; 0 is Phase 0's existing-database check, before any fresh-discovery spend
     round_examined: int = 0     # outcome.candidates_examined at the moment this event fired, for the discover() call that produced it (not cumulative across rounds)
     round_validated: int = 0    # outcome.candidates_validated at the moment this event fired, same scope as round_examined
 
@@ -133,9 +133,10 @@ class DiscoveryToTargetOutcome:
     duplicate_supplier_ids: List[int] = field(default_factory=list)
     new_supplier_ids: List[int] = field(default_factory=list)
     review_queued_supplier_ids: List[int] = field(default_factory=list)
+    existing_supplier_ids: List[int] = field(default_factory=list)  # Phase 0: already in the database, zero-cost match against product/category -- found BEFORE any fresh-discovery round runs, never blended into new_supplier_ids/duplicate_supplier_ids (those specifically track what fresh discovery spent money on; see discover_to_target()'s own Phase 0 comment). A caller combining every id list must dedupe, same as new_supplier_ids/duplicate_supplier_ids already documents.
     reached_target: bool = False
     used_llm_fallback: bool = False
-    stopped_reason: str = ""  # "target_reached" | "ceiling_reached" | "no_new_candidates_found" | "budget_exhausted_after_llm_fallback"
+    stopped_reason: str = ""  # "target_reached" | "target_reached_from_existing_database" | "ceiling_reached" | "no_new_candidates_found" | "budget_exhausted_after_llm_fallback"
 
 
 def _classify_reason_badge(reason: str) -> str:
@@ -416,6 +417,14 @@ class DiscoveryService:
         parsing or dossier generation -- it's the plain "find me suppliers"
         case).
 
+        Phase 0 (before any round): check the existing database first,
+        via the same zero-cost mechanism sourcing.sourcing_agent.
+        SourcingAgentService.run()'s own "Phase 1" already uses -- see
+        the inline comment right above where it runs, below, for the
+        full reasoning. Every round after this one targets target_count
+        MINUS whatever Phase 0 already found, not the original
+        target_count.
+
         Round 1: today's default discover() -- base manufacturer/
         supplier/factory templates only, source='serpapi'.
 
@@ -462,18 +471,72 @@ class DiscoveryService:
             result.new_supplier_ids.extend(outcome.new_supplier_ids)
             result.review_queued_supplier_ids.extend(outcome.review_queued_supplier_ids)
 
+        # Phase 0: check the existing database first -- zero-cost
+        # compared to fresh AI Discovery (no SerpAPI search, no
+        # candidate-validation LLM call), the same mechanism
+        # sourcing.sourcing_agent.SourcingAgentService.run()'s own
+        # "Phase 1" already uses (SupplierRepository.
+        # search_suppliers_full(product_query=...)). No formal
+        # category tag involved or needed: product_query is a plain-
+        # text LIKE match against canonical_name/product_keywords/
+        # primary_categories/trailer_components, and product_keywords
+        # is populated with the exact product string on every prior
+        # discovery run (see _record_validation_outcome's own comment
+        # below) -- so a plain product-term search here is already
+        # precisely the right shape of match, no new tagging concept
+        # required. `category`, when given, is OR'd in as a second
+        # independent term via search_suppliers_full's category_query.
+        # Unlike sourcing_agent.py's _is_stale-gated skip, nothing here
+        # re-collects or re-verifies a matched supplier -- this method
+        # has no per-candidate capability-requirement gate to satisfy,
+        # so an existing row is surfaced exactly as it already stands,
+        # keeping this phase genuinely zero-cost.
+        try:
+            existing = self.repo.search_suppliers_full(
+                product_query=product, category_query=category, country=country, limit=target_count,
+            )
+        except Exception as e:  # noqa: BLE001 -- must never block falling through to fresh discovery
+            logger.error("discover_to_target: existing-database search failed for product=%r: %s", product, e)
+            existing = []
+
+        result.existing_supplier_ids = [s["id"] for s in existing]
+        if progress_callback:
+            for supplier in existing:
+                progress_callback(DiscoveryProgressEvent(
+                    domain=supplier.get("domain") or "",
+                    candidate_title=supplier.get("canonical_name") or "",
+                    extracted_name=supplier.get("canonical_name"),
+                    status="existing",
+                    reason="already in the database -- matched via product/category, zero cost",
+                    badge="existing",
+                    round=0,
+                ))
+
+        # Every subsequent round targets this REDUCED count, not the
+        # original target_count -- same pattern round 2/3 already use
+        # to shrink their own target by what round 1 already validated,
+        # just applied one step earlier. The ceiling below stays
+        # anchored to the original target_count deliberately: it's a
+        # hard cap on fresh-candidate EXAMINATION spend, not something
+        # a free database hit should shrink.
+        remaining_target = max(0, target_count - len(result.existing_supplier_ids))
+        if remaining_target == 0:
+            result.reached_target = True
+            result.stopped_reason = "target_reached_from_existing_database"
+            return result
+
         # Round 1
         outcome1 = self.discover(
             product, category=category, country=country, max_candidates=ceiling,
             application=application, key_specifications=key_specifications,
             domain_tld_bias=domain_tld_bias, source="serpapi",
-            target_count=target_count, progress_callback=_stamped_callback(1),
+            target_count=remaining_target, progress_callback=_stamped_callback(1),
             recover_dead_domains=recover_dead_domains,
         )
         result.rounds_run = 1
         _merge(outcome1)
 
-        if result.candidates_validated >= target_count:
+        if result.candidates_validated >= remaining_target:
             result.reached_target = True
             result.stopped_reason = "target_reached"
             return result
@@ -490,13 +553,13 @@ class DiscoveryService:
             product, category=category, country=country, max_candidates=remaining,
             application=application, key_specifications=key_specifications,
             domain_tld_bias=domain_tld_bias, source="serpapi", extra_role_words=role_words,
-            target_count=target_count - result.candidates_validated, progress_callback=_stamped_callback(2),
+            target_count=remaining_target - result.candidates_validated, progress_callback=_stamped_callback(2),
             recover_dead_domains=recover_dead_domains,
         )
         result.rounds_run = 2
         _merge(outcome2)
 
-        if result.candidates_validated >= target_count:
+        if result.candidates_validated >= remaining_target:
             result.reached_target = True
             result.stopped_reason = "target_reached"
             return result
@@ -508,13 +571,13 @@ class DiscoveryService:
         remaining = ceiling - result.candidates_examined
         outcome3 = self.discover(
             product, category=category, country=country, max_candidates=remaining,
-            source="llm", target_count=target_count - result.candidates_validated,
+            source="llm", target_count=remaining_target - result.candidates_validated,
             progress_callback=_stamped_callback(3), recover_dead_domains=recover_dead_domains,
         )
         result.rounds_run = 3
         result.used_llm_fallback = True
         _merge(outcome3)
-        result.reached_target = result.candidates_validated >= target_count
+        result.reached_target = result.candidates_validated >= remaining_target
         result.stopped_reason = "target_reached" if result.reached_target else "budget_exhausted_after_llm_fallback"
         return result
 

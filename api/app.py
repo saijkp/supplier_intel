@@ -771,21 +771,28 @@ def get_pipeline_job(job_id: str, repo: SupplierRepository = Depends(get_repo)) 
 
 def _job_result_supplier_ids(stats: Dict[str, Any]) -> List[int]:
     """Every REAL match a completed Find Suppliers job produced --
-    genuinely new rows AND duplicates (a duplicate is a real,
-    successful validation against an already-existing supplier, not a
-    failure -- see DiscoveryOutcome.duplicate_supplier_ids's own
-    comment). Deduped: duplicate_supplier_ids can legitimately overlap
-    new_supplier_ids when a later round merges into a supplier the SAME
-    run already created (see discovery_service.py's own comment on
-    this). Covers discovery job shapes (discover()/discover_to_target(),
-    via new_supplier_ids), the single-company enrichment job shape
-    (resolved_supplier_id, always exactly one real match either way,
-    new or pre-existing), and the sourcing/brief-search job shape
-    (SourcingOutcome.qualified_supplier_ids -- a brief search doesn't
-    distinguish new-vs-already-existing matches at all, so every
-    qualified id is treated as one flat list, same as the job itself
-    already does)."""
-    ids = list(stats.get("new_supplier_ids") or []) + list(stats.get("duplicate_supplier_ids") or [])
+    genuinely new rows, duplicates (a duplicate is a real, successful
+    validation against an already-existing supplier, not a failure --
+    see DiscoveryOutcome.duplicate_supplier_ids's own comment), and
+    existing_supplier_ids (discover_to_target()'s Phase 0 zero-cost
+    database match, found before any fresh-discovery spend -- same
+    "already known" meaning as a duplicate from an export's point of
+    view, just found a different way). Deduped: any of these can
+    legitimately overlap (see discovery_service.py's own comment on a
+    later round merging into a supplier the SAME run already created,
+    or already matched in Phase 0). Covers discovery job shapes
+    (discover()/discover_to_target(), via new_supplier_ids), the
+    single-company enrichment job shape (resolved_supplier_id, always
+    exactly one real match either way, new or pre-existing), and the
+    sourcing/brief-search job shape (SourcingOutcome.qualified_supplier_ids
+    -- a brief search doesn't distinguish new-vs-already-existing
+    matches at all, so every qualified id is treated as one flat list,
+    same as the job itself already does)."""
+    ids = (
+        list(stats.get("new_supplier_ids") or [])
+        + list(stats.get("duplicate_supplier_ids") or [])
+        + list(stats.get("existing_supplier_ids") or [])
+    )
     if not ids and stats.get("resolved_supplier_id") is not None:
         ids = [stats["resolved_supplier_id"]]
     if not ids and stats.get("qualified_supplier_ids"):
