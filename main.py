@@ -1167,12 +1167,20 @@ def history(supplier_id: int) -> None:
                    "-- for a bad record that turns out to be a duplicate of an already-existing "
                    "real supplier (e.g. --set-domain reported 'domain_conflict'). Pass the reason "
                    "as the value.")
+@click.option("--set-product-keywords", default=None,
+              help="Comma-separated category term(s) to backfill onto product_keywords, e.g. "
+                   "'injection moulding' -- for a supplier whose category membership is already "
+                   "a trusted fact (a checked-in, audited roster entry) but was never populated "
+                   "with a matching search term, making it invisible to search_suppliers_full's "
+                   "product-term match and discover_to_target's Phase 0 database-first check. "
+                   "No search, no re-collection. Only ever fills an EMPTY product_keywords -- "
+                   "never overwrites an existing value, regardless of what's passed here.")
 @click.option("--reason", default=None,
               help="Why this correction is being made -- recorded on supplier_change_log. "
                    "Defaults to a generic note naming the cleared/old value if omitted.")
 def correct_supplier(
     supplier_id: int, clear_domain: bool, set_domain: Optional[str], set_name: Optional[str],
-    flag_duplicate: Optional[str], reason: Optional[str],
+    flag_duplicate: Optional[str], set_product_keywords: Optional[str], reason: Optional[str],
 ) -> None:
     """Reusable fix for a bad supplier record -- e.g. a false-match domain a validation
     gap let through (see scrapers/company_website_finder.py's own corroboration guards).
@@ -1184,20 +1192,24 @@ def correct_supplier(
     same real pipeline every other write in this codebase does (CompanyWebsiteFinder +
     CollectionService) with a supplier_change_log entry, never a hand-applied database
     patch -- see `python main.py history --supplier-id` to review what changed
-    afterward. Specify exactly one of --clear-domain, --set-domain, or --flag-duplicate;
-    add another --clear-<field>/--set-<field> following the same shape here for a future
-    bad-record class, rather than reaching for raw SQL again."""
+    afterward. Specify exactly one of --clear-domain, --set-domain, --flag-duplicate, or
+    --set-product-keywords; add another --clear-<field>/--set-<field> following the same
+    shape here for a future bad-record class, rather than reaching for raw SQL again."""
     from batch.supplier_correction import SupplierCorrectionService
 
-    modes = [bool(clear_domain), bool(set_domain), bool(flag_duplicate)]
+    modes = [bool(clear_domain), bool(set_domain), bool(flag_duplicate), bool(set_product_keywords)]
     if sum(modes) != 1:
-        console.print("[red]X[/red] Specify exactly one of --clear-domain, --set-domain, or --flag-duplicate.")
+        console.print("[red]X[/red] Specify exactly one of --clear-domain, --set-domain, "
+                       "--flag-duplicate, or --set-product-keywords.")
         raise SystemExit(1)
 
     service = SupplierCorrectionService()
     try:
         if flag_duplicate:
             result = service.flag_duplicate(supplier_id, flag_duplicate)
+        elif set_product_keywords:
+            keywords = [k.strip() for k in set_product_keywords.split(",") if k.strip()]
+            result = service.set_product_keywords(supplier_id, keywords, reason=reason)
         elif set_domain:
             console.print("[bold]Setting confirmed domain directly...[/bold] (no search)")
             result = service.set_confirmed_domain(supplier_id, set_domain, canonical_name=set_name, reason=reason)
@@ -1212,6 +1224,13 @@ def correct_supplier(
     console.print(f"[bold]Supplier #{supplier_id}[/bold]: {result['canonical_name']!r}")
     if result["status"] == "flagged":
         console.print(f"[green]OK[/green] Flagged excluded: {result['flag_reason']}")
+        return
+    if result["status"] == "set" and "product_keywords" in result:
+        console.print(f"[green]OK[/green] product_keywords set: {result['product_keywords']}")
+        return
+    if result["status"] == "skipped_not_empty":
+        console.print(f"[yellow]![/yellow] Not written -- product_keywords already set: "
+                       f"{result['existing_product_keywords']}")
         return
     console.print(f"(was domain: {result['old_domain']!r})")
     if result["status"] == "needs_url":

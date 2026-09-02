@@ -224,3 +224,73 @@ class TestFlagDuplicate:
         )
         with pytest.raises(ValueError):
             service.flag_duplicate(999999, "x")
+
+
+class TestSetProductKeywords:
+    """Backfills a supplier's category tag directly -- no search, no
+    re-collection, guarded so it only ever fills an empty value."""
+
+    def test_sets_product_keywords_when_currently_empty(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Moldie"})
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+
+        result = service.set_product_keywords(supplier_id, ["injection moulding"], reason="roster backfill")
+
+        assert result["status"] == "set"
+        assert result["product_keywords"] == ["injection moulding"]
+        assert repo.get_supplier(supplier_id)["product_keywords"] == ["injection moulding"]
+
+        log = repo.get_supplier_change_log(supplier_id)
+        assert any(entry["field_name"] == "product_keywords" for entry in log)
+
+    def test_does_not_overwrite_an_existing_non_empty_value(self, repo):
+        """The trusted-value guard: real case this exists to prevent --
+        production's own independent discovery activity could populate
+        this field between an inventory check and this call actually
+        landing. Must never silently clobber a real, different value."""
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Molded Dimensions Group",
+            "product_keywords": ["OEM injection molding manufacturer"],
+        })
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+
+        result = service.set_product_keywords(supplier_id, ["injection moulding"])
+
+        assert result["status"] == "skipped_not_empty"
+        assert result["existing_product_keywords"] == ["OEM injection molding manufacturer"]
+        # untouched -- still the original value, not overwritten
+        assert repo.get_supplier(supplier_id)["product_keywords"] == ["OEM injection molding manufacturer"]
+        assert repo.get_supplier_change_log(supplier_id) == []
+
+    def test_no_search_or_collection_call_made(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Deep Mould"})
+        finder = FakeWebsiteFinder()
+        collection = FakeCollectionService()
+        service = SupplierCorrectionService(repo=repo, website_finder=finder, collection_service=collection)
+
+        service.set_product_keywords(supplier_id, ["injection moulding"])
+
+        assert finder.calls == []
+        assert collection.calls == []
+
+    def test_default_reason_used_when_none_given(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "RapidDirect"})
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+
+        service.set_product_keywords(supplier_id, ["injection moulding"])
+
+        log = repo.get_supplier_change_log(supplier_id)
+        assert "backfill" in log[0]["change_reason"].lower()
+
+    def test_raises_on_missing_supplier(self, repo):
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+        with pytest.raises(ValueError):
+            service.set_product_keywords(999999, ["injection moulding"])

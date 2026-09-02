@@ -460,6 +460,36 @@ def run_supplier_correction_job(job_id: str, supplier_id: int, options: Dict[str
         repo.mark_pipeline_job_failed(job_id, error=str(e))
 
 
+def run_set_product_keywords_job(job_id: str, supplier_id: int, options: Dict[str, Any]) -> None:
+    """The HTTP equivalent of `python main.py correct-supplier
+    <supplier_id> --set-product-keywords` -- exists for the same reason
+    run_supplier_correction_job does over HTTP at all: this codebase's
+    production database is a SQLite file on a Railway volume, not
+    network-reachable, so an already-deployed supplier missing this
+    field can only be corrected through the running service itself.
+    Business logic lives in batch.supplier_correction.
+    SupplierCorrectionService.set_product_keywords, shared with that
+    CLI flag. No search, no re-collection -- this is pure DB read/write,
+    but still runs via BackgroundTasks (not synchronously) for the same
+    consistency-with-every-other-job-endpoint reason, not because this
+    one is actually slow."""
+    repo = SupplierRepository()
+    repo.mark_pipeline_job_running(job_id)
+    try:
+        from batch.supplier_correction import SupplierCorrectionService
+
+        service = SupplierCorrectionService(repo=repo)
+        result = service.set_product_keywords(
+            supplier_id, options["product_keywords"], reason=options.get("reason"),
+        )
+        repo.mark_pipeline_job_completed(job_id, stats=result)
+    except ValueError as e:
+        repo.mark_pipeline_job_failed(job_id, error=str(e))
+    except Exception as e:
+        logger.error("Set-product-keywords job %s (supplier #%s) failed: %s", job_id, supplier_id, e)
+        repo.mark_pipeline_job_failed(job_id, error=str(e))
+
+
 def run_sourcing_job(job_id: str, options: Dict[str, Any]) -> None:
     """The HTTP equivalent of one chat message on the frontend's Source
     tab. A sourcing run can easily take minutes (many discover->collect

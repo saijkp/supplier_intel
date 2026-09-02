@@ -21,13 +21,15 @@ only ever run against a database on the SAME filesystem it's invoked
 from, so an already-deployed bad record can only be corrected over
 HTTP, through the running service itself.
 
-Two correction modes: `correct_domain` clears a wrong value and
+Correction modes: `correct_domain` clears a wrong value and
 re-resolves it via search (CompanyWebsiteFinder) -- for when the
 domain alone was wrong but the search term (company name) is right.
 `set_confirmed_domain` writes an already-human-verified domain/name
 directly, no search -- for when the ORIGINAL search term was itself
 wrong (a fresh search under the same wrong name just re-surfaces the
-same wrong candidate). Add another `correct_<field>`/`set_<field>`
+same wrong candidate). `set_product_keywords` backfills a supplier's
+missing category tag directly, guarded so it only ever fills an empty
+value, never overwrites one. Add another `correct_<field>`/`set_<field>`
 method here for a future bad-record class, following the same shape,
 rather than reaching for raw SQL.
 """
@@ -35,7 +37,7 @@ rather than reaching for raw SQL.
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from storage.repository import SupplierRepository
 
@@ -202,4 +204,48 @@ class SupplierCorrectionService:
         return {
             "supplier_id": supplier_id, "canonical_name": supplier.get("canonical_name"),
             "status": "flagged", "flag_reason": flag_reason,
+        }
+
+    def set_product_keywords(
+        self, supplier_id: int, product_keywords: List[str], reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Backfills product_keywords on a supplier whose category
+        membership is already a trusted fact (e.g. a checked-in,
+        audited category roster -- see batch/category_roster.py) but
+        which was never populated with a matching search term, making
+        it invisible to storage.repository.search_suppliers_full's
+        product-term LIKE match and therefore to
+        discovery.discovery_service.discover_to_target's Phase 0
+        database-first check. No search, no re-collection needed --
+        unlike domain, product_keywords is a pure category tag, never
+        something a fetch populates.
+
+        Trusted-value guard is enforced HERE, not left to the caller to
+        remember (closing a real gap in how this was first done: an
+        earlier one-off backfill relied on the caller pre-filtering for
+        `product_keywords IS NULL` before calling) -- re-fetches the
+        supplier fresh and checks at write time, so a value populated
+        by unrelated real activity between the caller deciding to call
+        this and the call actually landing is never silently
+        clobbered. Returns status="skipped_not_empty" (existing value
+        preserved, nothing written) rather than overwriting."""
+        supplier = self.repo.get_supplier(supplier_id)
+        if supplier is None:
+            raise ValueError(f"No supplier with id={supplier_id}")
+
+        existing = supplier.get("product_keywords")
+        if existing:
+            return {
+                "supplier_id": supplier_id, "canonical_name": supplier.get("canonical_name"),
+                "status": "skipped_not_empty", "existing_product_keywords": existing,
+            }
+
+        set_reason = reason or "backfill: confirmed category-roster member with empty product_keywords"
+        self.repo.update_supplier_fields_with_history(
+            supplier_id, {"product_keywords": product_keywords},
+            changed_by="manual", change_reason=set_reason,
+        )
+        return {
+            "supplier_id": supplier_id, "canonical_name": supplier.get("canonical_name"),
+            "status": "set", "product_keywords": product_keywords,
         }

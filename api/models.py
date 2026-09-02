@@ -373,6 +373,28 @@ class SupplierCorrectionRequest(BaseModel):
     )
 
 
+class SetProductKeywordsRequest(BaseModel):
+    """Triggers batch.supplier_correction.SupplierCorrectionService.
+    set_product_keywords -- backfills a supplier's category tag
+    directly, no search, no re-collection. Deliberately narrow: this
+    model can express ONLY product_keywords and a reason, nothing else
+    -- it is not a generic field-patch endpoint. Only ever fills a
+    currently-empty product_keywords; never overwrites an existing
+    value, regardless of what's passed here (see the service method's
+    own docstring for why the guard lives there, not just in the
+    caller)."""
+
+    product_keywords: List[str] = Field(
+        description="The category term(s) to write, e.g. [\"injection moulding\"]. Only ever "
+                     "written if the supplier's current product_keywords is empty.",
+    )
+    reason: Optional[str] = Field(
+        default=None,
+        description="Why -- recorded on supplier_change_log. Defaults to a generic backfill "
+                     "note if omitted.",
+    )
+
+
 class SourcingRunRequest(BaseModel):
     """Triggers sourcing.sourcing_agent.SourcingAgentService -- one
     free-text procurement brief drives the entire discover -> collect
