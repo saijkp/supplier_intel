@@ -36,7 +36,7 @@ from storage.repository import SupplierRepository
 CATEGORY_ROSTERS: Dict[str, str] = {
     "injection moulding": "injection_moulding_100",
     "material handling": "material_handling_14",
-    "metal pressing": "metal_pressing_15",
+    "metal pressing": "metal_pressing_16",
 }
 
 _ROSTER_ROOT = Path(__file__).parent.parent / "data" / "source_files"
