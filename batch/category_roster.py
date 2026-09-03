@@ -38,6 +38,7 @@ CATEGORY_ROSTERS: Dict[str, str] = {
     "material handling": "material_handling_14",
     "metal pressing": "metal_pressing_16",
     "gas cylinder": "gas_cylinder_7",
+    "mudguard": "mudguard_33",
 }
 
 _ROSTER_ROOT = Path(__file__).parent.parent / "data" / "source_files"
