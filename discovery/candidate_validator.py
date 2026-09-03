@@ -56,6 +56,27 @@ A candidate is "validated" only if every gate passes:
    the word-level check is a strictly additive fallback under them,
    not a replacement.
 
+   If the homepage doesn't mention the term, a second fetch is tried
+   before rejecting -- the exact URL the search result itself pointed
+   at (Candidate.link), when that's a page deeper than the domain root
+   (see _fetch_fallback_page_text). Found live: a niche accessory
+   category routinely isn't advertised on a homepage even when the
+   company clearly makes/stocks it one click deeper -- Trailer
+   Engineering's homepage is all bowsers/tankers/generators, no
+   "mudguard" anywhere, but the search hit itself
+   (.../product/13-plastic-mudguard-single-axle/) is a real, live
+   product page for exactly that product; Trailer Stuff's homepage
+   foregrounds wheel clamps, but its Mudguards category page (32 real
+   products) is exactly what the search surfaced. Gate 6 previously
+   only ever fetched the domain root, so both were rejected as false
+   non-matches. The deeper fetch reuses the same retry machinery
+   (_fetch_candidate_site) and is passed through parking_page_reason()
+   before being trusted (CLAUDE.md standing rule 7) -- a parking/for-
+   sale/server-default page at that URL must never satisfy this gate.
+   When the fallback succeeds, its text is ADDED to the homepage text
+   (never replaces it), so the trader self-declaration/soft-signal
+   checks below still see everything the homepage already offered.
+
 Gate 3.5 -- UK Companies House registration, opt-in via
 `companies_house_client` (None by default -- every other product
 category has no reason to pay this extra free API round-trip, and the
@@ -92,6 +113,7 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from rapidfuzz import fuzz
 
@@ -110,6 +132,7 @@ from discovery.candidate_extractor import Candidate
 from llm.client import LLMClient
 from llm.prompts import GROUNDED_COMPANY_NAME_EXTRACTION_SYSTEM_PROMPT
 from verification.uk_company_verification_service import match_company_name_against_companies_house
+from verification.website_contact_extractor import parking_page_reason
 
 logger = logging.getLogger(__name__)
 
@@ -693,6 +716,40 @@ class CandidateValidator:
             return None, primary_reason
         return retry, None
 
+    def _fetch_fallback_page_text(self, candidate: Candidate) -> Optional[str]:
+        """Gate 6's second attempt (see the module docstring's "If the
+        homepage doesn't mention the term" paragraph): fetches the
+        EXACT URL the search result pointed at (`candidate.link`), not
+        just the domain root, when that URL is a real deeper page (a
+        bare "/" or empty path means the search result already WAS the
+        homepage -- nothing new to try, so this returns None without
+        an extra fetch).
+
+        Reuses `_fetch_candidate_site` (same httpx-then-Playwright retry
+        every other fetch in this class gets) and `parking_page_reason`
+        -- the same shared parking/for-sale/server-default check every
+        other extraction stage in this codebase runs before trusting
+        ANY field from a page (CLAUDE.md standing rule 7). A parking
+        page at the deeper URL must never be allowed to satisfy this
+        gate just because it happens to 200.
+
+        Returns the fetched page's text, or None if there was nothing
+        deeper to try, the fetch failed, the page had no readable text,
+        or it turned out to be a parking page."""
+        parsed = urlparse(candidate.link)
+        if not parsed.path or parsed.path == "/":
+            return None
+
+        fetch_result, _ = self._fetch_candidate_site(candidate.link)
+        if fetch_result is None or not fetch_result.pages:
+            return None
+        text = fetch_result.pages[0].text
+        if not (text or "").strip():
+            return None
+        if parking_page_reason(text):
+            return None
+        return text
+
     def validate(
         self, candidate: Candidate, product_term: str, skip_soft_trader_signals: bool = False,
     ) -> ValidationResult:
@@ -832,11 +889,20 @@ class CandidateValidator:
                 f"extracted name '{extracted_name}' does not match the original search result (score={score:.0f})",
             )
 
+        used_fallback_page = False
         if not _mentions_product_term(page_text, product_term):
-            return ValidationResult(
-                candidate, False, extracted_name, extracted_country, score,
-                f"{REASON_TERM_MISSING_PREFIX} '{product_term}'",
+            fallback_text = self._fetch_fallback_page_text(candidate)
+            if fallback_text is None or not _mentions_product_term(fallback_text, product_term):
+                return ValidationResult(
+                    candidate, False, extracted_name, extracted_country, score,
+                    f"{REASON_TERM_MISSING_PREFIX} '{product_term}'",
+                )
+            logger.info(
+                "discovery: gate 6 recovered for %s via the search result's own deeper page %s "
+                "(homepage didn't mention %r)", candidate.domain, candidate.link, product_term,
             )
+            page_text = f"{page_text}\n{fallback_text}"
+            used_fallback_page = True
 
         self_declared_trader = _find_trader_self_declaration(page_text)
         if self_declared_trader:
@@ -854,9 +920,12 @@ class CandidateValidator:
                 f"'{soft_trader_signal}') -- excluded, not a manufacturer",
             )
 
+        reason = f"{REASON_SUCCESS_PREFIX} (score={score:.0f}), product term found on page"
+        if used_fallback_page:
+            reason += " (via the search result's own deeper page, not the homepage)"
         return ValidationResult(
             candidate, True, extracted_name, extracted_country, score,
-            f"{REASON_SUCCESS_PREFIX} (score={score:.0f}), product term found on page",
+            reason,
             resolved_domain=resolved_domain,
         )
 

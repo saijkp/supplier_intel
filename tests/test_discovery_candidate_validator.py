@@ -52,8 +52,27 @@ class ExplodingWebsiteFetcher:
         raise RuntimeError("network down")
 
 
-def _candidate(title="Acme Trailer Co", snippet="Leading manufacturer of trailer axles"):
-    return Candidate(title=title, link="https://acmetrailer.com/", snippet=snippet, domain="acmetrailer.com")
+class MultiTargetWebsiteFetcher:
+    """Unlike FakeWebsiteFetcher (one fixed response for every target),
+    this returns a different response per exact fetch target -- needed
+    to exercise gate 6's fallback, which fetches TWO different targets
+    (the domain root, then candidate.link) and must see different text
+    from each. A target with no entry returns a failed fetch, matching
+    a real 404/unreachable outcome."""
+
+    def __init__(self, responses: dict):
+        self._responses = responses
+        self.calls = []
+
+    def fetch(self, target):
+        self.calls.append(target)
+        if target not in self._responses:
+            return SimpleNamespace(success=False, pages=[], error="not found")
+        return SimpleNamespace(success=True, pages=[SimpleNamespace(text=self._responses[target])], error=None)
+
+
+def _candidate(title="Acme Trailer Co", snippet="Leading manufacturer of trailer axles", link="https://acmetrailer.com/"):
+    return Candidate(title=title, link=link, snippet=snippet, domain="acmetrailer.com")
 
 
 class TestCandidateValidator:
@@ -158,6 +177,118 @@ class TestCandidateValidator:
         validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
         result = validator.validate(_candidate(), "trailer axle")
         assert result.validated is False
+
+
+class TestGate6DeeperPageFallback:
+    """Real incident: Trailer Engineering's homepage (bowsers/tankers/
+    generators) never mentions "mudguard", but the search result itself
+    pointed at .../product/13-plastic-mudguard-single-axle/, a real
+    product page for exactly that product. Same for Trailer Stuff's
+    Mudguards category page vs its wheel-clamp-led homepage. Gate 6
+    previously only ever fetched the domain root -- these tests prove
+    the fallback to candidate.link recovers both real cases without
+    turning the gate into a rubber stamp."""
+
+    def test_homepage_silent_but_deeper_page_mentions_term_is_validated(self):
+        candidate = Candidate(
+            title="13\" Plastic Trailer Mudguards - Trailer Engineering",
+            snippet="Trailer Engineering -- replacement mudguards for trailers, bowsers and tankers.",
+            link="https://trailerengineering.co.uk/product/13-plastic-mudguard-single-axle/",
+            domain="trailerengineering.co.uk",
+        )
+        fetcher = MultiTargetWebsiteFetcher({
+            candidate.link: "Trailer Engineering -- 13 inch plastic mudguard, single axle. Fits most trailers.",
+            candidate.domain: "Trailer Engineering -- bowsers, tankers, water carts and generators.",
+        })
+        llm = FakeLLMClient(response={"company_name": "Trailer Engineering", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(candidate, "mudguard")
+
+        assert result.validated is True
+        assert "via the search result's own deeper page" in result.reason
+        assert fetcher.calls == [candidate.domain, candidate.link]
+
+    def test_neither_page_mentions_term_still_rejected(self):
+        candidate = _candidate(link="https://acmetrailer.com/spare-parts/")
+        fetcher = MultiTargetWebsiteFetcher({
+            candidate.domain: "Acme Trailer Co -- a leading industrial manufacturer.",
+            candidate.link: "Acme Trailer Co -- browse our full spare parts catalogue.",
+        })
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(candidate, "mudguard")
+
+        assert result.validated is False
+        assert "does not mention the searched term" in result.reason
+
+    def test_link_pointing_at_the_homepage_itself_never_double_fetches(self):
+        """candidate.link with no real path beyond the domain root means
+        the search result WAS the homepage -- nothing new to try, so
+        this must reject on the FIRST fetch's outcome alone, never a
+        second identical fetch."""
+        candidate = _candidate(link="https://acmetrailer.com/")
+        fetcher = MultiTargetWebsiteFetcher({
+            candidate.domain: "Acme Trailer Co -- a leading industrial manufacturer.",
+        })
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(candidate, "mudguard")
+
+        assert result.validated is False
+        assert fetcher.calls == [candidate.domain]  # no second fetch attempted
+
+    def test_deeper_page_fetch_failure_falls_back_to_original_rejection(self):
+        candidate = _candidate(link="https://acmetrailer.com/mudguards/")
+        fetcher = MultiTargetWebsiteFetcher({
+            candidate.domain: "Acme Trailer Co -- a leading industrial manufacturer.",
+            # candidate.link deliberately absent -- simulates a 404/unreachable deeper URL.
+        })
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(candidate, "mudguard")
+
+        assert result.validated is False
+        assert "does not mention the searched term" in result.reason
+
+    def test_deeper_page_that_is_a_parking_page_is_not_trusted(self):
+        """CLAUDE.md standing rule 7: reject junk/parking pages before
+        trusting ANY field from them -- a deeper URL that happens to
+        200 with parked-domain boilerplate must never be allowed to
+        satisfy this gate, even if it technically contains the word."""
+        candidate = _candidate(link="https://acmetrailer.com/mudguards/")
+        fetcher = MultiTargetWebsiteFetcher({
+            candidate.domain: "Acme Trailer Co -- a leading industrial manufacturer.",
+            candidate.link: "This domain is parked. Mudguard mudguard mudguard. Buy this domain today.",
+        })
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(candidate, "mudguard")
+
+        assert result.validated is False
+        assert "does not mention the searched term" in result.reason
+
+    def test_trader_self_declaration_on_homepage_still_rejects_after_fallback_recovery(self):
+        """The fallback ADDS the deeper page's text, it never REPLACES
+        the homepage's -- a trader self-declaration on the homepage must
+        still be caught even when the product term was only found via
+        the deeper page."""
+        candidate = _candidate(link="https://acmetrailer.com/mudguards/")
+        fetcher = MultiTargetWebsiteFetcher({
+            candidate.domain: "Acme Trailer Co. We are a distributor of trailer parts from leading brands.",
+            candidate.link: "Browse our mudguard range -- plastic and galvanised, all sizes in stock.",
+        })
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(candidate, "mudguard")
+
+        assert result.validated is False
+        assert "excluded, not a manufacturer" in result.reason
 
 
 class TestPlaywrightRetry:
