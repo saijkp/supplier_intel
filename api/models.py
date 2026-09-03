@@ -320,6 +320,17 @@ class DiscoveryJobRequest(BaseModel):
                      "member names and nothing is auto-imported. One extra real SerpAPI search "
                      "per call when enabled.",
     )
+    deep_collect: bool = Field(
+        default=False,
+        description="Opt-in, only used when target_count is set: runs a real "
+                     "collection.collection_service.CollectionService.collect() -- the same real "
+                     "headless-browser visit + address/phone/email extraction Bulk Enrichment's "
+                     "'Collect All Pending' already does -- on every candidate that validates in "
+                     "Rounds 1-3, whether via real search or the LLM fallback. Never applied to "
+                     "Phase 0's zero-cost database matches. A real extra headless-browser visit "
+                     "(roughly 5-30s) per validated candidate, naturally bounded by target_count -- "
+                     "for a target of N, up to ~N x 30s of extra time on top of the search itself.",
+    )
 
 
 class SingleCompanyEnrichRequest(BaseModel):

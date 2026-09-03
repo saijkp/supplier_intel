@@ -45,6 +45,22 @@ class FakeGoogleScraper:
         return self._results_by_query.get(query, self._results)
 
 
+class FakeCollectionService:
+    """Stand-in for collection.collection_service.CollectionService --
+    only .collect(supplier_id) is used by discovery's deep_collect path
+    (no return_pages/source_url, unlike batch_service.py's own usage)."""
+
+    def __init__(self, raise_for_supplier_id=None):
+        self.calls: list = []
+        self._raise_for_supplier_id = raise_for_supplier_id
+
+    def collect(self, supplier_id):
+        self.calls.append(supplier_id)
+        if self._raise_for_supplier_id == supplier_id:
+            raise RuntimeError("collection blew up")
+        return {"supplier_id": supplier_id, "status": "success", "pages_visited": 1, "error": None}
+
+
 class FakeCandidateValidator:
     """`outcomes` maps domain -> ValidationResult; a domain with no
     entry defaults to "not validated" so a test only needs to specify
@@ -96,6 +112,7 @@ def _service(repo, google_results, validated_domain, extracted_name="Acme Traile
     return DiscoveryService(
         repo=repo, google_scraper=google_scraper, website_fetcher=SimpleNamespace(),
         candidate_validator=validator, matcher=overrides.get("matcher") or SupplierMatcher(repo),
+        collection_service=overrides.get("collection_service"),
     )
 
 
@@ -309,6 +326,109 @@ class TestDiscoverDeduplication:
         outcome = service.discover("trailer axle", country="China")
 
         assert outcome.duplicate_supplier_ids == [existing_id]
+
+
+class TestDeepCollect:
+    """Opt-in (deep_collect=True): a real CollectionService.collect()
+    call chained onto every candidate that validates, whether it
+    creates a new row or merges into an existing one. Off by default,
+    never touches Phase 0's zero-cost database matches (proven
+    separately in TestDiscoverToTargetExistingDatabasePhase, since that
+    code path never calls discover()/_process_candidate at all)."""
+
+    def test_off_by_default_never_calls_collect(self, repo):
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        collection = FakeCollectionService()
+        service = _service(repo, results, "acmetrailer.com", collection_service=collection)
+
+        service.discover("trailer axle", country="China")
+
+        assert collection.calls == []
+
+    def test_enabled_calls_collect_for_a_new_supplier(self, repo):
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        collection = FakeCollectionService()
+        service = _service(repo, results, "acmetrailer.com", collection_service=collection)
+
+        outcome = service.discover("trailer axle", country="China", deep_collect=True)
+
+        assert collection.calls == outcome.new_supplier_ids
+        assert outcome.deep_collected == 1
+
+    def test_enabled_calls_collect_for_a_merged_supplier_not_yet_collected(self, repo):
+        existing_id = repo.create_golden_record({
+            "canonical_name": "Acme Trailer Co", "domain": "acmetrailer.com", "country": "China",
+        })
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        collection = FakeCollectionService()
+        service = _service(repo, results, "acmetrailer.com", collection_service=collection)
+
+        outcome = service.discover("trailer axle", country="China", deep_collect=True)
+
+        assert collection.calls == [existing_id]
+        assert outcome.deep_collected == 1
+
+    def test_skips_a_merged_supplier_already_collected(self, repo):
+        """The idempotency guard: a merge landing on a supplier
+        already fully collected by something else must never re-pay
+        for a real headless-browser visit."""
+        existing_id = repo.create_golden_record({
+            "canonical_name": "Acme Trailer Co", "domain": "acmetrailer.com", "country": "China",
+            "collection_status": "success",
+        })
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        collection = FakeCollectionService()
+        service = _service(repo, results, "acmetrailer.com", collection_service=collection)
+
+        outcome = service.discover("trailer axle", country="China", deep_collect=True)
+
+        assert collection.calls == []
+        assert outcome.deep_collected == 0
+
+    def test_collect_failure_does_not_abort_or_lose_the_supplier(self, repo):
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        collection = FakeCollectionService(raise_for_supplier_id=1)
+        service = _service(repo, results, "acmetrailer.com", collection_service=collection)
+
+        outcome = service.discover("trailer axle", country="China", deep_collect=True)
+
+        assert outcome.new_supplier_ids == [1]  # supplier still created despite collect() raising
+        assert outcome.deep_collected == 0      # not counted, since it genuinely failed
+        assert repo.get_supplier(1) is not None
+
+    def test_independent_of_skip_soft_trader_signals(self, repo):
+        """A candidate validated via the trader-inclusive gate (e.g. a
+        companies_house_sic-sourced dealer/installer) gets exactly the
+        same deep collect as a strict manufacturer match -- this only
+        checks resolve_and_store succeeded, never how validation
+        passed. Exercises _record_validation_outcome directly rather
+        than simulating a full companies_house_sic round, since that's
+        the exact seam this independence claim lives at."""
+        from discovery.candidate_extractor import Candidate
+        from discovery.discovery_service import DiscoveryOutcome
+
+        collection = FakeCollectionService()
+        service = _service(
+            repo, [], "installer.example.com",
+            candidate_validator=FakeCandidateValidator(), collection_service=collection,
+        )
+        candidate = Candidate(
+            title="Acme Solar Installers", link="https://installer.example.com/",
+            snippet="", domain="installer.example.com",
+        )
+        validation = ValidationResult(
+            candidate, True, "Acme Solar Installers", "United Kingdom", 95.0,
+            "validated: dealer/installer, self-declaration allowed (skip_soft_trader_signals=True)",
+        )
+        outcome = DiscoveryOutcome()
+
+        service._record_validation_outcome(
+            candidate, validation, "solar panel", "United Kingdom", outcome,
+            "discovery", None, deep_collect=True,
+        )
+
+        assert len(collection.calls) == 1
+        assert outcome.deep_collected == 1
 
 
 class TestDiscoverFaultIsolation:
@@ -832,6 +952,26 @@ class TestDiscoverToTargetExistingDatabasePhase:
         assert outcome.reached_target is True
         assert outcome.stopped_reason == "target_reached_from_existing_database"
         assert google_scraper.queries == []  # zero spend -- discover() never ran at all
+
+    def test_deep_collect_never_applies_to_phase_0_matches(self, repo):
+        """deep_collect=True passed straight through to discover_to_target
+        must never trigger a real collect() for a Phase 0 database
+        match -- that code path never calls discover()/_process_candidate
+        at all, so this is a real structural guarantee, not just a
+        runtime check that could drift."""
+        repo.create_golden_record({"canonical_name": "Acme Trailer Axles", "domain": "acme-axles.example.com", "product_keywords": ["trailer axle"]})
+        collection = FakeCollectionService()
+        service = DiscoveryService(
+            repo=repo, google_scraper=FakeGoogleScraper(results=[]), website_fetcher=SimpleNamespace(),
+            candidate_validator=FakeCandidateValidator(outcomes={}), matcher=SupplierMatcher(repo),
+            collection_service=collection,
+        )
+
+        outcome = service.discover_to_target("trailer axle", target_count=1, deep_collect=True)
+
+        assert outcome.stopped_reason == "target_reached_from_existing_database"
+        assert collection.calls == []
+        assert outcome.deep_collected == 0
 
     def test_no_existing_match_behaves_exactly_as_before(self, repo):
         """No pre-existing supplier at all -- Phase 0 finds nothing,

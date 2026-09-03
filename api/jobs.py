@@ -358,6 +358,7 @@ def run_discovery_job(job_id: str, options: Dict[str, Any]) -> None:
                 max_multiplier=options.get("max_multiplier", 5), progress_callback=on_progress,
                 recover_dead_domains=options.get("recover_dead_domains", False),
                 check_trade_source=options.get("check_trade_source", False),
+                deep_collect=options.get("deep_collect", False),
             )
         else:
             outcome = service.discover(

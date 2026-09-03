@@ -92,6 +92,7 @@ class DiscoveryOutcome:
     review_queued_supplier_ids: List[int] = field(default_factory=list)  # subset of new_supplier_ids also awaiting dedup review
     website_resolved: int = 0  # candidates whose site fetched successfully (validate() gate 2), whether or not they went on to validate
     content_matched: int = 0   # candidates whose fetched page actually mentioned the product term (validate() gate 5) -- see _process_candidate's own comment
+    deep_collected: int = 0  # opt-in (deep_collect=True) -- candidates that got a real CollectionService.collect() call on top of validation, same real address/phone/email extraction "Collect All Pending" does. 0 unless deep_collect was passed.
     raw_1688_listings: List[Dict[str, Any]] = field(default_factory=list)  # source='1688' only -- see _discover_1688's own docstring for why this stops short of validation/storage
 
 
@@ -131,6 +132,7 @@ class DiscoveryToTargetOutcome:
     candidates_validated: int = 0
     candidates_rejected: int = 0
     candidates_duplicate: int = 0
+    deep_collected: int = 0  # opt-in (deep_collect=True) -- see DiscoveryOutcome's own field doc. Always 0 from Phase 0 (that code path can't reach it); only rounds 1-3 can contribute.
     duplicate_supplier_ids: List[int] = field(default_factory=list)
     new_supplier_ids: List[int] = field(default_factory=list)
     review_queued_supplier_ids: List[int] = field(default_factory=list)
@@ -184,6 +186,7 @@ class DiscoveryService:
         companies_house_client: Optional[Any] = None,
         companies_house_sic_source: Optional[CompaniesHouseSicSource] = None,
         playwright_fetcher: Optional[Any] = None,
+        collection_service: Optional[Any] = None,
     ):
         self.repo = repo or SupplierRepository()
         if google_scraper is not None:
@@ -246,6 +249,16 @@ class DiscoveryService:
         self.companies_house_sic_source = companies_house_sic_source or CompaniesHouseSicSource(
             companies_house_client=companies_house_client,
         )
+        # Only ever invoked when a caller opts into deep_collect (see
+        # discover()/discover_to_target()'s own docstrings) -- lazily
+        # constructed like every other collaborator here, safe to build
+        # without credentials, never touched otherwise.
+        if collection_service is not None:
+            self.collection_service = collection_service
+        else:
+            from collection.collection_service import CollectionService
+
+            self.collection_service = CollectionService(repo=self.repo)
 
     def discover(
         self, product: str, category: Optional[str] = None, country: Optional[str] = None,
@@ -257,6 +270,7 @@ class DiscoveryService:
         recover_dead_domains: bool = False,
         sic_codes: Optional[List[str]] = None,
         sic_name_keywords: Optional[List[str]] = None,
+        deep_collect: bool = False,
     ) -> DiscoveryOutcome:
         """`target_count`, `progress_callback`, `recover_dead_domains`,
         and `sic_codes` are all additive, default-None/False/unset --
@@ -302,7 +316,26 @@ class DiscoveryService:
         retry via candidate_validator.CandidateValidator.recover() --
         never for a marketplace/trader/name-mismatch/term-missing
         rejection, those stay as-is. A real extra SerpAPI+fetch+LLM cost
-        per dead candidate -- opt-in, never on by default."""
+        per dead candidate -- opt-in, never on by default.
+
+        `deep_collect`, when True, runs a real
+        collection.collection_service.CollectionService.collect() --
+        the same real headless-browser visit + address/phone/email
+        extraction "Collect All Pending" already does -- on every
+        candidate that validates (see _record_validation_outcome).
+        Independent of `skip_soft_trader_signals`/source: a dealer-
+        shaped candidate that passes validation because a caller opted
+        into the trader-inclusive gate gets exactly the same deep
+        collect as a strict manufacturer match -- this only checks
+        whether resolve_and_store succeeded, never how the candidate
+        passed validation. Skips a candidate whose resulting supplier
+        already has collection_status="success" (a merge into an
+        already-fully-collected existing supplier), so this never
+        re-pays for work already done. A real extra headless-browser
+        visit (roughly 5-30s) per validated candidate -- opt-in, never
+        on by default, and never applied to discover_to_target()'s
+        Phase 0 database matches (that code path never reaches this
+        method at all)."""
         if source not in _VALID_SOURCES:
             raise ValueError(f"unknown discovery source {source!r} -- expected one of {_VALID_SOURCES}")
 
@@ -319,6 +352,7 @@ class DiscoveryService:
                 self._process_candidate(
                     candidate, product, country, outcome, raw_source=raw_source,
                     progress_callback=progress_callback, recover_dead_domains=recover_dead_domains,
+                    deep_collect=deep_collect,
                 )
                 if target_count is not None and outcome.candidates_validated >= target_count:
                     break
@@ -342,7 +376,7 @@ class DiscoveryService:
                 self._process_candidate(
                     candidate, product, country, outcome, raw_source=raw_source,
                     progress_callback=progress_callback, recover_dead_domains=recover_dead_domains,
-                    skip_soft_trader_signals=True,
+                    skip_soft_trader_signals=True, deep_collect=deep_collect,
                 )
                 if target_count is not None and outcome.candidates_validated >= target_count:
                     break
@@ -386,6 +420,7 @@ class DiscoveryService:
             self._process_candidate(
                 candidate, product, country, outcome, raw_source="discovery",
                 progress_callback=progress_callback, recover_dead_domains=recover_dead_domains,
+                deep_collect=deep_collect,
             )
             if target_count is not None and outcome.candidates_validated >= target_count:
                 break
@@ -406,6 +441,7 @@ class DiscoveryService:
         progress_callback: Optional[Callable[[DiscoveryProgressEvent], None]] = None,
         recover_dead_domains: bool = False,
         check_trade_source: bool = False,
+        deep_collect: bool = False,
     ) -> DiscoveryToTargetOutcome:
         """Round-based "keep going until N validated suppliers are
         found, but stop well before unbounded spend" orchestrator built
@@ -462,6 +498,19 @@ class DiscoveryService:
         SerpAPI search on every call, on top of whatever Round 1-3
         already cost.
 
+        `deep_collect` (opt-in, off by default): threaded unchanged into
+        every round's own discover() call -- see that method's own
+        docstring for the full behaviour. Applies uniformly across
+        Rounds 1-3 regardless of source (serpapi or the llm fallback);
+        never applies to Phase 0's database matches, since that code
+        path never calls discover()/`_process_candidate` at all. A real
+        extra headless-browser visit (~5-30s) per candidate that
+        validates in ANY round -- naturally bounded by target_count
+        (discover_to_target() already stops each round once enough
+        candidates validate), not the larger ceiling, so the real added
+        time is roughly target_count x 5-30s, not
+        ceiling x 5-30s.
+
         Each round's progress events are stamped with their round number
         before being forwarded to `progress_callback`, so a live UI can
         show which round a given candidate came from."""
@@ -485,6 +534,7 @@ class DiscoveryService:
             result.candidates_validated += outcome.candidates_validated
             result.candidates_rejected += outcome.candidates_rejected
             result.candidates_duplicate += outcome.candidates_duplicate
+            result.deep_collected += outcome.deep_collected
             result.duplicate_supplier_ids.extend(outcome.duplicate_supplier_ids)
             result.new_supplier_ids.extend(outcome.new_supplier_ids)
             result.review_queued_supplier_ids.extend(outcome.review_queued_supplier_ids)
@@ -571,7 +621,7 @@ class DiscoveryService:
             application=application, key_specifications=key_specifications,
             domain_tld_bias=domain_tld_bias, source="serpapi",
             target_count=remaining_target, progress_callback=_stamped_callback(1),
-            recover_dead_domains=recover_dead_domains,
+            recover_dead_domains=recover_dead_domains, deep_collect=deep_collect,
         )
         result.rounds_run = 1
         _merge(outcome1)
@@ -594,7 +644,7 @@ class DiscoveryService:
             application=application, key_specifications=key_specifications,
             domain_tld_bias=domain_tld_bias, source="serpapi", extra_role_words=role_words,
             target_count=remaining_target - result.candidates_validated, progress_callback=_stamped_callback(2),
-            recover_dead_domains=recover_dead_domains,
+            recover_dead_domains=recover_dead_domains, deep_collect=deep_collect,
         )
         result.rounds_run = 2
         _merge(outcome2)
@@ -613,6 +663,7 @@ class DiscoveryService:
             product, category=category, country=country, max_candidates=remaining,
             source="llm", target_count=remaining_target - result.candidates_validated,
             progress_callback=_stamped_callback(3), recover_dead_domains=recover_dead_domains,
+            deep_collect=deep_collect,
         )
         result.rounds_run = 3
         result.used_llm_fallback = True
@@ -698,6 +749,7 @@ class DiscoveryService:
         progress_callback: Optional[Callable[[DiscoveryProgressEvent], None]] = None,
         recover_dead_domains: bool = False,
         skip_soft_trader_signals: bool = False,
+        deep_collect: bool = False,
     ) -> None:
         outcome.candidates_examined += 1
         try:
@@ -721,6 +773,7 @@ class DiscoveryService:
 
         is_dead_domain = self._record_validation_outcome(
             candidate, validation, product, country, outcome, raw_source, progress_callback,
+            deep_collect=deep_collect,
         )
 
         # Recovery: ONLY for a dead/unreachable domain (never marketplace,
@@ -749,12 +802,14 @@ class DiscoveryService:
                 outcome.candidates_examined += 1
                 self._record_validation_outcome(
                     recovery.candidate, recovery, product, country, outcome, raw_source, progress_callback,
+                    deep_collect=deep_collect,
                 )
 
     def _record_validation_outcome(
         self, candidate, validation, product: str, country: Optional[str],
         outcome: DiscoveryOutcome, raw_source: str,
         progress_callback: Optional[Callable[[DiscoveryProgressEvent], None]],
+        deep_collect: bool = False,
     ) -> bool:
         """Turns one real (candidate, ValidationResult) pair into
         raw_source_data + (if validated) resolve_and_store + a progress
@@ -861,6 +916,30 @@ class DiscoveryService:
         action = result.get("action")
         supplier_id = result.get("supplier_id") or result.get("new_supplier_id")
         self.repo.mark_raw_processed(raw_id, golden_record_id=supplier_id, status="processed")
+
+        if deep_collect and supplier_id is not None:
+            # Applies to BOTH "created"/"review_queued" (a genuinely new
+            # row) and "merged" (a real, validated match into an
+            # existing supplier) -- either way this is a real identity
+            # match, not just a new row. Guarded on collection_status
+            # specifically for the merge case: a merge can land on a
+            # supplier already fully collected by something else, and
+            # re-running a real headless-browser visit on it would be
+            # pure waste. Independent of skip_soft_trader_signals/source
+            # -- this only checks that resolve_and_store succeeded,
+            # never how the candidate passed validation, so a dealer-
+            # shaped candidate validated via the trader-inclusive gate
+            # gets exactly the same deep collect as a strict
+            # manufacturer match. Never reached by discover_to_target()'s
+            # Phase 0 database matches -- that code path never calls
+            # this method at all.
+            existing_supplier = self.repo.get_supplier(supplier_id)
+            if (existing_supplier or {}).get("collection_status") != "success":
+                try:
+                    self.collection_service.collect(supplier_id)
+                    outcome.deep_collected += 1
+                except Exception as e:  # noqa: BLE001 -- one candidate's collect failure must never abort discovery
+                    logger.error("discovery: deep collect failed for supplier #%s: %s", supplier_id, e)
 
         if action == "merged":
             # Auto-merged into an existing record -- no new row, real

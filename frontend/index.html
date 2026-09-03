@@ -654,6 +654,12 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
             <span>Try to recover dead-domain candidates (1 extra paid search each)</span>
           </label>
         </div>
+        <div class="field hidden" id="findDeepCollectField">
+          <label class="check">
+            <input type="checkbox" id="findDeepCollect">
+            <span>Also do deep contact extraction (address/phone/email) for each new supplier found -- one real headless-browser visit each, adds real time</span>
+          </label>
+        </div>
         <button class="btn btn-ghost btn-sm hidden" id="btnFindAdvancedToggle" style="margin:8px 0">Advanced options &rarr;</button>
         <div class="field hidden" id="findAdvancedBlock">
           <div class="field">
@@ -1442,6 +1448,7 @@ function findRenderMode() {
   const isProductShaped = !findLooksLikeUrl(text) && !!text;
   $("findTargetCountField").classList.toggle("hidden", !isProductShaped);
   $("findRecoverField").classList.toggle("hidden", !isProductShaped);
+  $("findDeepCollectField").classList.toggle("hidden", !isProductShaped);
   $("btnFindAdvancedToggle").classList.toggle("hidden", !isProductShaped);
   $("btnFindBriefToggle").classList.toggle("hidden", !isProductShaped);
   if (!isProductShaped) {
@@ -1476,12 +1483,18 @@ document.addEventListener("click", (e) => {
 $("findInput").addEventListener("input", findRenderMode);
 $("findTargetCount").addEventListener("input", findRenderMode);
 $("findRecoverDeadDomains").addEventListener("change", findRenderMode);
+$("findDeepCollect").addEventListener("change", findRenderMode);
 
 function findRenderCostNote(c) {
   const host = $("findCostNote");
   const recoverNote = $("findRecoverDeadDomains").checked
     ? " Domain recovery is on: up to 1 extra search + 2 fetch/validation attempts for each candidate rejected specifically for a dead/unreachable domain."
     : "";
+  const deepCollectNote = $("findDeepCollect").checked && c.targetCount
+    ? ` Deep collect is on: adds a real headless-browser visit (roughly 5-30s) per new supplier found — up to ~${c.targetCount * 30}s of extra time on top of the search itself.`
+    : $("findDeepCollect").checked
+      ? " Deep collect is on: adds a real headless-browser visit (roughly 5-30s) per new supplier found."
+      : "";
   if (c.kind === "url") {
     host.textContent = "Cost: near-zero — one website visit, no paid search call.";
   } else if (c.kind === "company") {
@@ -1489,9 +1502,9 @@ function findRenderCostNote(c) {
   } else if (c.kind === "product" && c.targetCount) {
     const ceiling = c.targetCount * 5;
     host.textContent = `Cost: up to ${ceiling} candidates examined (target ${c.targetCount} × 5) — each costs at most a free website visit and ` +
-      `(only if it passes the free marketplace/name checks) one small AI call. Up to ~8 search queries across up to 2 rounds before a last-resort AI-knowledge fallback.${recoverNote}`;
+      `(only if it passes the free marketplace/name checks) one small AI call. Up to ~8 search queries across up to 2 rounds before a last-resort AI-knowledge fallback.${recoverNote}${deepCollectNote}`;
   } else if (c.kind === "product") {
-    host.textContent = `Cost: a real search plus a small AI check per candidate found — start small, or give a target count for a bounded run.${recoverNote}`;
+    host.textContent = `Cost: a real search plus a small AI check per candidate found — start small, or give a target count for a bounded run.${recoverNote}${deepCollectNote}`;
   } else {
     host.textContent = "";
   }
@@ -1906,6 +1919,7 @@ $("btnFindGo").addEventListener("click", async () => {
       const body = { product: text };
       if (c.targetCount) { body.target_count = c.targetCount; }
       if ($("findRecoverDeadDomains").checked) { body.recover_dead_domains = true; }
+      if ($("findDeepCollect").checked) { body.deep_collect = true; }
       const category = $("findCategory").value.trim();
       const country = $("findCountry").value.trim();
       const maxCandidates = $("findMaxCandidates").value.trim();

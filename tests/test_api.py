@@ -694,6 +694,22 @@ class TestDiscoveryJobEndpoints:
         job = client.repo.get_pipeline_job(job_id)
         assert job["options"]["check_trade_source"] is True
 
+    def test_deep_collect_defaults_to_false(self, client):
+        response = client.post("/discovery/jobs", json={"product": "trailer axle"}, headers=auth_headers())
+        job_id = response.json()["id"]
+        job = client.repo.get_pipeline_job(job_id)
+        assert job["options"]["deep_collect"] is False
+
+    def test_deep_collect_accepted_and_stored(self, client):
+        response = client.post(
+            "/discovery/jobs", json={"product": "trailer axle", "target_count": 5, "deep_collect": True},
+            headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        job_id = response.json()["id"]
+        job = client.repo.get_pipeline_job(job_id)
+        assert job["options"]["deep_collect"] is True
+
 
 class TestSingleCompanyEnrichEndpoint:
 

@@ -439,13 +439,15 @@ class FakeDiscoveryService:
                                  new_supplier_ids=[10, 11])
 
     def discover_to_target(self, product, target_count, category=None, country=None, max_multiplier=5,
-                            progress_callback=None, recover_dead_domains=False, check_trade_source=False):
+                            progress_callback=None, recover_dead_domains=False, check_trade_source=False,
+                            deep_collect=False):
         from discovery.discovery_service import DiscoveryToTargetOutcome
 
         self.last_discover_to_target_call = {
             "product": product, "target_count": target_count, "category": category,
             "country": country, "max_multiplier": max_multiplier,
             "recover_dead_domains": recover_dead_domains, "check_trade_source": check_trade_source,
+            "deep_collect": deep_collect,
         }
         return DiscoveryToTargetOutcome(
             product=product, target_count=target_count, ceiling=target_count * max_multiplier,
@@ -561,7 +563,8 @@ class TestRunDiscoveryJob:
 
         class ExistingMatchFiringDiscoveryService(FakeDiscoveryService):
             def discover_to_target(self, product, target_count, category=None, country=None, max_multiplier=5,
-                                    progress_callback=None, recover_dead_domains=False, check_trade_source=False):
+                                    progress_callback=None, recover_dead_domains=False, check_trade_source=False,
+                                    deep_collect=False):
                 if progress_callback:
                     progress_callback(DiscoveryProgressEvent(
                         domain="already-in-db.com", candidate_title="Known Co", extracted_name="Known Co",
@@ -623,7 +626,7 @@ class TestRunDiscoveryJob:
         assert instance.last_discover_to_target_call == {
             "product": "forklift", "target_count": 10, "category": None,
             "country": None, "max_multiplier": 4, "recover_dead_domains": False,
-            "check_trade_source": False,
+            "check_trade_source": False, "deep_collect": False,
         }
         job = repo.get_pipeline_job("job55")
         assert job["status"] == "completed"
@@ -666,6 +669,15 @@ class TestRunDiscoveryJob:
         jobs_module.run_discovery_job("job59", {"product": "forklift", "target_count": 10, "check_trade_source": True})
 
         assert FakeDiscoveryService.last_instance.last_discover_to_target_call["check_trade_source"] is True
+
+    def test_deep_collect_passed_through_to_discover_to_target(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "DiscoveryService", FakeDiscoveryService)
+
+        repo.create_pipeline_job(job_id="job60", query="[discovery] forklift",
+                                  options={"product": "forklift", "target_count": 10, "deep_collect": True})
+        jobs_module.run_discovery_job("job60", {"product": "forklift", "target_count": 10, "deep_collect": True})
+
+        assert FakeDiscoveryService.last_instance.last_discover_to_target_call["deep_collect"] is True
 
 
 class FakeCompanyWebsiteFinder:
