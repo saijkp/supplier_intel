@@ -2245,6 +2245,19 @@ function summarizeJobStats(j) {
   if (j.status !== "completed") return j.error ? esc(j.error).slice(0, 70) : "—";
   const st = j.stats || {};
   const q = j.query || "";
+  // A pending-batch job (collection/contacts/factory-facts, each
+  // guarded by its own single-batch-at-a-time semaphore) still reaches
+  // status="completed" at the job level even when the semaphore wasn't
+  // acquired -- the job itself never ran, it just recorded that fact.
+  // Without this check that renders as the exact same "0/0 succeeded"
+  // a genuine zero-eligible no-op shows, which is exactly what read as
+  // "nothing happened" when a second click landed while an earlier one
+  // was still genuinely running. Checked before any per-type branch
+  // below so it applies uniformly to every batch type that shares this
+  // pattern, not just collection.
+  if (st.status === "skipped") {
+    return "Already running — please wait for it to finish";
+  }
   if (q.startsWith("[discovery]")) {
     // candidates_validated always equals new_supplier_ids.length by
     // construction (DiscoveryOutcome's own doc) -- showing both was
