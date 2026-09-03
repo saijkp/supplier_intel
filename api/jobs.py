@@ -131,7 +131,8 @@ def run_collection_job(job_id: str, options: Dict[str, Any]) -> None:
 def run_batch_job(
     job_id: str, csv_bytes: bytes,
     recover_dead_domains: bool = False, recovery_product_term: Optional[str] = None,
-    default_region: Optional[str] = None, filename: Optional[str] = None,
+    default_region: Optional[str] = None, product_keywords: Optional[str] = None,
+    filename: Optional[str] = None,
 ) -> None:
     """The HTTP equivalent of `main.py batch-upload` -- parses the
     uploaded file (batch.csv_parser.parse_batch_upload_file, CSV or
@@ -158,12 +159,22 @@ def run_batch_job(
     a real 71-row batch went from 18/71 to 59/71 rows with a phone
     number once a region hint was available, dwarfing every other
     phone-extraction fix combined.
+
+    `product_keywords`: same comma-separated category-term fallback as
+    `main.py batch-upload --product-keywords` -- split here and passed
+    to BatchService.run_batch's own product_keywords param, which only
+    ever fills an EMPTY product_keywords on a row that doesn't have its
+    own CSV category column (see batch_service.py's
+    _attempt_set_product_keywords).
     """
     repo = SupplierRepository()
     repo.mark_pipeline_job_running(job_id)
     try:
         parsed = parse_batch_upload_file(csv_bytes, filename)
         service = BatchService(repo=repo, default_region_fallback=default_region)
+        product_keywords_list = (
+            [t.strip() for t in product_keywords.split(",") if t.strip()] if product_keywords else None
+        )
 
         def _on_progress(outcome) -> None:
             repo.update_pipeline_job_progress(job_id, dataclasses.asdict(outcome))
@@ -171,12 +182,14 @@ def run_batch_job(
         outcome = service.run_batch(
             parsed.rows, batch_job_id=job_id, progress_callback=_on_progress,
             recover_dead_domains=recover_dead_domains, recovery_product_term=recovery_product_term,
+            product_keywords=product_keywords_list,
         )
 
         stats = dataclasses.asdict(outcome)
         stats["company_name_column"] = parsed.company_name_column
         stats["website_column"] = parsed.website_column
         stats["country_column"] = parsed.country_column
+        stats["product_keywords_column"] = parsed.product_keywords_column
         stats["duplicate_row_count"] = len(parsed.duplicate_row_indices)
         repo.mark_pipeline_job_completed(job_id, stats=stats)
     except Exception as e:

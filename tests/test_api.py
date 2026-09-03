@@ -115,11 +115,11 @@ def client(tmp_path, monkeypatch):
     batch_job_calls = []
 
     def fake_run_batch_job(job_id, csv_bytes, recover_dead_domains=False, recovery_product_term=None,
-                            default_region=None, filename=None):
+                            default_region=None, product_keywords=None, filename=None):
         batch_job_calls.append({
             "job_id": job_id, "recover_dead_domains": recover_dead_domains,
             "recovery_product_term": recovery_product_term, "default_region": default_region,
-            "filename": filename,
+            "product_keywords": product_keywords, "filename": filename,
         })
         test_repo.mark_pipeline_job_running(job_id)
         test_repo.mark_pipeline_job_completed(job_id, stats={"processed": 0})
@@ -510,6 +510,25 @@ class TestBatchUploadEndpoint:
         )
         assert response.status_code == 202
         assert client.batch_job_calls[-1]["recover_dead_domains"] is False
+
+    def test_product_keywords_is_accepted_and_threaded_through(self, client):
+        response = client.post(
+            "/batch/upload", files={"file": ("suppliers.csv", self._CSV, "text/csv")},
+            data={"product_keywords": "gas cylinder manufacturer,pressure vessel manufacturer"},
+            headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        job_id = response.json()["id"]
+        job = client.repo.get_pipeline_job(job_id)
+        assert job["options"]["product_keywords"] == "gas cylinder manufacturer,pressure vessel manufacturer"
+        assert client.batch_job_calls[-1]["product_keywords"] == "gas cylinder manufacturer,pressure vessel manufacturer"
+
+    def test_product_keywords_none_by_default(self, client):
+        response = client.post(
+            "/batch/upload", files={"file": ("suppliers.csv", self._CSV, "text/csv")}, headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        assert client.batch_job_calls[-1]["product_keywords"] is None
 
 
 class TestContactsJobEndpoints:

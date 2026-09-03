@@ -80,6 +80,27 @@ class TestHeaderDetection:
         assert result.country_column is None
         assert result.rows[0].country is None
 
+    def test_product_keywords_column_is_detected(self):
+        result = parse_csv(b"Company Name,Website,Category\nAcme Co,https://acme.com,gas cylinder manufacturer\n")
+        assert result.product_keywords_column == "Category"
+        assert result.rows[0].product_keywords == "gas cylinder manufacturer"
+
+    def test_product_keywords_variant_alias_detected(self):
+        result = parse_csv(b"Company,URL,Product Keywords\nAcme Co,acme.com,metal pressing\n")
+        assert result.product_keywords_column == "Product Keywords"
+
+    def test_no_product_keywords_column_leaves_it_none_not_a_false_match(self):
+        result = parse_csv(b"Company Name,Website,Notes\nAcme Co,https://acme.com,a note\n")
+        assert result.product_keywords_column is None
+        assert result.rows[0].product_keywords is None
+
+    def test_bare_product_header_is_not_falsely_matched(self):
+        # Deliberately NOT an alias -- too generic, would false-match an
+        # ordinary "Product"/"Product Name" column that has nothing to
+        # do with a category tag (see csv_parser.py's own comment).
+        result = parse_csv(b"Company Name,Website,Product\nAcme Co,https://acme.com,Widget X\n")
+        assert result.product_keywords_column is None
+
 
 class TestMissingColumns:
 

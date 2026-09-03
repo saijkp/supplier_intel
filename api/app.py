@@ -365,6 +365,13 @@ async def create_batch_upload_job(
                     "--default-region -- only use this when you KNOW the batch is regionally "
                     "scoped (e.g. a UK-only category); never overrides a real, known country.",
     ),
+    product_keywords: Optional[str] = Form(
+        None,
+        description="Comma-separated category term(s) applied to every row that doesn't have "
+                    "its own CSV category/product column, e.g. 'gas cylinder manufacturer'. "
+                    "Only ever fills an EMPTY product_keywords -- never overwrites an existing "
+                    "value. Same option as main.py batch-upload --product-keywords.",
+    ),
     repo: SupplierRepository = Depends(get_repo),
 ) -> PipelineJobResponse:
     """Batch upload -- CSV or .xlsx, dispatched by filename extension
@@ -396,12 +403,13 @@ async def create_batch_upload_job(
             "recover_dead_domains": recover_dead_domains,
             "recovery_product_term": recovery_product_term,
             "default_region": default_region,
+            "product_keywords": product_keywords,
         },
     )
     background_tasks.add_task(
         run_batch_job, job_id, csv_bytes,
         recover_dead_domains=recover_dead_domains, recovery_product_term=recovery_product_term,
-        default_region=default_region, filename=file.filename,
+        default_region=default_region, product_keywords=product_keywords, filename=file.filename,
     )
     job = repo.get_pipeline_job(job_id)
     return _to_job_response(job)

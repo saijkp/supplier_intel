@@ -105,6 +105,20 @@ same row) as the query subject -- a still-placeholder domain-derived
 name would produce useless search results, so a supplier with no real
 name yet is skipped for this row (there will be a next run).
 
+Product keywords / category tag (_attempt_set_product_keywords): OPT-IN,
+runs for every row that resolved a supplier_id (before collect(),
+regardless of whether collection later succeeds -- this is a pure
+category tag, not something a fetch populates). A term comes from
+either a per-row CSV column (category/product category/product
+keywords -- see csv_parser.py's _PRODUCT_KEYWORDS_ALIASES,
+comma-split here) or a whole-batch fallback (run_batch's
+product_keywords param -- main.py batch-upload --product-keywords /
+POST /batch/upload's product_keywords form field); the row-level value
+wins when both are present. Neither given -> no-op, no DB call. Same
+trusted-value-guard as every other field here, enforced in
+SupplierCorrectionService.set_product_keywords (only fills an empty
+value, never overwrites) rather than duplicated in this method.
+
 Domain recovery (_attempt_domain_recovery): OPT-IN (run_batch's
 recover_dead_domains flag, off by default -- real per-row SerpAPI+fetch+
 LLM cost). Triggered only when this row's own collect() already failed
@@ -129,6 +143,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
+from batch.supplier_correction import SupplierCorrectionService
 from collection.collection_service import CollectionService
 from batch.csv_parser import ParsedRow
 from deduplication.domain_utils import extract_domain, is_platform_subdomain
@@ -233,6 +248,7 @@ class BatchOutcome:
     facility_photos_found: int = 0
     reputation_snippets_found: int = 0
     domains_recovered: int = 0
+    product_keywords_set: int = 0
 
 
 def _placeholder_name_from_domain(domain: str) -> str:
@@ -259,9 +275,15 @@ class BatchService:
         google_scraper: Optional[GoogleSearchScraper] = None,
         candidate_validator: Optional[CandidateValidator] = None,
         default_region_fallback: Optional[str] = None,
+        correction_service: Optional[SupplierCorrectionService] = None,
     ):
         self.repo = repo or SupplierRepository()
         self.matcher = matcher or SupplierMatcher(self.repo)
+        # Reuses SupplierCorrectionService.set_product_keywords's existing
+        # guarded write (only fills an empty product_keywords, never
+        # overwrites) rather than duplicating that guard here -- see
+        # _attempt_set_product_keywords below.
+        self.correction_service = correction_service or SupplierCorrectionService(self.repo)
         # default_region_fallback only applies when this class constructs
         # its own CollectionService -- an explicitly-injected one (tests,
         # or a caller with its own configured instance) is used exactly
@@ -307,6 +329,7 @@ class BatchService:
         search_reputation: bool = False,
         recover_dead_domains: bool = False,
         recovery_product_term: Optional[str] = None,
+        product_keywords: Optional[List[str]] = None,
     ) -> BatchOutcome:
         if recover_dead_domains and not recovery_product_term:
             raise ValueError(
@@ -395,6 +418,9 @@ class BatchService:
             self.repo.update_batch_upload_row(batch_row_id, {
                 "status": "processing", "supplier_id": supplier_id, "name_source": name_source,
             })
+
+            if self._attempt_set_product_keywords(supplier_id, row, product_keywords) == "set":
+                outcome.product_keywords_set += 1
 
             if is_repeat:
                 # Same domain already collected earlier in this batch --
@@ -520,6 +546,49 @@ class BatchService:
             )
         resolved_domains[domain] = supplier_id
         return supplier_id
+
+    def _attempt_set_product_keywords(
+        self, supplier_id: int, row: ParsedRow, batch_level_terms: Optional[List[str]],
+    ) -> str:
+        """Closes the gap where every hybrid-sourced category batch
+        this session needed a manual follow-up pass to set
+        product_keywords after the fact (see batch/supplier_correction.py's
+        set_product_keywords, built for that follow-up pass). Runs for
+        EVERY row that resolved a supplier_id, before collect() and
+        regardless of whether collection later succeeds -- product_keywords
+        is a pure category tag, not something a fetch populates, so a
+        row whose site turns out to be unreachable is exactly as
+        entitled to a category tag as one that collects cleanly.
+
+        Two term sources, row wins when both are present: a per-row CSV
+        column (batch.csv_parser.ParsedRow.product_keywords, comma-split
+        here -- csv_parser only detects/extracts, never interprets) is
+        more specific than the whole-batch fallback (`batch_level_terms`,
+        e.g. main.py batch-upload --product-keywords / POST /batch/upload's
+        product_keywords form field). Neither present -> "skipped_no_term",
+        no DB call at all -- this is opt-in, never forces a value.
+
+        Delegates the actual write to SupplierCorrectionService.
+        set_product_keywords, which re-checks product_keywords fresh at
+        write time and only fills it if still empty -- same trusted-
+        value-guard discipline as every other field this module writes,
+        just enforced in that shared service rather than duplicated here.
+
+        Returns "set", "skipped_not_empty" (guard fired), or
+        "skipped_no_term" (no term available for this row)."""
+        if row.product_keywords:
+            terms = [t.strip() for t in row.product_keywords.split(",") if t.strip()]
+        elif batch_level_terms:
+            terms = batch_level_terms
+        else:
+            return "skipped_no_term"
+        if not terms:
+            return "skipped_no_term"
+
+        result = self.correction_service.set_product_keywords(
+            supplier_id, terms, reason="batch upload: category term supplied at creation time",
+        )
+        return result["status"]
 
     def _attempt_name_extraction(self, supplier_id: int, collect_result: Dict[str, Any], batch_row_id: int) -> str:
         """Reuses discovery.candidate_validator.SYSTEM_PROMPT verbatim --

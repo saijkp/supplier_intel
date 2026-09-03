@@ -40,6 +40,17 @@ _WEBSITE_ALIASES: tuple = (
 # _COMPANY_NAME_ALIASES already has for canonical_name (see
 # batch_service.py's _resolve_named_row/_resolve_placeholder_row).
 _COUNTRY_ALIASES: tuple = ("country", "nation")
+# Trusted directly into suppliers.product_keywords when present, same
+# status as _COUNTRY_ALIASES above -- deliberately NOT including a bare
+# "product" or "product term" alias: at _FUZZY_MATCH_THRESHOLD, a plain
+# "Product" header scores exactly 70 against "product term" (short
+# common prefix, few extra chars), which would false-match an unrelated
+# "Product"/"Product Name" column in an ordinary spreadsheet -- checked
+# directly via fuzz.ratio before settling on this list. Every alias here
+# is specific to a category/classification tag, not a product itself.
+# See batch_service.py's _attempt_set_product_keywords for how a row's
+# value here relates to the batch-level --product-keywords fallback.
+_PRODUCT_KEYWORDS_ALIASES: tuple = ("category", "product category", "product keywords")
 
 # rapidfuzz.fuzz.ratio, 0-100 -- checked against real messy header
 # samples ("Company Name", "company", "Business Name ", "COMPANY") in
@@ -54,6 +65,7 @@ class ParsedRow:
     company_name: Optional[str]           # detected company name, stripped, or None if no column matched / cell empty
     website: Optional[str]                # detected website, stripped, or None if no column matched / cell empty
     country: Optional[str] = None         # detected country, stripped, or None if no column matched / cell empty
+    product_keywords: Optional[str] = None  # detected category/product-term cell, raw (comma-split happens in batch_service.py), or None
 
 
 @dataclass
@@ -62,6 +74,7 @@ class ParseResult:
     company_name_column: Optional[str] = None    # which real header was detected as company_name, or None if none matched
     website_column: Optional[str] = None          # which real header was detected as website, or None if none matched
     country_column: Optional[str] = None          # which real header was detected as country, or None if none matched
+    product_keywords_column: Optional[str] = None  # which real header was detected as product_keywords, or None if none matched
     # row_index of any row whose (company_name, website) pair repeats an
     # earlier row -- informational only; batch_service.py decides what
     # to do with it (e.g. skip a redundant real enrichment call and
@@ -105,15 +118,20 @@ def _build_parse_result(headers: List[str], row_dicts: List[Dict[str, str]]) -> 
     company_col = _best_column_match(headers, _COMPANY_NAME_ALIASES)
     website_col = _best_column_match(headers, _WEBSITE_ALIASES)
     country_col = _best_column_match(headers, _COUNTRY_ALIASES)
+    product_keywords_col = _best_column_match(headers, _PRODUCT_KEYWORDS_ALIASES)
     result.company_name_column = company_col
     result.website_column = website_col
     result.country_column = country_col
+    result.product_keywords_column = product_keywords_col
 
     seen_keys: set = set()
     for i, original in enumerate(row_dicts):
         company_name = (original.get(company_col) or "").strip() or None if company_col else None
         website = (original.get(website_col) or "").strip() or None if website_col else None
         country = (original.get(country_col) or "").strip() or None if country_col else None
+        product_keywords = (
+            (original.get(product_keywords_col) or "").strip() or None if product_keywords_col else None
+        )
 
         key = (company_name or "", website or "")
         if key != ("", "") and key in seen_keys:
@@ -124,6 +142,7 @@ def _build_parse_result(headers: List[str], row_dicts: List[Dict[str, str]]) -> 
         result.rows.append(ParsedRow(
             row_index=i, original_columns=original,
             company_name=company_name, website=website, country=country,
+            product_keywords=product_keywords,
         ))
 
     return result

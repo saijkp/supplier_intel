@@ -275,10 +275,11 @@ def _reputation_result(title, link, snippet):
     )
 
 
-def _row(row_index=0, company_name=None, website=None, original_columns=None, country=None):
+def _row(row_index=0, company_name=None, website=None, original_columns=None, country=None, product_keywords=None):
     return ParsedRow(
         row_index=row_index, original_columns=original_columns or {},
         company_name=company_name, website=website, country=country,
+        product_keywords=product_keywords,
     )
 
 
@@ -1857,3 +1858,84 @@ class TestDefaultRegionFallback:
         injected = FakeCollectionService()
         service = BatchService(repo=FakeRepo(), collection_service=injected, default_region_fallback="GB")
         assert service.collection_service is injected
+
+
+class TestProductKeywords:
+    """_attempt_set_product_keywords reuses batch/supplier_correction.py's
+    SupplierCorrectionService.set_product_keywords (not duplicated here) --
+    these tests exercise BatchService's own wiring around it: which term
+    source wins, when it fires, and that the guard survives a within-
+    batch repeat. See that method's own tests in
+    tests/test_supplier_correction.py for the guard's own unit coverage."""
+
+    def test_batch_level_term_applied_to_a_fresh_supplier(self):
+        repo = FakeRepo()
+        service, _ = _make_service(repo=repo)
+        outcome = service.run_batch(
+            [_row(company_name="Acme Co", website="https://acme.com")], "job-1",
+            product_keywords=["gas cylinder manufacturer"],
+        )
+        assert outcome.product_keywords_set == 1
+        assert repo.get_supplier(1)["product_keywords"] == ["gas cylinder manufacturer"]
+
+    def test_per_row_csv_column_overrides_batch_level_term(self):
+        repo = FakeRepo()
+        service, _ = _make_service(repo=repo)
+        outcome = service.run_batch(
+            [_row(company_name="Acme Co", website="https://acme.com", product_keywords="metal pressing")],
+            "job-1", product_keywords=["gas cylinder manufacturer"],
+        )
+        assert outcome.product_keywords_set == 1
+        assert repo.get_supplier(1)["product_keywords"] == ["metal pressing"]
+
+    def test_no_term_anywhere_is_a_no_op(self):
+        repo = FakeRepo()
+        service, _ = _make_service(repo=repo)
+        outcome = service.run_batch(
+            [_row(company_name="Acme Co", website="https://acme.com")], "job-1",
+        )
+        assert outcome.product_keywords_set == 0
+        assert "product_keywords" not in repo.get_supplier(1)
+
+    def test_guard_skips_a_supplier_that_already_has_product_keywords(self):
+        repo = FakeRepo()
+        matcher = FakeMatcher(repo)
+        existing_id = repo.create_golden_record({
+            "canonical_name": "Acme Co", "domain": "acme.com", "product_keywords": ["existing tag"],
+        })
+        service, _ = _make_service(repo=repo, matcher=matcher)
+        outcome = service.run_batch(
+            [_row(company_name="Acme Co", website="https://acme.com")], "job-1",
+            product_keywords=["gas cylinder manufacturer"],
+        )
+        assert outcome.product_keywords_set == 0
+        assert repo.get_supplier(existing_id)["product_keywords"] == ["existing tag"]
+
+    def test_term_set_even_when_collection_fails(self):
+        """product_keywords is a pure category tag, not something a fetch
+        populates -- a supplier whose site is currently unreachable is
+        exactly as entitled to a category tag as one that collects
+        cleanly (the real Wessington Cryogenics case tonight)."""
+        repo = FakeRepo()
+        collection = FakeCollectionService(results={1: {"status": "failed", "error": "could not load homepage"}})
+        service, _ = _make_service(repo=repo, collection_service=collection)
+        outcome = service.run_batch(
+            [_row(company_name="Acme Co", website="https://acme.com")], "job-1",
+            product_keywords=["gas cylinder manufacturer"],
+        )
+        assert outcome.failed == 1
+        assert outcome.product_keywords_set == 1
+        assert repo.get_supplier(1)["product_keywords"] == ["gas cylinder manufacturer"]
+
+    def test_repeat_domain_row_does_not_double_write(self):
+        repo = FakeRepo()
+        service, _ = _make_service(repo=repo)
+        outcome = service.run_batch(
+            [
+                _row(row_index=0, company_name="Acme Co", website="https://acme.com"),
+                _row(row_index=1, company_name="Acme Co", website="https://acme.com/"),
+            ],
+            "job-1", product_keywords=["gas cylinder manufacturer"],
+        )
+        assert outcome.product_keywords_set == 1
+        assert repo.get_supplier(1)["product_keywords"] == ["gas cylinder manufacturer"]

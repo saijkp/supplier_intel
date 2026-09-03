@@ -800,9 +800,19 @@ def collect(supplier_id: Optional[int], pending: bool, limit: int, force: bool,
                    "known country. Found live: a real 71-row batch went from 18 to 59 rows with "
                    "a phone number once this was set, versus every other phone-extraction fix "
                    "combined.")
+@click.option("--product-keywords", default=None,
+              help="Comma-separated category term(s) to set on every row that doesn't have its "
+                   "own CSV category/product column (see batch/csv_parser.py's "
+                   "_PRODUCT_KEYWORDS_ALIASES for the column names auto-detected instead), e.g. "
+                   "'gas cylinder manufacturer,pressure vessel manufacturer'. Only ever fills an "
+                   "EMPTY product_keywords, never overwrites an existing value -- same guard as "
+                   "main.py correct-supplier --set-product-keywords. Use this when the whole "
+                   "spreadsheet is one category (the common case for a hybrid-sourced candidate "
+                   "list) instead of a manual backfill pass after the fact.")
 def batch_upload(
     csv_path: str, output: Optional[str], plain: bool, search_reputation: bool,
     recover_dead_domains: bool, recovery_product_term: Optional[str], default_region: Optional[str],
+    product_keywords: Optional[str],
 ) -> None:
     """Enrich a spreadsheet of companies through the exact same
     single-company enrichment path collect/discover already use --
@@ -837,7 +847,8 @@ def batch_upload(
         f"[bold]{len(parsed.rows)}[/bold] row(s). Detected columns: "
         f"company name = [cyan]{parsed.company_name_column or '(none found)'}[/cyan], "
         f"website = [cyan]{parsed.website_column or '(none found)'}[/cyan], "
-        f"country = [cyan]{parsed.country_column or '(none found)'}[/cyan]"
+        f"country = [cyan]{parsed.country_column or '(none found)'}[/cyan], "
+        f"product keywords = [cyan]{parsed.product_keywords_column or '(none found)'}[/cyan]"
     )
     if parsed.duplicate_row_indices:
         console.print(f"[dim]{len(parsed.duplicate_row_indices)} duplicate row(s) detected (exact name+website repeat).[/dim]")
@@ -859,10 +870,14 @@ def batch_upload(
             f"row(s) could trigger this).[/yellow]"
         )
 
+    product_keywords_list = (
+        [t.strip() for t in product_keywords.split(",") if t.strip()] if product_keywords else None
+    )
     service = BatchService(repo=repo, default_region_fallback=default_region)
     outcome = service.run_batch(
         parsed.rows, batch_job_id=job_id, search_reputation=search_reputation,
         recover_dead_domains=recover_dead_domains, recovery_product_term=recovery_product_term,
+        product_keywords=product_keywords_list,
     )
     repo.mark_pipeline_job_completed(job_id, stats=dataclasses.asdict(outcome))
 
@@ -883,6 +898,7 @@ def batch_upload(
     table.add_row("factory locations found", str(outcome.factory_locations_found))
     table.add_row("factory locations conflicting (not applied)", str(outcome.factory_locations_conflicting))
     table.add_row("rows with new facility photo candidates", str(outcome.facility_photos_found))
+    table.add_row("product keywords set", str(outcome.product_keywords_set))
     if search_reputation:
         table.add_row("rows with reputation snippets found", str(outcome.reputation_snippets_found))
     if recover_dead_domains:
