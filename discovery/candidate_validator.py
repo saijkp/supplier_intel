@@ -304,14 +304,25 @@ def _find_multi_category_retailer_signal(page_text: str) -> str | None:
     appearing on the same page -- narrow enough that a real focused
     manufacturer's page (which never self-describes as an "online shop"
     spanning unrelated categories) can't trip it, see the cluster
-    table's own comment for the real case this closes."""
+    table's own comment for the real case this closes.
+
+    Cluster words are matched on a WORD BOUNDARY (`\\bword\\b`), not a
+    bare substring -- found live via a real over-correction: a naive
+    substring check matched "auto" inside "autoflex.hu" itself (the
+    candidate's OWN domain name, present in any page's footer/email
+    address) and would equally match "sport" inside "transport", a word
+    every trailer/logistics manufacturer's page uses constantly. Word-
+    boundary matching fixes both: "auto" has no boundary before "flex"
+    in "autoflex.hu", and "sport" has no boundary before "ort" is
+    preceded by "transp" in "transport" -- see
+    TestMultiCategoryRetailerSignal's own regression tests for both."""
     haystack = (page_text or "").lower()
     if not _SHOP_SELF_DESCRIPTION_PATTERN.search(haystack):
         return None
     matched_words: list[str] = []
     for cluster in _RETAILER_CATEGORY_CLUSTERS:
         for word in cluster:
-            if word in haystack:
+            if re.search(rf"\b{re.escape(word)}\b", haystack):
                 matched_words.append(word)
                 break
     if len(matched_words) >= 2:

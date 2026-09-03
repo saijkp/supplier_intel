@@ -964,6 +964,52 @@ class TestMultiCategoryRetailerSignal:
 
         assert result.validated is True
 
+    def test_domain_name_containing_a_cluster_word_is_not_a_false_match(self):
+        """Real over-correction found live: autoflex.hu (a genuine
+        Hungarian trailer parts manufacturer, "Autoflex-Knott Kft.",
+        already a confirmed real supplier) was wrongly rejected -- its
+        OWN domain name/email address ("autoflex.hu", "info@autoflex.hu")
+        appears in the page footer, and a naive substring check matched
+        "auto" inside "autoflex" even though there's no word boundary
+        there. The page's real "webshop" self-description plus this
+        false "auto" match combined with a second real cluster word
+        would have wrongly tripped this signal."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Trailer parts from the manufacturer, trailer parts webshop. "
+                 "Mudguards, axles, coupling heads and hubs in stock. "
+                 "Autoflex-Knott Kft. Kecskemet. Tel: (+36) 76/481-515. "
+                 "E-mail: info@autoflex.hu",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Autoflex-Knott Kft.", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(
+            Candidate(title="Autoflex-Knott Kft.", link="https://autoflex.hu/",
+                      snippet="Autoflex-Knott trailer mudguards", domain="autoflex.hu"),
+            "mudguard",
+        )
+
+        assert result.validated is True
+
+    def test_transport_does_not_false_match_the_sport_cluster_word(self):
+        """"sport" is a substring of "transport" -- a word every
+        trailer/logistics manufacturer's page uses constantly. Without
+        word-boundary matching this would trip the sport cluster (a
+        false SECOND cluster match alongside the genuine "auto" one
+        below) on virtually any such page."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co -- online shop for trailer mudguards and "
+                 "auto spares, serving the road transport industry nationwide.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "mudguard")
+
+        # Only ONE real cluster word ("auto") is genuinely present --
+        # "transport" must not count as a false second ("sport") match.
+        assert result.validated is True
+
 
 class TestAftermarketDistributorSignal:
     """Real bug this guards against: TRP (trp.eu) was VALIDATED as a
