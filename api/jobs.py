@@ -366,6 +366,7 @@ def run_discovery_job(job_id: str, options: Dict[str, Any]) -> None:
                 max_candidates=options.get("max_candidates", 20), source=options.get("source", "serpapi"),
                 progress_callback=on_progress,
                 recover_dead_domains=options.get("recover_dead_domains", False),
+                deep_collect=options.get("deep_collect", False),
             )
         repo.mark_pipeline_job_completed(job_id, stats=dataclasses.asdict(outcome))
     except Exception as e:

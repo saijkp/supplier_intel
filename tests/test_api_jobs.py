@@ -420,13 +420,13 @@ class FakeDiscoveryService:
         FakeDiscoveryService.last_instance = self
 
     def discover(self, product, category=None, country=None, max_candidates=20, source="serpapi",
-                 progress_callback=None, recover_dead_domains=False):
+                 progress_callback=None, recover_dead_domains=False, deep_collect=False):
         from discovery.discovery_service import DiscoveryOutcome
 
         self.last_discover_call = {
             "product": product, "category": category, "country": country,
             "max_candidates": max_candidates, "source": source,
-            "recover_dead_domains": recover_dead_domains,
+            "recover_dead_domains": recover_dead_domains, "deep_collect": deep_collect,
         }
         if progress_callback:
             from discovery.discovery_service import DiscoveryProgressEvent
@@ -458,7 +458,7 @@ class FakeDiscoveryService:
 
 class FailingFakeDiscoveryService(FakeDiscoveryService):
     def discover(self, product, category=None, country=None, max_candidates=20, source="serpapi",
-                 progress_callback=None, recover_dead_domains=False):
+                 progress_callback=None, recover_dead_domains=False, deep_collect=False):
         raise RuntimeError("search API down")
 
 
@@ -477,6 +477,7 @@ class TestRunDiscoveryJob:
         assert call == {
             "product": "trailer axle", "category": "Axles", "country": "China",
             "max_candidates": 15, "source": "serpapi", "recover_dead_domains": False,
+            "deep_collect": False,
         }
         job = repo.get_pipeline_job("job50")
         assert job["status"] == "completed"
@@ -492,6 +493,7 @@ class TestRunDiscoveryJob:
         assert FakeDiscoveryService.last_instance.last_discover_call == {
             "product": "trailer axle", "category": None, "country": None,
             "max_candidates": 20, "source": "serpapi", "recover_dead_domains": False,
+            "deep_collect": False,
         }
 
     def test_source_llm_is_passed_through(self, repo, monkeypatch):
@@ -524,7 +526,7 @@ class TestRunDiscoveryJob:
 
         class DuplicateFiringDiscoveryService(FakeDiscoveryService):
             def discover(self, product, category=None, country=None, max_candidates=20, source="serpapi",
-                         progress_callback=None, recover_dead_domains=False):
+                         progress_callback=None, recover_dead_domains=False, deep_collect=False):
                 if progress_callback:
                     progress_callback(DiscoveryProgressEvent(
                         domain="acmetrailer.com", candidate_title="Acme Trailer Co", extracted_name="Acme Trailer Co",
@@ -651,6 +653,19 @@ class TestRunDiscoveryJob:
         jobs_module.run_discovery_job("job57", {"product": "trailer axle", "recover_dead_domains": True})
 
         assert FakeDiscoveryService.last_instance.last_discover_call["recover_dead_domains"] is True
+
+    def test_deep_collect_passed_through_to_plain_discover(self, repo, monkeypatch):
+        """Regression guard for a real bug: deep_collect was wired into
+        discover_to_target() but the no-target-count discover() branch
+        was missed, so a plain product/category search (no target_count)
+        silently dropped the flag even though the frontend sent it."""
+        monkeypatch.setattr(jobs_module, "DiscoveryService", FakeDiscoveryService)
+
+        repo.create_pipeline_job(job_id="job58", query="[discovery] Mudguard",
+                                  options={"product": "Mudguard", "deep_collect": True})
+        jobs_module.run_discovery_job("job58", {"product": "Mudguard", "deep_collect": True})
+
+        assert FakeDiscoveryService.last_instance.last_discover_call["deep_collect"] is True
 
     def test_recover_dead_domains_passed_through_to_discover_to_target(self, repo, monkeypatch):
         monkeypatch.setattr(jobs_module, "DiscoveryService", FakeDiscoveryService)
