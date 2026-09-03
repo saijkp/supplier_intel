@@ -63,7 +63,7 @@ created as suppliers, so there's no DB row to flag):
 
 **Companies House verified (2026-09-03)**, same UK-offices gate Material
 Handling's roster uses (see `data/source_files/material_handling_14/
-README.md`) — all 7 are `companies_house_match_status = 'verified'` at
+README.md`) — all 9 are `companies_house_match_status = 'verified'` at
 confidence >= 95, `companies_house_status = 'active'`, with a real
 registered office on file. One, Lakeland Tankers Ltd, initially came back
 `no_clear_match` (confidence 44) because the golden record had been named
@@ -76,7 +76,46 @@ re-verified: clean 100-confidence match to Lakeland Tankers Limited,
 #02971298, active, Templeborough Depot, Sheffield Road, Sheffield --
 same county as the site's own stated Barnsley/Hoyland address.
 
-- `confirmed.csv` (7) — Company Name/Website, matching every other
+**2 more added (2026-09-03), from a broader search pass** run specifically
+to check whether real candidates existed outside BCGA/Liquid Gas UK's own
+membership -- a real search pass (`gas cylinder manufacturer UK`,
+`pressure vessel manufacturer UK`, `LPG tank manufacturer UK`) plus a
+check of the **Pressure Vessel Manufacturers Forum (PVMF)**, a real, free,
+UK trade association (sponsored/organised by LRQA, general pressure
+equipment -- not gas-specific) with a public ~18-member list, same
+"broader association, cylinders as one of several products" shape Metal
+Pressing's own suppliers came from rather than one narrow tag:
+- **Wefco (Gainsborough) Ltd** (`wefco.co.uk`) -- own site nav lists "LPG
+  Tanks" as an explicit product line alongside Pressure Vessels and
+  Hydrogen Vessels. On-category, not adjacent. Independently corroborated
+  from both the search pass AND PVMF membership.
+- **Tiverton Fabrications** (`tiverton-fabrications.co.uk`) -- "Custom
+  Cylinder Manufacturer," own site: "cost effective steel fabricators of
+  pressure vessels, bespoke cylinders, vacuum chambers, tubes & cryogenic
+  vessels." Same tier as the BCGA finds (cylinder/vessel manufacturer, not
+  propane-specific). A dedup candidate against an unrelated US company
+  ("CMR Fabrications", `cmrfabrications.com`) fired on the shared word
+  "Fabrications" alone (match score 0.76) -- manually reviewed and
+  rejected (candidate #348): different domain, different country, no
+  merge, same false-positive shape as Metal Pressing's Manor Tool/OEM
+  Manufacturing checks.
+
+**The other 16 PVMF members are real UK manufacturers, but a different
+specific product** -- general industrial pressure vessels/process
+equipment with no gas/LPG-cylinder specificity: CPE Pressure Vessels,
+Abbott & Co (Newark), Barton Firtop Engineering, GFSA Ltd, Glapwell
+Contracting Services, LBBC Beechwood, Portobello-RMF Engineering, QA Weld
+Tech, Glacier Energy Services/Whiteley Read, plus several serving an
+entirely different market -- Gilwood Ltd (now hygienic food-factory
+equipment), Henry Technologies (refrigeration/AC), Spirotech Group
+(refrigeration/chemical holding tanks), FlexEJ (heating expansion
+vessels), KW Designed Solutions (subsea/nuclear test chambers), LTi
+Metaltech (nuclear/defence/MRI-scanner cryostats -- "cryogenic" but
+scientific, not gas storage), Therco-Serck (heat exchangers), TP Group Plc
+(submarine life-support), Pfaudler-Balfour (glass-lined chemical
+reactors). None are gas/LPG cylinder makers.
+
+- `confirmed.csv` (9) — Company Name/Website, matching every other
   category roster's format. `resolve_confirmed_suppliers()` re-checks each
   against the live DB (still exists, still unflagged) rather than trusting
   this snapshot blindly, same as every other category.
