@@ -405,6 +405,24 @@ class SetProductKeywordsRequest(BaseModel):
     )
 
 
+class SetCanonicalNameRequest(BaseModel):
+    """Triggers batch.supplier_correction.SupplierCorrectionService.
+    set_canonical_name -- corrects an already-populated canonical_name
+    directly, no search, no re-collection. Deliberately narrow: this
+    model can express ONLY canonical_name and a reason, nothing else.
+    Unlike SetProductKeywordsRequest, this is NOT guarded -- it always
+    overwrites, since a name correction is a human-directed fix to a
+    value already known to be wrong (e.g. a hybrid/invented name that
+    broke a Companies House search), not a backfill."""
+
+    canonical_name: str = Field(description="The correct name to write, e.g. \"Lakeland Tankers Ltd\".")
+    reason: Optional[str] = Field(
+        default=None,
+        description="Why -- recorded on supplier_change_log. Defaults to a generic note naming "
+                     "the old value if omitted.",
+    )
+
+
 class SourcingRunRequest(BaseModel):
     """Triggers sourcing.sourcing_agent.SourcingAgentService -- one
     free-text procurement brief drives the entire discover -> collect

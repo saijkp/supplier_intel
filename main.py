@@ -1191,12 +1191,19 @@ def history(supplier_id: int) -> None:
                    "product-term match and discover_to_target's Phase 0 database-first check. "
                    "No search, no re-collection. Only ever fills an EMPTY product_keywords -- "
                    "never overwrites an existing value, regardless of what's passed here.")
+@click.option("--set-canonical-name", default=None,
+              help="Correct an already-populated canonical_name directly -- no search, no "
+                   "re-collection. For when a human has confirmed the real name (e.g. a hybrid/"
+                   "invented name that broke a Companies House search, same shape as the "
+                   "Lakeland Tankers fix). Deliberately unguarded: this always overwrites, "
+                   "unlike --set-product-keywords.")
 @click.option("--reason", default=None,
               help="Why this correction is being made -- recorded on supplier_change_log. "
                    "Defaults to a generic note naming the cleared/old value if omitted.")
 def correct_supplier(
     supplier_id: int, clear_domain: bool, set_domain: Optional[str], set_name: Optional[str],
-    flag_duplicate: Optional[str], set_product_keywords: Optional[str], reason: Optional[str],
+    flag_duplicate: Optional[str], set_product_keywords: Optional[str],
+    set_canonical_name: Optional[str], reason: Optional[str],
 ) -> None:
     """Reusable fix for a bad supplier record -- e.g. a false-match domain a validation
     gap let through (see scrapers/company_website_finder.py's own corroboration guards).
@@ -1208,15 +1215,19 @@ def correct_supplier(
     same real pipeline every other write in this codebase does (CompanyWebsiteFinder +
     CollectionService) with a supplier_change_log entry, never a hand-applied database
     patch -- see `python main.py history --supplier-id` to review what changed
-    afterward. Specify exactly one of --clear-domain, --set-domain, --flag-duplicate, or
-    --set-product-keywords; add another --clear-<field>/--set-<field> following the same
-    shape here for a future bad-record class, rather than reaching for raw SQL again."""
+    afterward. Specify exactly one of --clear-domain, --set-domain, --flag-duplicate,
+    --set-product-keywords, or --set-canonical-name; add another --clear-<field>/
+    --set-<field> following the same shape here for a future bad-record class, rather
+    than reaching for raw SQL again."""
     from batch.supplier_correction import SupplierCorrectionService
 
-    modes = [bool(clear_domain), bool(set_domain), bool(flag_duplicate), bool(set_product_keywords)]
+    modes = [
+        bool(clear_domain), bool(set_domain), bool(flag_duplicate),
+        bool(set_product_keywords), bool(set_canonical_name),
+    ]
     if sum(modes) != 1:
         console.print("[red]X[/red] Specify exactly one of --clear-domain, --set-domain, "
-                       "--flag-duplicate, or --set-product-keywords.")
+                       "--flag-duplicate, --set-product-keywords, or --set-canonical-name.")
         raise SystemExit(1)
 
     service = SupplierCorrectionService()
@@ -1226,6 +1237,8 @@ def correct_supplier(
         elif set_product_keywords:
             keywords = [k.strip() for k in set_product_keywords.split(",") if k.strip()]
             result = service.set_product_keywords(supplier_id, keywords, reason=reason)
+        elif set_canonical_name:
+            result = service.set_canonical_name(supplier_id, set_canonical_name, reason=reason)
         elif set_domain:
             console.print("[bold]Setting confirmed domain directly...[/bold] (no search)")
             result = service.set_confirmed_domain(supplier_id, set_domain, canonical_name=set_name, reason=reason)
@@ -1247,6 +1260,9 @@ def correct_supplier(
     if result["status"] == "skipped_not_empty":
         console.print(f"[yellow]![/yellow] Not written -- product_keywords already set: "
                        f"{result['existing_product_keywords']}")
+        return
+    if result["status"] == "set" and "old_canonical_name" in result and "new_domain" not in result:
+        console.print(f"[green]OK[/green] canonical_name set (was {result['old_canonical_name']!r})")
         return
     console.print(f"(was domain: {result['old_domain']!r})")
     if result["status"] == "needs_url":

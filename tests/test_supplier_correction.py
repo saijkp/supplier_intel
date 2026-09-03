@@ -294,3 +294,64 @@ class TestSetProductKeywords:
         )
         with pytest.raises(ValueError):
             service.set_product_keywords(999999, ["injection moulding"])
+
+
+class TestSetCanonicalName:
+    """Corrects an already-populated canonical_name directly -- no
+    search, no re-collection, deliberately unguarded (a human-directed
+    overwrite, not a backfill)."""
+
+    def test_overwrites_an_existing_name(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "RTN Ltd (Lakeland Tankers)", "domain": "rtnltd.co.uk"})
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+
+        result = service.set_canonical_name(supplier_id, "Lakeland Tankers Ltd", reason="matches Companies House")
+
+        assert result["status"] == "set"
+        assert result["canonical_name"] == "Lakeland Tankers Ltd"
+        assert result["old_canonical_name"] == "RTN Ltd (Lakeland Tankers)"
+        assert repo.get_supplier(supplier_id)["canonical_name"] == "Lakeland Tankers Ltd"
+
+        log = repo.get_supplier_change_log(supplier_id)
+        assert any(entry["field_name"] == "canonical_name" for entry in log)
+
+    def test_no_search_or_collection_call_made(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Old Name"})
+        finder = FakeWebsiteFinder()
+        collection = FakeCollectionService()
+        service = SupplierCorrectionService(repo=repo, website_finder=finder, collection_service=collection)
+
+        service.set_canonical_name(supplier_id, "New Name")
+
+        assert finder.calls == []
+        assert collection.calls == []
+
+    def test_domain_is_untouched(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Old Name", "domain": "example.com"})
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+
+        service.set_canonical_name(supplier_id, "New Name")
+
+        assert repo.get_supplier(supplier_id)["domain"] == "example.com"
+
+    def test_default_reason_used_when_none_given(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Old Name"})
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+
+        service.set_canonical_name(supplier_id, "New Name")
+
+        log = repo.get_supplier_change_log(supplier_id)
+        assert "old name" in log[0]["change_reason"].lower()
+
+    def test_raises_on_missing_supplier(self, repo):
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+        with pytest.raises(ValueError):
+            service.set_canonical_name(999999, "New Name")

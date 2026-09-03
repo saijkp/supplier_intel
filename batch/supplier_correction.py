@@ -29,9 +29,12 @@ directly, no search -- for when the ORIGINAL search term was itself
 wrong (a fresh search under the same wrong name just re-surfaces the
 same wrong candidate). `set_product_keywords` backfills a supplier's
 missing category tag directly, guarded so it only ever fills an empty
-value, never overwrites one. Add another `correct_<field>`/`set_<field>`
-method here for a future bad-record class, following the same shape,
-rather than reaching for raw SQL.
+value, never overwrites one. `set_canonical_name` corrects an
+already-populated name directly, no search, no re-collection --
+deliberately unguarded (a human-directed overwrite of a value already
+known to be wrong, not a backfill). Add another `correct_<field>`/
+`set_<field>` method here for a future bad-record class, following the
+same shape, rather than reaching for raw SQL.
 """
 
 from __future__ import annotations
@@ -248,4 +251,39 @@ class SupplierCorrectionService:
         return {
             "supplier_id": supplier_id, "canonical_name": supplier.get("canonical_name"),
             "status": "set", "product_keywords": product_keywords,
+        }
+
+    def set_canonical_name(
+        self, supplier_id: int, canonical_name: str, reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Corrects a supplier's canonical_name directly -- for when a
+        human has already confirmed the real name (e.g. against the
+        original source listing, or a Companies House match whose
+        free-text search only succeeded once a hybrid/invented name was
+        replaced with the real one -- see the Lakeland Tankers fix this
+        session) and the fix is purely a naming correction, not a
+        domain problem. Deliberately a direct, unguarded overwrite --
+        unlike set_product_keywords (which only ever fills an empty
+        value), a name correction is explicitly replacing an already-
+        populated field a human has determined to be wrong, the same
+        "human already verified this, just write it" semantics
+        set_confirmed_domain uses for domain. No search, no
+        re-collection -- reusing set_confirmed_domain here (passing the
+        unchanged domain just to smuggle in a name fix) would trigger a
+        real, unnecessary re-collection for a fact that doesn't need
+        one, the same reasoning set_product_keywords's own docstring
+        gives for not reusing correct_domain."""
+        supplier = self.repo.get_supplier(supplier_id)
+        if supplier is None:
+            raise ValueError(f"No supplier with id={supplier_id}")
+
+        old_name = supplier.get("canonical_name")
+        set_reason = reason or f"manual correction: canonical_name corrected (was {old_name!r})"
+        self.repo.update_supplier_fields_with_history(
+            supplier_id, {"canonical_name": canonical_name},
+            changed_by="manual", change_reason=set_reason,
+        )
+        return {
+            "supplier_id": supplier_id, "canonical_name": canonical_name,
+            "old_canonical_name": old_name, "status": "set",
         }

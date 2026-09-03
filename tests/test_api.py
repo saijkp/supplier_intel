@@ -844,6 +844,66 @@ class TestSetProductKeywordsEndpoint:
         assert job["options"]["reason"] == "roster backfill"
 
 
+class TestSetCanonicalNameEndpoint:
+
+    def test_creating_a_job_returns_202_with_a_job_id(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "RTN Ltd (Lakeland Tankers)"})
+        response = client.post(
+            f"/suppliers/{supplier_id}/set-canonical-name",
+            json={"canonical_name": "Lakeland Tankers Ltd"},
+            headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        body = response.json()
+        assert body["status"] == "queued"
+        assert body["query"] == f"[set-canonical-name] #{supplier_id}"
+        assert body["id"]
+
+    def test_reason_is_optional(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Old Name"})
+        response = client.post(
+            f"/suppliers/{supplier_id}/set-canonical-name",
+            json={"canonical_name": "New Name"},
+            headers=auth_headers(),
+        )
+        assert response.status_code == 202
+
+    def test_missing_supplier_is_404(self, client):
+        response = client.post(
+            "/suppliers/999999/set-canonical-name",
+            json={"canonical_name": "New Name"},
+            headers=auth_headers(),
+        )
+        assert response.status_code == 404
+
+    def test_missing_canonical_name_is_422(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Old Name"})
+        response = client.post(
+            f"/suppliers/{supplier_id}/set-canonical-name", json={}, headers=auth_headers(),
+        )
+        assert response.status_code == 422
+
+    def test_requires_auth(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Old Name"})
+        response = client.post(
+            f"/suppliers/{supplier_id}/set-canonical-name",
+            json={"canonical_name": "New Name"},
+        )
+        assert response.status_code == 401
+
+    def test_canonical_name_and_reason_pass_through_to_job_options(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Old Name"})
+        response = client.post(
+            f"/suppliers/{supplier_id}/set-canonical-name",
+            json={"canonical_name": "New Name", "reason": "matches Companies House"},
+            headers=auth_headers(),
+        )
+        job_id = response.json()["id"]
+        job = client.repo.get_pipeline_job(job_id)
+        assert job["options"]["canonical_name"] == "New Name"
+        assert job["options"]["reason"] == "matches Companies House"
+
+
 class TestBackfillDiscoveryProductKeywordsEndpoint:
 
     def test_backfills_supplier_created_by_a_completed_discovery_job(self, client):

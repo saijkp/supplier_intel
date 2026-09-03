@@ -504,6 +504,33 @@ def run_set_product_keywords_job(job_id: str, supplier_id: int, options: Dict[st
         repo.mark_pipeline_job_failed(job_id, error=str(e))
 
 
+def run_set_canonical_name_job(job_id: str, supplier_id: int, options: Dict[str, Any]) -> None:
+    """The HTTP equivalent of `python main.py correct-supplier
+    <supplier_id> --set-canonical-name` -- same reason this needs an
+    HTTP path at all as run_set_product_keywords_job above (production's
+    database isn't network-reachable). Business logic lives in
+    batch.supplier_correction.SupplierCorrectionService.
+    set_canonical_name, shared with that CLI flag. No search, no
+    re-collection, and deliberately unguarded -- see that method's own
+    docstring for why this always overwrites rather than only filling
+    an empty value."""
+    repo = SupplierRepository()
+    repo.mark_pipeline_job_running(job_id)
+    try:
+        from batch.supplier_correction import SupplierCorrectionService
+
+        service = SupplierCorrectionService(repo=repo)
+        result = service.set_canonical_name(
+            supplier_id, options["canonical_name"], reason=options.get("reason"),
+        )
+        repo.mark_pipeline_job_completed(job_id, stats=result)
+    except ValueError as e:
+        repo.mark_pipeline_job_failed(job_id, error=str(e))
+    except Exception as e:
+        logger.error("Set-canonical-name job %s (supplier #%s) failed: %s", job_id, supplier_id, e)
+        repo.mark_pipeline_job_failed(job_id, error=str(e))
+
+
 def run_sourcing_job(job_id: str, options: Dict[str, Any]) -> None:
     """The HTTP equivalent of one chat message on the frontend's Source
     tab. A sourcing run can easily take minutes (many discover->collect

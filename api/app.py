@@ -50,6 +50,7 @@ from api.jobs import (
     run_factory_facts_job,
     run_pipeline_job,
     run_reverify_job,
+    run_set_canonical_name_job,
     run_set_product_keywords_job,
     run_single_company_job,
     run_sourcing_job,
@@ -72,6 +73,7 @@ from api.models import (
     SingleCompanyEnrichRequest,
     SourcingRunRequest,
     SourcingRunResponse,
+    SetCanonicalNameRequest,
     SetProductKeywordsRequest,
     SupplierCorrectionRequest,
     SupplierSearchResult,
@@ -514,6 +516,43 @@ def create_set_product_keywords_job(
         job_id=job_id, query=f"[set-product-keywords] #{supplier_id}", options=options,
     )
     background_tasks.add_task(run_set_product_keywords_job, job_id, supplier_id, options)
+    job = repo.get_pipeline_job(job_id)
+    return _to_job_response(job)
+
+
+@app.post(
+    "/suppliers/{supplier_id}/set-canonical-name",
+    response_model=PipelineJobResponse,
+    status_code=202,
+    dependencies=[Depends(require_api_token)],
+)
+def create_set_canonical_name_job(
+    supplier_id: int,
+    request: SetCanonicalNameRequest,
+    background_tasks: BackgroundTasks,
+    repo: SupplierRepository = Depends(get_repo),
+) -> PipelineJobResponse:
+    """The HTTP equivalent of `python main.py correct-supplier
+    <supplier_id> --set-canonical-name` -- corrects an already-populated
+    canonical_name directly (no search, no re-collection), same reason
+    this needs an HTTP path at all as set-product-keywords above.
+    Deliberately narrow: SetCanonicalNameRequest can express ONLY
+    canonical_name and a reason. Unlike set-product-keywords, this is
+    NOT guarded -- it always overwrites, since a name correction is a
+    human-directed fix to a value already known to be wrong (see
+    batch.supplier_correction.SupplierCorrectionService.
+    set_canonical_name's own docstring). Same async job/poll pattern as
+    every other job endpoint -- see api/jobs.py's
+    run_set_canonical_name_job for the full flow. 404 if the supplier
+    doesn't exist."""
+    if repo.get_supplier(supplier_id) is None:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    job_id = str(uuid.uuid4())
+    options = request.model_dump()
+    repo.create_pipeline_job(
+        job_id=job_id, query=f"[set-canonical-name] #{supplier_id}", options=options,
+    )
+    background_tasks.add_task(run_set_canonical_name_job, job_id, supplier_id, options)
     job = repo.get_pipeline_job(job_id)
     return _to_job_response(job)
 
