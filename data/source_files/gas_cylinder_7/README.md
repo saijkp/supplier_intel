@@ -17,10 +17,11 @@ as every other source check this session.
   name-by-name pass across all ~106 real members (the site's own
   business-type filter is client-side/AJAX, not exercisable via a plain
   fetch, so every member was checked individually rather than filtered).
-  2 genuine UK manufacturers found: RTN Ltd (trading subsidiary Lakeland
-  Tankers Ltd) — own site: "RTN in partnership with our subsidiary company
-  Lakeland Tankers Ltd... manufacture LPG tankers to the highest quality" —
-  and Old Park Engineering Services Ltd — own site: "we design and
+  2 genuine UK manufacturers found: Lakeland Tankers Ltd (hosted on parent
+  company RTN Ltd's own site, rtnltd.co.uk) — own site: "RTN in partnership
+  with our subsidiary company Lakeland Tankers Ltd... manufacture LPG
+  tankers to the highest quality" — and Old Park Engineering Services Ltd
+  — own site: "we design and
   manufacture a range of LPG vaporisers." A 3rd, OmegaFlex Ltd (brand:
   TracPipe) — "a BSI Kitemarked stainless steel semi-rigid gas piping
   system, manufactured in Oxfordshire since 2007" — was added after the
@@ -60,16 +61,20 @@ created as suppliers, so there's no DB row to flag):
   happen to be trade-association members — not manufacturers, not
   disguised as any.
 
-**Open item, not yet done**: unlike Material Handling's roster (see
-`data/source_files/material_handling_14/README.md`), none of these 7 have
-been run through Companies House verification yet
-(`verification/uk_company_verification_service.py`) — the original sourcing
-brief for this category called for that same UK-offices gate before
-treating a candidate as fully confirmed, on top of the real-site
-manufacture check already done here. `confirmed.csv` below reflects "real,
-grounded, site-verified manufacturer" only, not "Companies House verified
-UK company" — do that pass before relying on this roster the way Material
-Handling's is relied on.
+**Companies House verified (2026-09-03)**, same UK-offices gate Material
+Handling's roster uses (see `data/source_files/material_handling_14/
+README.md`) — all 7 are `companies_house_match_status = 'verified'` at
+confidence >= 95, `companies_house_status = 'active'`, with a real
+registered office on file. One, Lakeland Tankers Ltd, initially came back
+`no_clear_match` (confidence 44) because the golden record had been named
+"RTN Ltd (Lakeland Tankers)" -- a hybrid invented during sourcing, not the
+company's real name -- and the parenthetical broke Companies House's
+free-text search. Corrected `canonical_name` to `Lakeland Tankers Ltd`
+(the actual Liquid Gas UK member name, and the entity that owns the site
+content on rtnltd.co.uk, its parent company RTN Ltd's domain) and
+re-verified: clean 100-confidence match to Lakeland Tankers Limited,
+#02971298, active, Templeborough Depot, Sheffield Road, Sheffield --
+same county as the site's own stated Barnsley/Hoyland address.
 
 - `confirmed.csv` (7) — Company Name/Website, matching every other
   category roster's format. `resolve_confirmed_suppliers()` re-checks each
