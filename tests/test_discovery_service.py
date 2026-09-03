@@ -889,6 +889,100 @@ class TestDiscoverToTargetExistingDatabasePhase:
         assert events[0].status == "existing"
 
 
+class TestDiscoverToTargetPhase05TradeSource:
+    """Phase 0.5 -- opt-in (check_trade_source=True), informational
+    only. Tests the WIRING only (does discover_to_target call the
+    finder when asked, does a real candidate fire the right event, does
+    Round 1 proceed regardless) -- the finder's own fetchability logic
+    is covered in isolation by tests/test_trade_source_finder.py, so
+    these monkeypatch discovery.discovery_service.find_candidate_trade_source
+    directly rather than re-testing real search+fetch behaviour through
+    two layers of fakes."""
+
+    def test_off_by_default_never_called(self, repo, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "discovery.discovery_service.find_candidate_trade_source",
+            lambda *a, **k: calls.append((a, k)),
+        )
+        service, _ = _multi_candidate_service(repo, n=1)
+
+        service.discover_to_target("trailer axle", target_count=1)
+
+        assert calls == []
+
+    def test_enabled_calls_the_finder_with_the_product(self, repo, monkeypatch):
+        calls = []
+
+        def fake_find(product, google_scraper=None, **kwargs):
+            calls.append(product)
+            return None
+
+        monkeypatch.setattr("discovery.discovery_service.find_candidate_trade_source", fake_find)
+        service, _ = _multi_candidate_service(repo, n=1)
+
+        service.discover_to_target("trailer axle", target_count=1, check_trade_source=True)
+
+        assert calls == ["trailer axle"]
+
+    def test_found_candidate_fires_a_round_zero_trade_source_event(self, repo, monkeypatch):
+        from discovery.trade_source_finder import TradeSourceCandidate
+
+        monkeypatch.setattr(
+            "discovery.discovery_service.find_candidate_trade_source",
+            lambda *a, **k: TradeSourceCandidate(domain="assoc.example", title="Trailer Axle Assoc", snippet="A real trade body"),
+        )
+        service, _ = _multi_candidate_service(repo, n=1)
+        events = []
+
+        service.discover_to_target("trailer axle", target_count=1, check_trade_source=True, progress_callback=events.append)
+
+        trade_events = [e for e in events if e.status == "trade_source_found"]
+        assert len(trade_events) == 1
+        assert trade_events[0].round == 0
+        assert trade_events[0].domain == "assoc.example"
+        assert trade_events[0].candidate_title == "Trailer Axle Assoc"
+        assert trade_events[0].badge == "trade_source"
+
+    def test_no_candidate_found_fires_no_event(self, repo, monkeypatch):
+        monkeypatch.setattr("discovery.discovery_service.find_candidate_trade_source", lambda *a, **k: None)
+        service, _ = _multi_candidate_service(repo, n=1)
+        events = []
+
+        service.discover_to_target("trailer axle", target_count=1, check_trade_source=True, progress_callback=events.append)
+
+        assert all(e.status != "trade_source_found" for e in events)
+
+    def test_finder_exception_does_not_block_round_1(self, repo, monkeypatch):
+        def raiser(*a, **k):
+            raise RuntimeError("serpapi down")
+
+        monkeypatch.setattr("discovery.discovery_service.find_candidate_trade_source", raiser)
+        service, _ = _multi_candidate_service(repo, n=1)
+
+        outcome = service.discover_to_target("trailer axle", target_count=1, check_trade_source=True)
+
+        assert outcome.reached_target is True
+        assert outcome.rounds_run == 1
+
+    def test_skipped_entirely_when_phase_0_already_reached_target(self, repo, monkeypatch):
+        """Phase 0.5 only makes sense as a pre-Round-1 step -- if the
+        existing database alone already satisfies target_count, there's
+        no fresh discovery about to happen, so the extra search would
+        be pure waste."""
+        repo.create_golden_record({"canonical_name": "Acme Trailer Axles", "domain": "acme-axles.example.com", "product_keywords": ["trailer axle"]})
+        calls = []
+        monkeypatch.setattr(
+            "discovery.discovery_service.find_candidate_trade_source",
+            lambda *a, **k: calls.append(a) or None,
+        )
+        service, _ = _multi_candidate_service(repo, n=1)
+
+        service.discover_to_target("trailer axle", target_count=1, check_trade_source=True)
+
+        assert calls == []
+
+
 class FakeLLMCandidateSource:
     """Mirrors FakeGoogleScraper's convention: a fixed return value,
     recording every call for assertion."""

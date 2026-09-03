@@ -678,6 +678,22 @@ class TestDiscoveryJobEndpoints:
         assert job["options"]["target_count"] is None
         assert job["options"]["max_multiplier"] == 5
 
+    def test_check_trade_source_defaults_to_false(self, client):
+        response = client.post("/discovery/jobs", json={"product": "trailer axle"}, headers=auth_headers())
+        job_id = response.json()["id"]
+        job = client.repo.get_pipeline_job(job_id)
+        assert job["options"]["check_trade_source"] is False
+
+    def test_check_trade_source_accepted_and_stored(self, client):
+        response = client.post(
+            "/discovery/jobs", json={"product": "trailer axle", "target_count": 5, "check_trade_source": True},
+            headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        job_id = response.json()["id"]
+        job = client.repo.get_pipeline_job(job_id)
+        assert job["options"]["check_trade_source"] is True
+
 
 class TestSingleCompanyEnrichEndpoint:
 

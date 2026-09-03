@@ -66,6 +66,7 @@ from discovery.candidate_validator import (
 from discovery.companies_house_sic_source import CompaniesHouseSicSource
 from discovery.llm_candidate_source import LLMCandidateSource
 from discovery.query_builder import build_queries
+from discovery.trade_source_finder import find_candidate_trade_source
 from storage.repository import SupplierRepository
 
 logger = logging.getLogger(__name__)
@@ -109,9 +110,9 @@ class DiscoveryProgressEvent:
     domain: str
     candidate_title: str  # candidate.title from the search hit -- best label before/without a validated name
     extracted_name: Optional[str]
-    status: str   # "validated" | "rejected" | "duplicate" | "existing" (Phase 0 database match, round=0 -- see discover_to_target)
+    status: str   # "validated" | "rejected" | "duplicate" | "existing" (Phase 0 database match, round=0) | "trade_source_found" (Phase 0.5, round=0, informational only -- see discover_to_target)
     reason: str
-    badge: str    # "marketplace" | "trader" | "term_missing" | "uk_not_registered" | "fetch_failed" | "name_mismatch" | "validated" | "duplicate" | "existing" | "other"
+    badge: str    # "marketplace" | "trader" | "term_missing" | "uk_not_registered" | "fetch_failed" | "name_mismatch" | "validated" | "duplicate" | "existing" | "trade_source" | "other"
     round: int = 1              # stamped by discover_to_target() when orchestrating multiple rounds; 1 for a bare discover() call; 0 is Phase 0's existing-database check, before any fresh-discovery spend
     round_examined: int = 0     # outcome.candidates_examined at the moment this event fired, for the discover() call that produced it (not cumulative across rounds)
     round_validated: int = 0    # outcome.candidates_validated at the moment this event fired, same scope as round_examined
@@ -404,6 +405,7 @@ class DiscoveryService:
         allow_llm_fallback: bool = True,
         progress_callback: Optional[Callable[[DiscoveryProgressEvent], None]] = None,
         recover_dead_domains: bool = False,
+        check_trade_source: bool = False,
     ) -> DiscoveryToTargetOutcome:
         """Round-based "keep going until N validated suppliers are
         found, but stop well before unbounded spend" orchestrator built
@@ -443,6 +445,22 @@ class DiscoveryService:
         than a real search hit, weaker provenance (see this module's own
         docstring on verification.scorer.SOURCE_QUALITY_WEIGHTS), tried
         only after both real-search rounds have been exhausted.
+
+        Phase 0.5 (opt-in via check_trade_source=True, only runs if
+        Phase 0 didn't already satisfy the target): ONE real SerpAPI
+        search for a plausible trade-association/directory page for
+        `product`, via discovery.trade_source_finder.
+        find_candidate_trade_source -- see that module's own docstring
+        for the fetchability check (parking-page + bot-wall signatures,
+        no crawl). Purely informational: if a real, fetchable candidate
+        page is found, it's surfaced as a round=0 progress event
+        (status="trade_source_found") for a human (or a follow-up
+        session) to decide whether to build a real member-list pass
+        around it -- nothing is scraped for member names and nothing is
+        auto-imported, and Round 1 below runs exactly as it would
+        without this flag either way. Off by default: it's a real extra
+        SerpAPI search on every call, on top of whatever Round 1-3
+        already cost.
 
         Each round's progress events are stamped with their round number
         before being forwarded to `progress_callback`, so a live UI can
@@ -524,6 +542,28 @@ class DiscoveryService:
             result.reached_target = True
             result.stopped_reason = "target_reached_from_existing_database"
             return result
+
+        # Phase 0.5 -- opt-in, informational only, never blocks Round 1.
+        if check_trade_source:
+            try:
+                trade_source = find_candidate_trade_source(product, google_scraper=self.google_scraper)
+            except Exception as e:  # noqa: BLE001 -- must never block falling through to Round 1
+                logger.error("discover_to_target: trade-source check failed for product=%r: %s", product, e)
+                trade_source = None
+            if trade_source and progress_callback:
+                progress_callback(DiscoveryProgressEvent(
+                    domain=trade_source.domain,
+                    candidate_title=trade_source.title,
+                    extracted_name=None,
+                    status="trade_source_found",
+                    reason=(
+                        f"real, fetchable page found for {product!r} -- a real trade-association/"
+                        f"directory candidate, NOT a validated supplier list; still needs a manual "
+                        f"per-member pass before trusting anything on it"
+                    ),
+                    badge="trade_source",
+                    round=0,
+                ))
 
         # Round 1
         outcome1 = self.discover(

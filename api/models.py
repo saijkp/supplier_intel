@@ -310,6 +310,16 @@ class DiscoveryJobRequest(BaseModel):
                      "top result through the SAME real gate -- zero special trust for a recovered "
                      "candidate. Real extra SerpAPI+fetch+OpenAI cost per dead candidate.",
     )
+    check_trade_source: bool = Field(
+        default=False,
+        description="Opt-in, only used when target_count is set: before Round 1, run ONE real "
+                     "SerpAPI search for a trade-association/directory page for this product "
+                     "(discovery/trade_source_finder.py) and, if a real fetchable page is found "
+                     "(not a parking page, not a bot/JS-challenge wall), surface it as a "
+                     "round=0 progress event -- informational only, nothing is scraped for "
+                     "member names and nothing is auto-imported. One extra real SerpAPI search "
+                     "per call when enabled.",
+    )
 
 
 class SingleCompanyEnrichRequest(BaseModel):
