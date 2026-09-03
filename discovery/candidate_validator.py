@@ -77,6 +77,15 @@ A candidate is "validated" only if every gate passes:
    (never replaces it), so the trader self-declaration/soft-signal
    checks below still see everything the homepage already offered.
 
+   That same fallback also widened gate 7's real exposure: a deeper
+   page is more likely than a homepage to incidentally satisfy gate 6
+   for a page that was never a manufacturer's own site at all. Three
+   soft signals were added to close the real false positives this
+   produced (_find_multi_category_retailer_signal, gate 2's new
+   _is_stock_media_domain check, _find_aftermarket_distributor_signal)
+   -- see each one's own docstring/comment for the exact real case
+   (ECD Germany, Getty Images, TRP) it closes.
+
 Gate 3.5 -- UK Companies House registration, opt-in via
 `companies_house_client` (None by default -- every other product
 category has no reason to pay this extra free API round-trip, and the
@@ -131,6 +140,7 @@ from deduplication.name_utils import (
 from discovery.candidate_extractor import Candidate
 from llm.client import LLMClient
 from llm.prompts import GROUNDED_COMPANY_NAME_EXTRACTION_SYSTEM_PROMPT
+from scrapers.company_website_finder import _is_stock_media_domain
 from verification.uk_company_verification_service import match_company_name_against_companies_house
 from verification.website_contact_extractor import parking_page_reason
 
@@ -256,6 +266,91 @@ def _find_trader_soft_signal(page_text: str) -> str | None:
         match = pattern.search(page_text)
         if match:
             return match.group(0)
+    return None
+
+
+# Curated cross-category noun clusters -- each cluster is a DIFFERENT,
+# unrelated retail category. A genuine single-product manufacturer's
+# own page never juxtaposes nouns from two different clusters in an
+# "online shop" self-description; a general multi-category retailer
+# routinely does. Found live: ECD Germany (ecdgermany.de) was VALIDATED
+# as a "trailer mudguard manufacturer" candidate -- gate 6's deeper-
+# page fallback matched a real auto-parts subpage that genuinely
+# mentioned "mudguard", but the company's own homepage self-describes
+# as "Online-Shop fur Haus, Garten & Autoteile" ("online shop for
+# house, garden & auto parts") -- a general household/garden/auto
+# retailer selling third-party brands, not a mudguard manufacturer.
+# Bilingual (German/English) since the found case was German and a
+# "home, garden & auto" self-description is an equally common English
+# general-store tagline.
+_RETAILER_CATEGORY_CLUSTERS: tuple = (
+    ("haus", "home", "möbel", "furniture", "wohnen"),
+    ("garten", "garden"),
+    ("auto", "autoteile", "automotive", "car parts", "kfz"),
+    ("sport", "sporting goods", "fitness"),
+    ("kinder", "kids", "toys", "spielzeug"),
+    ("werkzeug", "tools", "hardware", "baumarkt"),
+)
+
+_SHOP_SELF_DESCRIPTION_PATTERN = re.compile(
+    r"\b(online[- ]?shop|webshop|web\s+shop)\b", re.I,
+)
+
+
+def _find_multi_category_retailer_signal(page_text: str) -> str | None:
+    """A soft trader signal distinct from _TRADER_SOFT_SIGNAL_PATTERNS:
+    requires BOTH an explicit "online shop"-style self-description AND
+    nouns from at least two DIFFERENT _RETAILER_CATEGORY_CLUSTERS
+    appearing on the same page -- narrow enough that a real focused
+    manufacturer's page (which never self-describes as an "online shop"
+    spanning unrelated categories) can't trip it, see the cluster
+    table's own comment for the real case this closes."""
+    haystack = (page_text or "").lower()
+    if not _SHOP_SELF_DESCRIPTION_PATTERN.search(haystack):
+        return None
+    matched_words: list[str] = []
+    for cluster in _RETAILER_CATEGORY_CLUSTERS:
+        for word in cluster:
+            if word in haystack:
+                matched_words.append(word)
+                break
+    if len(matched_words) >= 2:
+        return f"self-describes as an online shop spanning unrelated categories ({', '.join(matched_words)})"
+    return None
+
+
+# "Aftermarket" alone is too common a word for a genuine parts
+# manufacturer to avoid entirely (many describe their own output as
+# serving "the aftermarket"), so this requires it to co-occur with
+# distribution-SCALE language -- a real manufacturer states production
+# capacity/certifications, a distributor states its reach. Found live:
+# TRP (trp.eu) was VALIDATED as a "trailer mudguard manufacturer"
+# candidate -- it never tripped _TRADER_SELF_DECLARATION_PHRASES or
+# _TRADER_SOFT_SIGNAL_PATTERNS (no "we are a distributor", no
+# "authorized distributor of X", no plural "distributors" phrasing),
+# but its own homepage says "a trusted leader in the aftermarket
+# sector" with "80,000+ parts...through...over 2300 sales outlets and
+# 20 global distribution centers in +95 countries" -- unambiguous
+# distribution-network scale, not a factory's own output.
+_AFTERMARKET_DISTRIBUTION_SCALE_PATTERN = re.compile(
+    r"\d[\d,]*\+?\s+(sales\s+outlets?|distribution\s+cent(?:er|re)s?|"
+    r"sales\s+channels?|points?\s+of\s+sale|service\s+cent(?:er|re)s?|retail\s+outlets?)",
+    re.I,
+)
+
+
+def _find_aftermarket_distributor_signal(page_text: str) -> str | None:
+    """True (returns the matched excerpt) only when the page mentions
+    "aftermarket" AND states distribution-scale language (a number of
+    sales outlets/distribution centers/etc.) -- see
+    _AFTERMARKET_DISTRIBUTION_SCALE_PATTERN's own comment for why both
+    are required, and the real case this closes."""
+    haystack = page_text or ""
+    if "aftermarket" not in haystack.lower():
+        return None
+    match = _AFTERMARKET_DISTRIBUTION_SCALE_PATTERN.search(haystack)
+    if match:
+        return f'"aftermarket" self-positioning combined with distribution-scale language ({match.group(0)!r})'
     return None
 
 
@@ -545,6 +640,7 @@ def _mentions_product_term(page_text: str, product_term: str) -> bool:
 # this module's own docstring -- reaching gate N's reason implies every
 # earlier gate already passed.
 REASON_MARKETPLACE_HOST_PREFIX = "candidate domain is a known B2B marketplace host"  # gate 2
+REASON_STOCK_MEDIA_HOST_PREFIX = "candidate domain is a known stock-photo/media platform"  # gate 2
 REASON_FETCH_EXCEPTION_PREFIX = "fetch failed"                                   # gate 3 (raised)
 REASON_FETCH_UNSUCCESSFUL_PREFIX = "could not fetch candidate site"              # gate 3 (no success/no pages)
 REASON_EMPTY_PAGE = "fetched page had no readable text"                          # gate 3 (blank text)
@@ -789,6 +885,20 @@ class CandidateValidator:
                 f"{REASON_MARKETPLACE_HOST_PREFIX}: {candidate.domain}",
             )
 
+        if _is_stock_media_domain(candidate.domain):
+            # Same reasoning as the marketplace check just above, same
+            # defence-in-depth relationship to candidate_extractor.py's
+            # own _is_usable_candidate_domain (which now also excludes
+            # these upstream) -- a stock-photo/media platform is never
+            # an independent company's own site, no matter what its
+            # search-result title/snippet or a specific listing page
+            # says. See _is_stock_media_domain's own docstring for the
+            # real Getty Images false positive this closes.
+            return ValidationResult(
+                candidate, False, None, None, None,
+                f"{REASON_STOCK_MEDIA_HOST_PREFIX}: {candidate.domain}",
+            )
+
         fetch_result, fetch_failure_reason = self._fetch_candidate_site(candidate.domain)
         if fetch_result is None:
             return ValidationResult(candidate, False, None, None, None, fetch_failure_reason)
@@ -912,7 +1022,11 @@ class CandidateValidator:
                 f"'{self_declared_trader}') -- excluded, not a manufacturer",
             )
 
-        soft_trader_signal = None if skip_soft_trader_signals else _find_trader_soft_signal(page_text)
+        soft_trader_signal = None if skip_soft_trader_signals else (
+            _find_trader_soft_signal(page_text)
+            or _find_multi_category_retailer_signal(page_text)
+            or _find_aftermarket_distributor_signal(page_text)
+        )
         if soft_trader_signal:
             return ValidationResult(
                 candidate, False, extracted_name, extracted_country, score,

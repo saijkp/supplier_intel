@@ -896,6 +896,133 @@ class TestSoftTraderSignalExclusion:
         assert result.validated is True
 
 
+class TestMultiCategoryRetailerSignal:
+    """Real bug this guards against: ECD Germany (ecdgermany.de) was
+    VALIDATED as a "trailer mudguard manufacturer" -- gate 6's deeper-
+    page fallback matched a real auto-parts subpage genuinely
+    mentioning "mudguard", but the company's own homepage self-
+    describes as "Online-Shop fur Haus, Garten & Autoteile" (online
+    shop for house, garden & auto parts) -- a general household/
+    garden/auto retailer, not a mudguard manufacturer."""
+
+    def test_real_ecd_germany_shaped_text_is_rejected(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co -- Online-Shop fur Haus, Garten & Autoteile. "
+                 "Trailer mudguard sets in stock, sourced from leading brands.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "mudguard")
+
+        assert result.validated is False
+        assert "spanning unrelated categories" in result.reason
+
+    def test_english_equivalent_phrasing_is_also_rejected(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Online Shop for Home, Garden and Auto parts. "
+                 "Browse our mudguard range today.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Online Shop", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(
+            Candidate(title="Acme Online Shop", link="https://acmetrailer.com/",
+                      snippet="Acme Online Shop mudguard range", domain="acmetrailer.com"),
+            "mudguard",
+        )
+
+        assert result.validated is False
+
+    def test_shop_wording_alone_without_a_second_category_is_not_rejected(self):
+        """Only ONE category cluster (auto) is present -- a focused
+        single-category shop/manufacturer must not be caught; this
+        signal requires genuinely unrelated categories together."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co -- online shop for trailer mudguards and auto spares.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "mudguard")
+
+        assert result.validated is True
+
+    def test_cross_category_words_without_shop_self_description_are_not_rejected(self):
+        """A genuine manufacturer's page can legitimately mention
+        several unrelated nouns in passing (e.g. product applications)
+        without ever framing itself as a general "online shop" --
+        requiring BOTH conditions avoids over-triggering on that."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co manufactures mudguards used across auto, garden "
+                 "and sport trailer applications.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "mudguard")
+
+        assert result.validated is True
+
+
+class TestAftermarketDistributorSignal:
+    """Real bug this guards against: TRP (trp.eu) was VALIDATED as a
+    "trailer mudguard manufacturer" -- it tripped no existing trader
+    pattern (no "we are a distributor", no "authorized distributor of
+    X"), but its own homepage says "a trusted leader in the aftermarket
+    sector" with "over 2300 sales outlets and 20 global distribution
+    centers" -- unambiguous distribution-network scale, not a
+    factory's own output."""
+
+    def test_real_trp_shaped_text_is_rejected(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme is a trusted leader in the aftermarket sector, offering "
+                 "80,000+ mudguard parts through over 2300 sales outlets and "
+                 "20 global distribution centers in +95 countries.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(
+            Candidate(title="Acme", link="https://acmetrailer.com/", snippet="Acme mudguard parts",
+                      domain="acmetrailer.com"),
+            "mudguard",
+        )
+
+        assert result.validated is False
+        assert "aftermarket" in result.reason
+
+    def test_aftermarket_alone_without_distribution_scale_is_not_rejected(self):
+        """A genuine manufacturer routinely describes its own output as
+        serving "the aftermarket" -- that word alone must not be
+        disqualifying; distribution-SCALE language must co-occur."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co manufactures mudguards in-house for the "
+                 "commercial vehicle aftermarket.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "mudguard")
+
+        assert result.validated is True
+
+    def test_distribution_scale_language_without_aftermarket_is_not_rejected(self):
+        """A genuine manufacturer describing its OWN sales network scale
+        (e.g. "500 dealers") without ever using the word "aftermarket"
+        must not be caught by this specific signal -- narrower than a
+        general distribution-scale detector."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co manufactures mudguards, sold through 500 sales outlets worldwide.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "mudguard")
+
+        assert result.validated is True
+
+
 class TestOffDomainRedirectExclusion:
     """gate 3.6 -- a fetch that silently landed on a DIFFERENT real
     company's site (final_url's registered domain doesn't match the
@@ -1128,6 +1255,57 @@ class TestMarketplaceHostExclusion:
         result = validator.validate(candidate, "trailer axle")
 
         assert fetcher.calls == ["alibabatrading.com"]  # fetch WAS attempted -- not a marketplace host
+        assert result.validated is True
+
+
+class TestStockMediaHostExclusion:
+    """Real bug this guards against: gettyimages.nl was VALIDATED as a
+    "trailer mudguard manufacturer" candidate -- a stock-photo listing/
+    caption page happened to mention the searched term. Same "checked
+    before any fetch" shape as TestMarketplaceHostExclusion above, but
+    matched on the domain LABEL alone (see _is_stock_media_domain's own
+    docstring) since these platforms operate region-specific TLDs."""
+
+    def _media_candidate(self, domain):
+        return Candidate(
+            title="Trailer Mudguard - Stock Photo", link=f"https://{domain}/photo/trailer-mudguard",
+            snippet="trailer mudguard manufacturer", domain=domain,
+        )
+
+    def test_getty_images_nl_is_rejected_before_any_fetch(self):
+        """The exact real-world shape: the region-specific .nl TLD, not
+        the .com most curated domain lists would only cover."""
+        fetcher = FakeWebsiteFetcher()
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=FakeLLMClient())
+
+        result = validator.validate(self._media_candidate("gettyimages.nl"), "trailer mudguard manufacturer")
+
+        assert result.validated is False
+        assert "stock-photo/media" in result.reason
+        assert fetcher.calls == []  # never even attempted to fetch
+
+    def test_other_stock_media_platforms_are_rejected(self):
+        for domain in ("shutterstock.com", "istockphoto.com", "alamy.com"):
+            fetcher = FakeWebsiteFetcher()
+            validator = CandidateValidator(website_fetcher=fetcher, llm_client=FakeLLMClient())
+            result = validator.validate(self._media_candidate(domain), "trailer mudguard manufacturer")
+            assert result.validated is False, f"{domain} should have been excluded"
+            assert fetcher.calls == []
+
+    def test_a_companys_own_domain_that_merely_contains_a_similar_fragment_is_not_rejected(self):
+        candidate = Candidate(
+            title="Gettysburg Tools", link="https://gettysburgtools.com/",
+            snippet="trailer mudguard manufacturer", domain="gettysburgtools.com",
+        )
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Gettysburg Tools manufactures trailer mudguard brackets in-house.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Gettysburg Tools", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(candidate, "trailer mudguard manufacturer")
+
+        assert fetcher.calls == ["gettysburgtools.com"]  # fetch WAS attempted -- not a stock-media host
         assert result.validated is True
 
 

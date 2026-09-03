@@ -134,6 +134,42 @@ _NON_COMPANY_DOMAINS = {
     "service.gov.uk",
 }
 
+# Stock-photo/media platforms -- never a company's own site, same
+# "not an independently-verifiable company identity" reasoning as
+# PLATFORM_REGISTERED_DOMAINS/_NON_COMPANY_DOMAINS above, but matched on
+# the registered domain's LABEL alone (via tldextract), not the full
+# registered-domain string: unlike those two sets' entries, these
+# platforms operate region-specific TLDs (gettyimages.com,
+# gettyimages.co.uk, gettyimages.de, gettyimages.nl, ...), so a single
+# full-string entry per brand would miss most of its real domains.
+# Found live: gettyimages.nl was VALIDATED as a "trailer mudguard
+# manufacturer" candidate (extracted_name "Getty Images" fuzzy-matched
+# the search snippet at score=67) -- a stock-photo listing/caption page
+# happened to mention "trailer mudguard", and this codebase had no
+# domain-level check that would have rejected it before ever reaching
+# that content check. Kept to unambiguous, globally-known pure stock-
+# media agencies only (no company plausibly named identically) --
+# istockphoto is Getty's own subsidiary, included for the same reason.
+_STOCK_MEDIA_DOMAIN_LABELS = {
+    "gettyimages", "istockphoto", "shutterstock", "alamy",
+    "dreamstime", "123rf", "depositphotos",
+}
+
+
+def _is_stock_media_domain(domain: Optional[str]) -> bool:
+    """True if `domain`'s registered-domain LABEL (ignoring TLD/suffix)
+    matches a known stock-photo/media platform -- see
+    _STOCK_MEDIA_DOMAIN_LABELS's own comment for why this checks the
+    label alone rather than the full registered-domain string the other
+    domain sets in this module use."""
+    if not domain:
+        return False
+    extracted = tldextract.extract(domain)
+    if not extracted.domain:
+        return False
+    return extracted.domain.lower() in _STOCK_MEDIA_DOMAIN_LABELS
+
+
 _DEFAULT_MIN_NAME_SIMILARITY = 55.0  # rapidfuzz partial_ratio is 0-100, not 0-1
 _VALIDATION_TEXT_CHARS = 8_000  # how much of the fetched homepage text to search
 
@@ -171,6 +207,8 @@ def _is_usable_candidate_domain(domain: Optional[str]) -> bool:
     if not domain:
         return False
     if is_platform_subdomain(domain):
+        return False
+    if _is_stock_media_domain(domain):
         return False
     extracted = tldextract.extract(domain)
     if not extracted.domain or not extracted.suffix:

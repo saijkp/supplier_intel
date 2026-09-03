@@ -175,6 +175,34 @@ class TestExcludesNonCompanyDomains:
             result = finder.find_website("Acme Trailer Parts")
             assert result.domain is None, f"{domain} should have been excluded"
 
+    def test_stock_media_domains_are_skipped_across_tld_variants(self):
+        """Real bug this guards against: gettyimages.nl was VALIDATED as
+        a "trailer mudguard manufacturer" candidate by discovery's
+        CandidateValidator -- a stock-photo listing/caption page
+        happened to mention "trailer mudguard". Matched on the
+        registered domain's LABEL alone (not the full registered-domain
+        string every other exclusion here uses), since these platforms
+        operate region-specific TLDs -- gettyimages.com, .nl, .co.uk,
+        .de are all the same real platform."""
+        for domain in ("gettyimages.com", "gettyimages.nl", "gettyimages.co.uk",
+                        "istockphoto.com", "shutterstock.com", "alamy.com",
+                        "dreamstime.com", "123rf.com", "depositphotos.com"):
+            finder = _finder([FakeSearchResult(f"https://{domain}/photo/trailer-mudguard")])
+            result = finder.find_website("Acme Trailer Parts")
+            assert result.domain is None, f"{domain} should have been excluded"
+
+    def test_domain_merely_containing_a_similar_substring_is_not_excluded(self):
+        """The stock-media check compares the registered domain's LABEL
+        exactly (via tldextract), not a substring -- a real company
+        whose name happens to share a fragment with a stock-media brand
+        must not be falsely excluded."""
+        finder = _finder(
+            [FakeSearchResult("https://gettysburgtools.com/")],
+            {"gettysburgtools.com": "Gettysburg Tools - a real manufacturer since 1950"},
+        )
+        result = finder.find_website("Gettysburg Tools")
+        assert result.domain == "gettysburgtools.com"
+
     def test_companies_house_own_domain_is_skipped(self):
         """Real bug this guards against: a small UK company with no
         strong independent web presence surfaces ITS OWN Companies
