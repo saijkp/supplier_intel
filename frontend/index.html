@@ -2002,14 +2002,33 @@ async function findSubmitBulk() {
 // from this polling connection; only the frontend's reference to which
 // job to poll was ever at risk of being lost. See init()'s resume check
 // below and the two terminal branches here that clear it.
+//
+// Deliberately does NOT disable btnFindGo for the job's whole run
+// (previously did) -- the backend has no lock on POST /batch/upload
+// (multiple uploads run safely concurrently, only sharing a global
+// browser-slot cap), but this polling loop used to keep the button
+// disabled for the ENTIRE multi-minute duration of whatever job it was
+// tracking, including a job resumed from a PRIOR session on page load.
+// Real incident: a genuinely healthy, still-running upload from
+// earlier left the button permanently unpressable, blocking a
+// completely different new list the user wanted to submit right now --
+// Job History already shows live progress for any running job (see
+// summarizeJobStats), so losing this pane's dedicated view of an
+// abandoned job isn't a real loss. Each poll checks whether a NEWER
+// upload has since taken over the tracked slot (findSubmitBulk
+// overwrites si.findBulkJobId immediately on submit) and stops
+// rendering/rescheduling itself once superseded, so two polling loops
+// for two different jobs never fight over the same button/results pane.
 async function pollFindBulkJob(jobId) {
   const btn = $("btnFindGo");
   try {
     const job = await api(`/pipeline/jobs/${jobId}`);
+    if (store.get("si.findBulkJobId") !== jobId) return;  // superseded by a newer upload
     if (job.status === "queued" || job.status === "running") {
       const p = job.progress || {};
-      $("findResults").innerHTML = `<p class="hint">Processing… ${p.processed ?? 0}/${p.total_rows ?? "?"} row(s) (${p.succeeded ?? 0} succeeded, ${p.failed ?? 0} failed so far)</p>`;
-      btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Processing`;
+      $("findResults").innerHTML = `<p class="hint">Processing… ${p.processed ?? 0}/${p.total_rows ?? "?"} row(s) (${p.succeeded ?? 0} succeeded, ${p.failed ?? 0} failed so far)</p>
+        <p class="hint" style="margin-top:4px">You can start a different upload below while this finishes.</p>`;
+      btn.disabled = false; btn.textContent = "Go";
       setTimeout(() => pollFindBulkJob(jobId), 3000);
       return;
     }
