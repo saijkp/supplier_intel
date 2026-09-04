@@ -21,6 +21,7 @@ import pytest
 from collection.artifact_store import ArtifactStore
 from collection.site_collector import (
     SiteCollector,
+    _MAX_IFRAMES_PER_PAGE,
     _build_candidate_urls,
     _extract_facility_photo_urls,
     _extract_footer_text,
@@ -660,11 +661,39 @@ class _FakeResponse:
         self.status = status
 
 
+class _FakeFrame:
+    """Mirrors a real Playwright Frame's one method _collect_iframe_html
+    actually calls. `raises=True` simulates a frame that's detached/
+    mid-navigation by the time it's read -- must be skipped, never
+    fatal (see TestIframeContentExtraction)."""
+    def __init__(self, html, raises=False):
+        self._html = html
+        self._raises = raises
+
+    def content(self):
+        if self._raises:
+            raise RuntimeError("frame is detached")
+        return self._html
+
+
 class _FakePage:
     def __init__(self, working_urls, html="<html><body>ok</body></html>", redirects=None, html_by_url=None,
-                 status_by_url=None):
+                 status_by_url=None, iframe_html_by_url=None, frames_raise_for_urls=None):
         self._working_urls = set(working_urls)
         self._html = html
+        # url -> list of HTML strings, one per simulated child <iframe>
+        # attached to that page (e.g. an embedded Marketo/HubSpot
+        # contact-form widget) -- see TestIframeContentExtraction.
+        self._iframe_html_by_url = iframe_html_by_url or {}
+        # Set of URLs where reading page.frames itself should raise
+        # (as opposed to an individual frame's .content() raising) --
+        # _collect_iframe_html must degrade to "" rather than crash.
+        self._frames_raise_for_urls = set(frames_raise_for_urls or ())
+        # A distinct sentinel object per page instance so `frame is
+        # page.main_frame` in the real code correctly identifies and
+        # skips it, the same identity check Playwright's own
+        # page.main_frame supports.
+        self._main_frame_sentinel = _FakeFrame("")
         # url -> the URL the page actually ends up at, e.g. a non-www
         # candidate that redirects to www -- see TestRedirectHandling,
         # which regression-tests the real bug this simulates: a same-
@@ -713,6 +742,19 @@ class _FakePage:
     def screenshot(self, full_page=True):
         return b"fake-png-bytes"
 
+    @property
+    def main_frame(self):
+        return self._main_frame_sentinel
+
+    @property
+    def frames(self):
+        if self._current_url in self._frames_raise_for_urls:
+            raise RuntimeError("page.frames unavailable")
+        child_htmls = self._iframe_html_by_url.get(self._current_url, [])
+        return [self._main_frame_sentinel] + [
+            item if isinstance(item, _FakeFrame) else _FakeFrame(item) for item in child_htmls
+        ]
+
 
 class _FakeContext:
     def __init__(self, page):
@@ -751,9 +793,10 @@ class _FakePlaywright:
     don't need a real browser launch to exercise the fallback logic)."""
 
     def __init__(self, working_urls, html="<html><body>ok</body></html>", redirects=None, html_by_url=None,
-                 status_by_url=None):
+                 status_by_url=None, iframe_html_by_url=None, frames_raise_for_urls=None):
         self.page = _FakePage(working_urls, html=html, redirects=redirects, html_by_url=html_by_url,
-                               status_by_url=status_by_url)
+                               status_by_url=status_by_url, iframe_html_by_url=iframe_html_by_url,
+                               frames_raise_for_urls=frames_raise_for_urls)
         context = _FakeContext(self.page)
         browser = _FakeBrowser(context)
         self.chromium = _FakeChromium(browser)
@@ -960,6 +1003,172 @@ class TestBlockedResponseHandling:
 
         assert result.success is True
         assert len(result.pages) == 1
+
+
+class TestIframeContentExtraction:
+    """Real gap found live: nVent's real "Contact Us" page was
+    correctly discovered and visited (481 relevant links found, this
+    exact page prioritised first) but still produced zero contact info
+    and no detected contact form. page.content() only ever returns the
+    MAIN document's HTML -- a large modern enterprise site's actual
+    contact mechanism is very commonly a third-party form widget
+    embedded via <iframe>, a genuinely separate document
+    page.content() never sees. _collect_iframe_html closes this by
+    reading every child frame Playwright already has attached."""
+
+    def test_mailto_in_an_iframe_is_still_found(self, artifact_store):
+        homepage_html = "<html><body>No contact info in the main document at all.</body></html>"
+        widget_html = '<html><body><a href="mailto:sales@nvent.com">Email us</a></body></html>'
+        fake = _FakePlaywright(
+            working_urls={"https://www.daroaxle.com"},
+            html_by_url={"https://www.daroaxle.com": homepage_html},
+            iframe_html_by_url={"https://www.daroaxle.com": [widget_html]},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.success is True
+        assert result.pages[0].mailto_emails == ["sales@nvent.com"]
+
+    def test_tel_in_an_iframe_is_still_found(self, artifact_store):
+        homepage_html = "<html><body>No contact info in the main document at all.</body></html>"
+        widget_html = '<html><body><a href="tel:+15551234567">Call us</a></body></html>'
+        fake = _FakePlaywright(
+            working_urls={"https://www.daroaxle.com"},
+            html_by_url={"https://www.daroaxle.com": homepage_html},
+            iframe_html_by_url={"https://www.daroaxle.com": [widget_html]},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.pages[0].tel_phones == ["+15551234567"]
+
+    def test_contact_form_inside_an_iframe_is_detected(self, artifact_store):
+        """The exact real nVent/Tratos-shaped case: the main document
+        has no <form> of its own at all -- the form lives entirely in
+        an embedded widget."""
+        homepage_html = "<html><body>No form in the main document.</body></html>"
+        widget_html = (
+            "<html><body><form>"
+            '<input type="text" name="name">'
+            '<input type="email" name="email">'
+            '<textarea name="message"></textarea>'
+            "</form></body></html>"
+        )
+        fake = _FakePlaywright(
+            working_urls={"https://www.daroaxle.com"},
+            html_by_url={"https://www.daroaxle.com": homepage_html},
+            iframe_html_by_url={"https://www.daroaxle.com": [widget_html]},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.pages[0].has_contact_form is True
+
+    def test_no_iframes_behaves_exactly_as_before(self, artifact_store):
+        """Regression guard: a page with no child frames at all (the
+        overwhelming majority of real pages) must be entirely
+        unaffected by this change."""
+        homepage_html = '<html><body><a href="mailto:info@daroaxle.com">Email</a></body></html>'
+        fake = _FakePlaywright(
+            working_urls={"https://www.daroaxle.com"},
+            html_by_url={"https://www.daroaxle.com": homepage_html},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.pages[0].mailto_emails == ["info@daroaxle.com"]
+
+    def test_a_raising_frame_is_skipped_others_still_read(self, artifact_store):
+        """A detached/mid-navigation frame (real Playwright can raise
+        reading .content() on one) must not lose the OTHER real
+        frames' content, and must never crash collection."""
+        homepage_html = "<html><body>No contact info in the main document.</body></html>"
+        good_widget = '<html><body><a href="mailto:real@nvent.com">Email</a></body></html>'
+        fake = _FakePlaywright(
+            working_urls={"https://www.daroaxle.com"},
+            html_by_url={"https://www.daroaxle.com": homepage_html},
+            iframe_html_by_url={
+                "https://www.daroaxle.com": [_FakeFrame("<html></html>", raises=True), good_widget],
+            },
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.success is True
+        assert result.pages[0].mailto_emails == ["real@nvent.com"]
+
+    def test_page_frames_itself_raising_never_crashes_collection(self, artifact_store):
+        """A more severe failure than one bad frame -- reading
+        page.frames itself fails (e.g. the page navigated away mid-
+        read). Must degrade to "no iframe content", never abort the
+        whole collection."""
+        homepage_html = '<html><body><a href="mailto:info@daroaxle.com">Email</a></body></html>'
+        fake = _FakePlaywright(
+            working_urls={"https://www.daroaxle.com"},
+            html_by_url={"https://www.daroaxle.com": homepage_html},
+            frames_raise_for_urls={"https://www.daroaxle.com"},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.success is True
+        # main document's own real contact info is still found -- only
+        # the iframe-reading step was unavailable, not collection itself.
+        assert result.pages[0].mailto_emails == ["info@daroaxle.com"]
+
+    def test_iframe_content_never_leaks_into_image_or_social_link_extraction(self, artifact_store):
+        """Deliberately scoped to contact extraction only (see
+        _collect_iframe_html's own docstring for why) -- an iframe's
+        own images/social links must not appear in the PARENT page's
+        image_urls/social_links, since resolving a relative href from
+        inside the iframe against the parent page's base URL would be
+        actively wrong."""
+        homepage_html = "<html><body>No images or social links here.</body></html>"
+        widget_html = (
+            '<html><body><img src="https://cdn.widget-vendor.com/logo.png">'
+            '<a href="https://facebook.com/widgetvendor">Facebook</a></body></html>'
+        )
+        fake = _FakePlaywright(
+            working_urls={"https://www.daroaxle.com"},
+            html_by_url={"https://www.daroaxle.com": homepage_html},
+            iframe_html_by_url={"https://www.daroaxle.com": [widget_html]},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.pages[0].image_urls == []
+        assert result.pages[0].social_links == []
+
+    def test_frame_count_beyond_the_cap_is_never_read(self, artifact_store):
+        """A pathological page (ad-heavy, many embedded widgets)
+        shouldn't be able to blow up the time budget just fetching
+        frame content -- verified by making the one frame PAST the cap
+        raise if its .content() is ever called at all."""
+        homepage_html = "<html><body>No contact info in the main document.</body></html>"
+        within_cap = [
+            f'<html><body><a href="mailto:frame{i}@daroaxle.com">Email</a></body></html>'
+            for i in range(_MAX_IFRAMES_PER_PAGE)
+        ]
+        beyond_cap = _FakeFrame("<html></html>", raises=True)
+        fake = _FakePlaywright(
+            working_urls={"https://www.daroaxle.com"},
+            html_by_url={"https://www.daroaxle.com": homepage_html},
+            iframe_html_by_url={"https://www.daroaxle.com": within_cap + [beyond_cap]},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.success is True  # the raising frame past the cap never gets read, so never crashes
+        assert len(result.pages[0].mailto_emails) == _MAX_IFRAMES_PER_PAGE
 
 
 class TestWaitUntilDomContentLoaded:

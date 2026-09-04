@@ -52,6 +52,22 @@ that class, not standalone functions -- reaching across to call another
 class's private methods would be more fragile than the small amount of
 duplication this avoids. html_to_text IS a standalone module function
 there and is imported directly.
+
+Iframe-embedded contact widgets
+--------------------------------
+page.content() only ever returns the MAIN document's HTML. A large
+modern enterprise site's actual contact mechanism is very commonly a
+third-party form widget (Marketo/HubSpot/etc.) embedded via <iframe> --
+a genuinely separate document the main HTML never contains. Found
+live: nVent's real "Contact Us" page was correctly discovered and
+visited (481 relevant links found, this exact page prioritised first)
+but still produced zero contact info and no detected contact form.
+_collect_iframe_html reads every child frame Playwright already has
+attached (page.frames) and feeds that into CONTACT extraction only
+(html_to_text/_has_contact_form/_find_mailto_emails/_find_tel_phones)
+-- never into image/social/download-link/facility-photo extraction,
+which need each fragment's own correct base URL and would be actively
+wrong applied against an iframe's separate origin.
 """
 
 from __future__ import annotations
@@ -437,6 +453,61 @@ def _extract_facility_photo_urls(base_url: str, html: str) -> List[str]:
     return found
 
 
+# Cap on how many child frames get read per page -- a pathological
+# page (ad-heavy, many embedded widgets) shouldn't be able to blow up
+# the time budget just fetching frame content. Real corporate contact/
+# chat/form widgets are a handful at most; found live neither nVent
+# nor Tratos needed anywhere close to this to have their real contact
+# widget's frame included.
+_MAX_IFRAMES_PER_PAGE = 10
+
+
+def _collect_iframe_html(page: Any) -> str:
+    """Concatenated HTML of every child frame (iframe) attached to
+    `page` -- e.g. a Marketo/HubSpot/embedded contact-form widget --
+    for CONTACT extraction only (html_to_text/_has_contact_form/
+    _find_mailto_emails/_find_tel_phones), never for image/social/
+    download-link/facility-photo extraction, which need each
+    fragment's own correct base URL for resolving relative hrefs and
+    would be actively wrong applied against an iframe's separate
+    origin.
+
+    Real gap found live: nVent's real "Contact Us" page (correctly
+    discovered and visited -- 481 relevant links found, this exact
+    page prioritised first) still produced zero extracted contact
+    info and no detected contact form. page.content() only returns
+    the MAIN document's HTML -- a large modern enterprise site's
+    actual contact mechanism is very commonly a third-party form
+    widget embedded via <iframe>, a genuinely separate document
+    page.content() never sees at all, not a rendering-timing issue
+    _BODY_SELECTOR_WAIT_MS could fix.
+
+    Playwright's page.frames already includes every attached frame
+    (same-origin or cross-origin -- unlike a same-origin-policy-
+    restricted plain JS `document`, this operates via CDP with full
+    page access), so no extra navigation/fetch is needed here, just
+    reading what's already loaded. Never raises: a frame that can't be
+    read (detached, mid-navigation, or any other transient state) is
+    skipped, same per-item fault isolation as every other step in this
+    module -- one bad frame must never lose the rest of the page's
+    real content."""
+    try:
+        frames = page.frames
+    except Exception:
+        return ""
+    fragments: List[str] = []
+    for frame in frames:
+        if frame is page.main_frame:
+            continue
+        if len(fragments) >= _MAX_IFRAMES_PER_PAGE:
+            break
+        try:
+            fragments.append(frame.content())
+        except Exception:
+            continue
+    return "\n".join(fragments)
+
+
 def _has_contact_form(html: str) -> bool:
     soup = BeautifulSoup(html, "html.parser")
     for form in soup.find_all("form"):
@@ -779,6 +850,18 @@ class SiteCollector:
         html = page.content()
         html_path = self.artifact_store.save_html(run_dir, index, url, html)
 
+        # See _collect_iframe_html's own docstring for the real gap
+        # this closes (nVent's real Contact page, correctly visited,
+        # producing zero contact info because its actual form widget
+        # lives in an embedded iframe page.content() never sees).
+        # Scoped to contact extraction ONLY -- image/social/download/
+        # facility-photo extraction below still use `html` alone, since
+        # those need each fragment's own base URL to resolve relative
+        # hrefs correctly and an iframe's separate origin would be
+        # actively wrong applied there.
+        iframe_html = _collect_iframe_html(page)
+        contact_html = f"{html}\n{iframe_html}" if iframe_html else html
+
         screenshot_relpath = None
         try:
             png_bytes = page.screenshot(full_page=True)
@@ -789,16 +872,16 @@ class SiteCollector:
 
         collected = CollectedPage(
             url=resolved_url,
-            text=html_to_text(html),
+            text=html_to_text(contact_html),
             image_urls=_find_image_urls(resolved_url, html),
-            has_contact_form=_has_contact_form(html),
+            has_contact_form=_has_contact_form(contact_html),
             screenshot_path=screenshot_relpath,
             html_path=str(html_path.relative_to(run_dir)),
             social_links=_find_social_links(html),
             download_links=_find_download_links(resolved_url, html),
             footer_text=_extract_footer_text(html),
             facility_photo_urls=_extract_facility_photo_urls(resolved_url, html),
-            mailto_emails=_find_mailto_emails(html),
-            tel_phones=_find_tel_phones(html),
+            mailto_emails=_find_mailto_emails(contact_html),
+            tel_phones=_find_tel_phones(contact_html),
         )
         return collected, html
