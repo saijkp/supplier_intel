@@ -1967,6 +1967,31 @@ async function findSubmitBulk() {
     return;
   }
 
+  // Real incident this closes: clearing the fields on success (above)
+  // stops a STALE file from being silently resubmitted, but does
+  // nothing if the user re-selects the exact SAME file again, for
+  // whatever reason -- six duplicate jobs for the same
+  // uk_lpg_suppliers.csv landed this way, each burning real cost. Only
+  // checked for a file (not a pasted list, which has no stable
+  // filename identity to compare against) -- a non-blocking best-
+  // effort check, so a failure here (e.g. offline) never prevents a
+  // genuinely new, different upload from going through.
+  if (file) {
+    try {
+      const recentJobs = await api("/pipeline/jobs?limit=25");
+      const dup = recentJobs.find(j =>
+        (j.status === "queued" || j.status === "running") && j.query === `[batch] ${file.name}`
+      );
+      if (dup) {
+        const proceed = confirm(
+          `A batch for "${file.name}" is already running (started ${dup.created_at}). ` +
+          `Submitting again will process the same file a second time, at real extra cost. Continue anyway?`
+        );
+        if (!proceed) return;
+      }
+    } catch (err) { /* best-effort -- never block a submission on this check failing */ }
+  }
+
   const btn = $("btnFindGo");
   btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Uploading`;
   alertBox($("findAlert"), 0);
