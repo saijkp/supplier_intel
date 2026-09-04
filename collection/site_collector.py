@@ -641,6 +641,22 @@ class SiteCollector:
                     relevant_links.append(url)
 
             relevant_links = _prioritise_relevant_links(relevant_links)
+            # Real diagnostic value beyond this one investigation: a
+            # supplier reporting "success" with suspiciously little
+            # extracted (e.g. neither contact info nor a contact form
+            # found despite visiting every page in the budget) is
+            # otherwise a dead end to debug -- there was no visibility
+            # into whether the crawl found zero candidate links at all,
+            # or found some but they turned out to have nothing useful,
+            # without this. homepage_html's length is included since a
+            # near-empty relevant_links list and a near-empty homepage
+            # both point at "page didn't really render", while a
+            # substantial homepage with zero relevant links points at a
+            # real _find_relevant_links/keyword-matching gap instead.
+            logger.info(
+                "collection: %s -- %d relevant link(s) found (homepage html %d chars): %s",
+                domain, len(relevant_links), len(homepage_html), relevant_links[:10],
+            )
             for i, link in enumerate(relevant_links, start=1):
                 if len(pages) >= self.max_pages:
                     break
