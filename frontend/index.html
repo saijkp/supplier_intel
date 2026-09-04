@@ -1955,6 +1955,9 @@ async function findSubmitBulk() {
   const file = $("findBulkFile").files[0];
   const pasted = $("findBulkPaste").value.trim();
   if (!file && !pasted) { alertBox($("findAlert"), 1, "Nothing to upload", "Paste a list or choose a CSV file."); return; }
+  // Captured before the fields are cleared below -- purely for the
+  // confirmation message, so the user sees WHAT was actually submitted.
+  const submittedLabel = file ? file.name : "pasted list";
 
   const recoverDeadDomains = $("findBulkRecoverDeadDomains").checked;
   const recoveryProductTerm = $("findBulkRecoveryProductTerm").value.trim();
@@ -1988,6 +1991,23 @@ async function findSubmitBulk() {
     });
     if (!res.ok) throw Object.assign(new Error("Upload failed"), { status: res.status });
     const job = await res.json();
+    // Real incident this closes: neither field was ever cleared after a
+    // successful upload, so a stale file left selected in the picker
+    // got silently RESUBMITTED on every later click of "Go" -- three
+    // duplicate batch jobs for the same file, each burning real
+    // headless-browser cost, while the user's actually-intended new
+    // list never got attached at all. Clearing both here means the
+    // next click with nothing newly chosen correctly hits the "Nothing
+    // to upload" guard above instead of resubmitting old data.
+    $("findBulkFile").value = "";
+    $("findBulkPaste").value = "";
+    // Immediate, unambiguous confirmation -- pollFindBulkJob's own
+    // first render depends on an API round-trip that hasn't happened
+    // yet at this point, so without this line a slow/contended request
+    // can leave the results pane blank for a moment right after a
+    // successful click, reading as "nothing happened" even though the
+    // upload genuinely succeeded.
+    $("findResults").innerHTML = `<p class="hint">Upload started: <strong>${esc(submittedLabel)}</strong> (job ${esc(job.id.slice(0, 8))}…). Tracking progress below.</p>`;
     store.set("si.findBulkJobId", job.id);
     pollFindBulkJob(job.id);
   } catch (err) {
