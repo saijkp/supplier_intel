@@ -861,6 +861,21 @@ class SiteCollector:
         # actively wrong applied there.
         iframe_html = _collect_iframe_html(page)
         contact_html = f"{html}\n{iframe_html}" if iframe_html else html
+        # Diagnostic: the homepage-level relevant-link log above only
+        # ever fires once per _collect_with() call (homepage discovery),
+        # giving zero visibility into what happens on the SECONDARY
+        # pages (e.g. the actual Contact page) this feeds into --
+        # exactly where an iframe-embedded widget would live. WARNING,
+        # not INFO, for the same reason the link-discovery line above
+        # is: production's configured log level filters INFO entirely.
+        try:
+            child_frame_count = len(page.frames) - 1  # -1 excludes the main frame itself
+        except Exception:
+            child_frame_count = -1
+        logger.warning(
+            "collection: %s -- %d child frame(s), %d char(s) of iframe content collected",
+            url, child_frame_count, len(iframe_html),
+        )
 
         screenshot_relpath = None
         try:
