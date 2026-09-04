@@ -2242,7 +2242,32 @@ document.addEventListener("click", async (e) => {
 
 /* ═══ Jobs list ═════════════════════════════════════════════ */
 function summarizeJobStats(j) {
-  if (j.status !== "completed") return j.error ? esc(j.error).slice(0, 70) : "—";
+  if (j.status !== "completed") {
+    // A running/queued job carries live progress (written incrementally
+    // as rows/candidates complete -- see api/jobs.py's
+    // update_pipeline_job_progress calls) that this used to ignore
+    // entirely, always showing a bare "—" regardless of real activity.
+    // Real incident: a 121-row batch genuinely processing (36/121, 24
+    // succeeded, 12 failed) read as indistinguishable from truly hung
+    // here, even though Find Suppliers' own live-upload view already
+    // shows exactly this progress -- Job History just never looked at
+    // it. Only [batch]/[discovery] are handled (the two job types that
+    // actually populate a per-row/candidate progress object); anything
+    // else still falls through to "—" while running, same as before.
+    const p = j.progress;
+    const q = j.query || "";
+    if ((j.status === "running" || j.status === "queued") && p) {
+      if (q.startsWith("[batch]") && "total_rows" in p) {
+        return `Processing… ${p.processed ?? 0}/${p.total_rows ?? "?"} row(s) `
+          + `(${p.succeeded ?? 0} succeeded, ${p.failed ?? 0} failed so far)`;
+      }
+      if (q.startsWith("[discovery]") && "examined" in p) {
+        const target = p.target != null ? ` of target ${p.target}` : "";
+        return `Searching… ${p.examined ?? 0} examined, ${p.candidates_validated ?? 0} validated${target}`;
+      }
+    }
+    return j.error ? esc(j.error).slice(0, 70) : "—";
+  }
   const st = j.stats || {};
   const q = j.query || "";
   // A pending-batch job (collection/contacts/factory-facts, each
