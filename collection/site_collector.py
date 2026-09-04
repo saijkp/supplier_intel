@@ -653,7 +653,14 @@ class SiteCollector:
             # both point at "page didn't really render", while a
             # substantial homepage with zero relevant links points at a
             # real _find_relevant_links/keyword-matching gap instead.
-            logger.info(
+            # WARNING, not INFO -- production's configured log level
+            # (SUPPLIER_INTEL_LOG_LEVEL) filters out INFO entirely,
+            # confirmed live: this line never appeared while the
+            # existing WARNING-level "could not load homepage" lines
+            # elsewhere in this module always do. A diagnostic line that
+            # never actually surfaces anywhere real is worse than
+            # useless -- it looks like coverage that isn't there.
+            logger.warning(
                 "collection: %s -- %d relevant link(s) found (homepage html %d chars): %s",
                 domain, len(relevant_links), len(homepage_html), relevant_links[:10],
             )
