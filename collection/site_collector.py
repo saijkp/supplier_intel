@@ -699,9 +699,31 @@ class SiteCollector:
             # reporting a false failure on an otherwise-reachable site
             # (an ordinary GET returns the document in well under a
             # second). We only need the HTML document itself.
-            page.goto(url, timeout=self.page_timeout_ms, wait_until="domcontentloaded")
+            response = page.goto(url, timeout=self.page_timeout_ms, wait_until="domcontentloaded")
         except Exception as e:
             logger.warning("collection: failed to load %s: %s", url, e)
+            return None
+
+        # page.goto() only raises for a network-level failure (DNS,
+        # timeout, connection refused) -- an HTTP error/block response
+        # still "loads" successfully as far as Playwright is concerned,
+        # since there IS a valid document, just not the real site.
+        # Found live: northumbrianroads.co.uk's WAF returns a real, tiny
+        # "403 - Forbidden" HTML page (own <title> says so) for this
+        # collector's traffic -- the goto() succeeded, the 403 page's
+        # thin content correctly had zero relevant links, so the crawl
+        # silently stopped at 1 page and reported success with no real
+        # data at all, rather than the genuine failure it actually was.
+        # Same treatment as a network-level failure (return None) --
+        # for the HOMEPAGE this feeds the same "could not load
+        # homepage" fallback the next candidate URL already uses; for a
+        # SECONDARY page it's simply skipped rather than counted as
+        # visited with a WAF page's irrelevant text.
+        if response is not None and response.status >= 400:
+            logger.warning(
+                "collection: %s returned HTTP %s (blocked/error response) -- "
+                "treating as a failed load, not real content", url, response.status,
+            )
             return None
 
         try:

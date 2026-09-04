@@ -653,8 +653,16 @@ class TestBuildCandidateUrls:
         assert len(_build_candidate_urls("daroaxle.com", None)) == 3
 
 
+class _FakeResponse:
+    """Mirrors the real Playwright Response object's one attribute
+    _visit_and_collect actually reads."""
+    def __init__(self, status):
+        self.status = status
+
+
 class _FakePage:
-    def __init__(self, working_urls, html="<html><body>ok</body></html>", redirects=None, html_by_url=None):
+    def __init__(self, working_urls, html="<html><body>ok</body></html>", redirects=None, html_by_url=None,
+                 status_by_url=None):
         self._working_urls = set(working_urls)
         self._html = html
         # url -> the URL the page actually ends up at, e.g. a non-www
@@ -667,6 +675,12 @@ class _FakePage:
         # FINAL, post-redirect URL) -- defaults to `html` for every URL
         # when not given.
         self._html_by_url = html_by_url or {}
+        # url -> the HTTP status page.goto() "returns" for it -- defaults
+        # to 200 (a normal successful load) for every working URL. See
+        # TestBlockedResponseHandling: a URL can be in `working_urls`
+        # (goto() doesn't raise) while still status_by_url'd to 403/etc,
+        # exactly like a real WAF block page that loads without error.
+        self._status_by_url = status_by_url or {}
         self.goto_calls: List[str] = []
         self.goto_wait_until_values: List[Any] = []
         self._current_url = None
@@ -677,6 +691,7 @@ class _FakePage:
         if url not in self._working_urls:
             raise RuntimeError(f"net::ERR_NAME_NOT_RESOLVED for {url}")
         self._current_url = self._redirects.get(url, url)
+        return _FakeResponse(self._status_by_url.get(url, 200))
 
     @property
     def url(self):
@@ -735,8 +750,10 @@ class _FakePlaywright:
     site_collector.py's own docstring for why this seam exists (tests
     don't need a real browser launch to exercise the fallback logic)."""
 
-    def __init__(self, working_urls, html="<html><body>ok</body></html>", redirects=None, html_by_url=None):
-        self.page = _FakePage(working_urls, html=html, redirects=redirects, html_by_url=html_by_url)
+    def __init__(self, working_urls, html="<html><body>ok</body></html>", redirects=None, html_by_url=None,
+                 status_by_url=None):
+        self.page = _FakePage(working_urls, html=html, redirects=redirects, html_by_url=html_by_url,
+                               status_by_url=status_by_url)
         context = _FakeContext(self.page)
         browser = _FakeBrowser(context)
         self.chromium = _FakeChromium(browser)
@@ -869,6 +886,80 @@ class TestRedirectHandling:
 
         assert result.success is True
         assert len(result.pages) == 2
+
+
+class TestBlockedResponseHandling:
+    """Real bug found via a gap-analysis run against a UK asphalt-
+    supplier batch: northumbrianroads.co.uk's WAF returns a real, tiny
+    "403 - Forbidden" HTML page for this collector's traffic --
+    page.goto() doesn't raise (there IS a valid document, Playwright
+    considers the navigation successful), so the 403 page's own thin
+    content was treated as the real homepage. It correctly has zero
+    relevant links, so the crawl silently stopped at 1 page and
+    reported success with zero contact data, even though the site's
+    real contact page (linked from its nav) has three depots' worth of
+    phone numbers, an email, and full addresses -- a genuine failure
+    disguised as an empty success, not an honest "we're blocked"."""
+
+    def test_homepage_returning_403_is_treated_as_failed_not_empty_success(self, artifact_store):
+        fake = _FakePlaywright(
+            working_urls={"https://www.northumbrianroads.co.uk"},
+            status_by_url={"https://www.northumbrianroads.co.uk": 403},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="northumbrianroads.co.uk")
+
+        assert result.success is False
+        assert "could not load homepage" in result.error
+
+    def test_blocked_first_candidate_falls_through_to_a_working_one(self, artifact_store):
+        """The existing multi-candidate retry (TestCandidateUrlFallback)
+        already tries www/bare/http variants on a network-level
+        failure -- a 403 on the first candidate must trigger the exact
+        same fallback, not a hard stop."""
+        fake = _FakePlaywright(
+            working_urls={"https://www.daroaxle.com", "https://daroaxle.com"},
+            status_by_url={"https://www.daroaxle.com": 403},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.success is True
+        assert result.resolved_url == "https://daroaxle.com"
+
+    def test_blocked_secondary_page_is_skipped_not_counted_as_visited(self, artifact_store):
+        """A homepage that loads fine but whose contact page 403s (e.g.
+        a rate-limited or auth-gated sub-page) must be silently skipped
+        -- same as any other unreachable secondary page -- rather than
+        counted as a real visited page with a WAF page's irrelevant
+        text mixed into extraction."""
+        homepage_html = '<html><body><a href="https://www.daroaxle.com/contact/">Contact</a></body></html>'
+        fake = _FakePlaywright(
+            working_urls={"https://www.daroaxle.com", "https://www.daroaxle.com/contact/"},
+            html_by_url={"https://www.daroaxle.com": homepage_html},
+            status_by_url={"https://www.daroaxle.com/contact/": 403},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.success is True
+        assert len(result.pages) == 1  # only the homepage -- the blocked contact page was skipped
+        assert result.pages[0].url == "https://www.daroaxle.com"
+
+    def test_a_normal_200_response_is_unaffected(self, artifact_store):
+        """Regression guard: the default (no status_by_url given, or an
+        explicit 200) must behave exactly as every other test in this
+        file already assumes."""
+        fake = _FakePlaywright(working_urls={"https://www.daroaxle.com"})
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.success is True
+        assert len(result.pages) == 1
 
 
 class TestWaitUntilDomContentLoaded:
