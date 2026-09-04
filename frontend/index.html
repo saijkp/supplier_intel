@@ -694,8 +694,8 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
         <div class="field hidden" id="findBulkBlock">
           <label class="label" for="findBulkPaste">Paste a list (one company per line, name and/or website)</label>
           <textarea class="input" id="findBulkPaste" rows="5" placeholder="Acme Trailer Co, acmetrailer.com&#10;Beta Bearings Ltd&#10;gamma-axles.com"></textarea>
-          <label class="label" for="findBulkFile" style="margin-top:10px">…or upload a CSV or Excel file</label>
-          <input class="input" id="findBulkFile" type="file" accept=".csv,.xlsx">
+          <label class="label" for="findBulkFile" style="margin-top:10px">…or upload one or more CSV/Excel files</label>
+          <input class="input" id="findBulkFile" type="file" accept=".csv,.xlsx" multiple>
           <div class="field" style="margin-top:10px">
             <label class="check">
               <input type="checkbox" id="findBulkRecoverDeadDomains">
@@ -1951,13 +1951,41 @@ function findBuildCsvFromPastedList(text) {
   return "Company Name,Website\n" + rows.map(([n, w]) => `${csvEscape(n)},${csvEscape(w)}`).join("\n") + "\n";
 }
 
+// Shared by the manual Job History "CSV" button (data-download-batch,
+// see the delegated click handler below) and findSubmitBulk's own
+// auto-download-on-completion -- one real download mechanism, not two
+// copies of the blob/object-URL dance.
+async function downloadBatchCsv(jobId) {
+  const res = await fetch(state.base + `/batch/${jobId}/export.csv`, {
+    headers: { "Authorization": "Bearer " + state.token },
+  });
+  if (!res.ok) throw Object.assign(new Error("Export failed"), { status: res.status });
+  const blob = await res.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `batch_${jobId}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// si.findBulkJobIds -- a JSON array of {id, label}, one entry per
+// batch job this tab is currently tracking. Was a single string
+// (si.findBulkJobId) until multi-file upload made "the one job this
+// tab cares about" the wrong model -- several jobs can now be in
+// flight from one submission, each needing its own progress line and
+// its own eventual auto-download, without clobbering each other.
+function getTrackedBulkJobs() {
+  try { return JSON.parse(store.get("si.findBulkJobIds") || "[]"); } catch (e) { return []; }
+}
+function setTrackedBulkJobs(list) { store.set("si.findBulkJobIds", JSON.stringify(list)); }
+
 async function findSubmitBulk() {
-  const file = $("findBulkFile").files[0];
+  const files = Array.from($("findBulkFile").files);
   const pasted = $("findBulkPaste").value.trim();
-  if (!file && !pasted) { alertBox($("findAlert"), 1, "Nothing to upload", "Paste a list or choose a CSV file."); return; }
-  // Captured before the fields are cleared below -- purely for the
-  // confirmation message, so the user sees WHAT was actually submitted.
-  const submittedLabel = file ? file.name : "pasted list";
+  if (!files.length && !pasted) {
+    alertBox($("findAlert"), 1, "Nothing to upload", "Paste a list or choose one or more CSV/Excel files.");
+    return;
+  }
 
   const recoverDeadDomains = $("findBulkRecoverDeadDomains").checked;
   const recoveryProductTerm = $("findBulkRecoveryProductTerm").value.trim();
@@ -1967,25 +1995,27 @@ async function findSubmitBulk() {
     return;
   }
 
-  // Real incident this closes: clearing the fields on success (above)
+  // Real incident this closes: clearing the fields on success (below)
   // stops a STALE file from being silently resubmitted, but does
   // nothing if the user re-selects the exact SAME file again, for
   // whatever reason -- six duplicate jobs for the same
-  // uk_lpg_suppliers.csv landed this way, each burning real cost. Only
-  // checked for a file (not a pasted list, which has no stable
-  // filename identity to compare against) -- a non-blocking best-
-  // effort check, so a failure here (e.g. offline) never prevents a
-  // genuinely new, different upload from going through.
-  if (file) {
+  // uk_lpg_suppliers.csv landed this way, each burning real cost.
+  // Checked across ALL selected files at once (not pasted lists, which
+  // have no stable filename identity to compare against) -- one
+  // combined warning naming every duplicate found, not one popup per
+  // file. Best-effort: a failure here (e.g. offline) never blocks a
+  // genuinely new upload.
+  if (files.length) {
     try {
       const recentJobs = await api("/pipeline/jobs?limit=25");
-      const dup = recentJobs.find(j =>
-        (j.status === "queued" || j.status === "running") && j.query === `[batch] ${file.name}`
+      const activeQueries = new Set(
+        recentJobs.filter(j => j.status === "queued" || j.status === "running").map(j => j.query)
       );
-      if (dup) {
+      const dupNames = files.filter(f => activeQueries.has(`[batch] ${f.name}`)).map(f => f.name);
+      if (dupNames.length) {
         const proceed = confirm(
-          `A batch for "${file.name}" is already running (started ${dup.created_at}). ` +
-          `Submitting again will process the same file a second time, at real extra cost. Continue anyway?`
+          `These file(s) already have an active batch running: ${dupNames.join(", ")}. ` +
+          `Submitting again will process them a second time, at real extra cost. Continue with all selected files anyway?`
         );
         if (!proceed) return;
       }
@@ -1995,101 +2025,132 @@ async function findSubmitBulk() {
   const btn = $("btnFindGo");
   btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Uploading`;
   alertBox($("findAlert"), 0);
-  $("findResults").innerHTML = "";
 
-  try {
-    const form = new FormData();
-    if (file) {
-      form.append("file", file);
-    } else {
-      const blob = new Blob([findBuildCsvFromPastedList(pasted)], { type: "text/csv" });
-      form.append("file", blob, "pasted.csv");
+  // Each file is its own POST /batch/upload -- the endpoint only ever
+  // accepts one file per request, so N files means N sequential
+  // requests, each becoming its own independently-tracked job (they
+  // still run concurrently server-side once submitted; this loop is
+  // just about SUBMITTING them, not waiting for them to finish).
+  const toSubmit = files.length
+    ? files.map(f => ({ blob: f, filename: f.name, label: f.name }))
+    : [{ blob: new Blob([findBuildCsvFromPastedList(pasted)], { type: "text/csv" }), filename: "pasted.csv", label: "pasted list" }];
+
+  const newlyTracked = [];
+  const submitErrors = [];
+  for (const item of toSubmit) {
+    try {
+      const form = new FormData();
+      form.append("file", item.blob, item.filename);
+      if (recoverDeadDomains) {
+        form.append("recover_dead_domains", "true");
+        form.append("recovery_product_term", recoveryProductTerm);
+      }
+      const defaultRegion = $("findBulkDefaultRegion").value.trim();
+      if (defaultRegion) { form.append("default_region", defaultRegion); }
+      const res = await fetch(state.base + "/batch/upload", {
+        method: "POST", headers: { "Authorization": "Bearer " + state.token }, body: form,
+      });
+      if (!res.ok) throw Object.assign(new Error("Upload failed"), { status: res.status });
+      const job = await res.json();
+      newlyTracked.push({ id: job.id, label: item.label });
+    } catch (err) {
+      submitErrors.push(`${item.label}: ${err.message}`);
     }
-    if (recoverDeadDomains) {
-      form.append("recover_dead_domains", "true");
-      form.append("recovery_product_term", recoveryProductTerm);
-    }
-    const defaultRegion = $("findBulkDefaultRegion").value.trim();
-    if (defaultRegion) { form.append("default_region", defaultRegion); }
-    const res = await fetch(state.base + "/batch/upload", {
-      method: "POST", headers: { "Authorization": "Bearer " + state.token }, body: form,
-    });
-    if (!res.ok) throw Object.assign(new Error("Upload failed"), { status: res.status });
-    const job = await res.json();
-    // Real incident this closes: neither field was ever cleared after a
-    // successful upload, so a stale file left selected in the picker
-    // got silently RESUBMITTED on every later click of "Go" -- three
-    // duplicate batch jobs for the same file, each burning real
-    // headless-browser cost, while the user's actually-intended new
-    // list never got attached at all. Clearing both here means the
-    // next click with nothing newly chosen correctly hits the "Nothing
-    // to upload" guard above instead of resubmitting old data.
-    $("findBulkFile").value = "";
-    $("findBulkPaste").value = "";
-    // Immediate, unambiguous confirmation -- pollFindBulkJob's own
-    // first render depends on an API round-trip that hasn't happened
-    // yet at this point, so without this line a slow/contended request
-    // can leave the results pane blank for a moment right after a
+  }
+
+  // Real incident this closes: neither field was ever cleared after a
+  // successful upload, so a stale file left selected in the picker got
+  // silently RESUBMITTED on every later click of "Go". Cleared here
+  // regardless of how many of the files above actually succeeded, so a
+  // next click with nothing newly chosen correctly hits the "Nothing
+  // to upload" guard instead of resubmitting old data.
+  $("findBulkFile").value = "";
+  $("findBulkPaste").value = "";
+  btn.disabled = false; btn.textContent = "Go";
+
+  if (submitErrors.length) {
+    explain(new Error(submitErrors.join("; ")), $("findAlert"));
+  }
+  if (newlyTracked.length) {
+    setTrackedBulkJobs([...getTrackedBulkJobs(), ...newlyTracked]);
+    const names = newlyTracked.map(t => `<strong>${esc(t.label)}</strong>`).join(", ");
+    // Immediate, unambiguous confirmation -- pollBulkJobs' own first
+    // render depends on an API round-trip that hasn't happened yet at
+    // this point, so without this line a slow/contended request can
+    // leave the results pane blank for a moment right after a
     // successful click, reading as "nothing happened" even though the
     // upload genuinely succeeded.
-    $("findResults").innerHTML = `<p class="hint">Upload started: <strong>${esc(submittedLabel)}</strong> (job ${esc(job.id.slice(0, 8))}…). Tracking progress below.</p>`;
-    store.set("si.findBulkJobId", job.id);
-    pollFindBulkJob(job.id);
-  } catch (err) {
-    explain(err, $("findAlert"));
-    btn.disabled = false; btn.textContent = "Go";
+    $("findResults").innerHTML = `<p class="hint">Upload started: ${names}. Tracking progress below.</p>`;
+    pollBulkJobs();
   }
 }
 
-// jobId is persisted via `store` (not just this closure) so a page
-// refresh mid-batch can find and resume polling it -- the backend job
-// itself already runs fully server-side via BackgroundTasks, decoupled
-// from this polling connection; only the frontend's reference to which
-// job to poll was ever at risk of being lost. See init()'s resume check
-// below and the two terminal branches here that clear it.
+// Tracked jobs persist via `store` (not just a closure) so a page
+// refresh mid-batch can find and resume polling them -- the backend
+// jobs themselves already run fully server-side via BackgroundTasks,
+// decoupled from this polling connection; only the frontend's
+// reference to which jobs to poll was ever at risk of being lost. See
+// init()'s resume check below.
 //
-// Deliberately does NOT disable btnFindGo for the job's whole run
-// (previously did) -- the backend has no lock on POST /batch/upload
-// (multiple uploads run safely concurrently, only sharing a global
-// browser-slot cap), but this polling loop used to keep the button
-// disabled for the ENTIRE multi-minute duration of whatever job it was
-// tracking, including a job resumed from a PRIOR session on page load.
-// Real incident: a genuinely healthy, still-running upload from
-// earlier left the button permanently unpressable, blocking a
-// completely different new list the user wanted to submit right now --
-// Job History already shows live progress for any running job (see
-// summarizeJobStats), so losing this pane's dedicated view of an
-// abandoned job isn't a real loss. Each poll checks whether a NEWER
-// upload has since taken over the tracked slot (findSubmitBulk
-// overwrites si.findBulkJobId immediately on submit) and stops
-// rendering/rescheduling itself once superseded, so two polling loops
-// for two different jobs never fight over the same button/results pane.
-async function pollFindBulkJob(jobId) {
-  const btn = $("btnFindGo");
-  try {
-    const job = await api(`/pipeline/jobs/${jobId}`);
-    if (store.get("si.findBulkJobId") !== jobId) return;  // superseded by a newer upload
+// Deliberately does NOT disable btnFindGo for a tracked job's whole
+// run -- the backend has no lock on POST /batch/upload (multiple
+// uploads run safely concurrently, only sharing a global browser-slot
+// cap), and a permanently-disabled button (this polling loop's own
+// earlier behaviour) blocked a completely different new list the user
+// wanted to submit while an old job was still finishing. Job History
+// already shows live progress for any running job (see
+// summarizeJobStats), so losing a dedicated per-job view isn't a real
+// loss once a job completes and drops out of this pane.
+//
+// Runs ONE shared poll loop over every tracked job (not one loop per
+// job) -- each tick fetches every tracked job's status, renders one
+// combined progress line per job, auto-downloads any job that just
+// completed (see downloadBatchCsv), and drops completed/failed jobs
+// out of the tracked set so they're never re-checked or re-downloaded
+// on a later tick.
+let bulkPollTimer = null;
+async function pollBulkJobs() {
+  const tracked = getTrackedBulkJobs();
+  if (!tracked.length) { bulkPollTimer = null; return; }
+
+  const rows = [];
+  const stillActive = [];
+  for (const t of tracked) {
+    let job;
+    try {
+      job = await api(`/pipeline/jobs/${t.id}`);
+    } catch (err) {
+      rows.push(`<p class="hint"><strong>${esc(t.label)}</strong>: could not check status (${esc(err.message)})</p>`);
+      stillActive.push(t);
+      continue;
+    }
     if (job.status === "queued" || job.status === "running") {
       const p = job.progress || {};
-      $("findResults").innerHTML = `<p class="hint">Processing… ${p.processed ?? 0}/${p.total_rows ?? "?"} row(s) (${p.succeeded ?? 0} succeeded, ${p.failed ?? 0} failed so far)</p>
-        <p class="hint" style="margin-top:4px">You can start a different upload below while this finishes.</p>`;
-      btn.disabled = false; btn.textContent = "Go";
-      setTimeout(() => pollFindBulkJob(jobId), 3000);
-      return;
-    }
-    store.set("si.findBulkJobId", "");
-    btn.disabled = false; btn.textContent = "Go";
-    if (job.status === "completed") {
+      rows.push(`<p class="hint"><strong>${esc(t.label)}</strong>: Processing… ${p.processed ?? 0}/${p.total_rows ?? "?"} row(s) (${p.succeeded ?? 0} succeeded, ${p.failed ?? 0} failed so far)</p>`);
+      stillActive.push(t);
+    } else if (job.status === "completed") {
       const st = job.stats || {};
-      $("findResults").innerHTML = `
-        <p class="hint">Done: ${st.succeeded ?? 0} succeeded, ${st.failed ?? 0} failed, ${st.needs_url ?? 0} need a URL.</p>
-        <button class="btn btn-ghost btn-block" data-download-batch="${esc(jobId)}" style="margin-top:8px">Download results CSV</button>` + FIND_DISCLAIMER;
+      let line = `<p class="hint"><strong>${esc(t.label)}</strong>: Done -- ${st.succeeded ?? 0} succeeded, ${st.failed ?? 0} failed, ${st.needs_url ?? 0} need a URL. Results CSV downloaded automatically.`;
+      try {
+        await downloadBatchCsv(t.id);
+      } catch (err) {
+        line = `<p class="hint"><strong>${esc(t.label)}</strong>: Done -- ${st.succeeded ?? 0} succeeded, ${st.failed ?? 0} failed, ${st.needs_url ?? 0} need a URL. `
+          + `Auto-download failed (${esc(err.message)}) -- use the CSV button in Job History instead.`;
+      }
+      rows.push(line + `</p><button class="btn btn-ghost btn-sm" data-download-batch="${esc(t.id)}" style="margin-top:4px">Download again</button>`);
+      // completed -- drops out of stillActive, never re-checked/re-downloaded
     } else {
-      $("findResults").innerHTML = `<div class="alert"><div class="alert-title">Batch failed</div><div>${esc(job.error || "unknown error")}</div></div>`;
+      rows.push(`<p class="hint"><strong>${esc(t.label)}</strong>: failed -- ${esc(job.error || "unknown error")}</p>`);
+      // failed -- also drops out
     }
-  } catch (err) {
-    explain(err, $("findAlert"));
-    btn.disabled = false; btn.textContent = "Go";
+  }
+
+  $("findResults").innerHTML = "You can start a different upload below while these finish.<br>" + rows.join("") + (stillActive.length ? "" : FIND_DISCLAIMER);
+  setTrackedBulkJobs(stillActive);
+  if (stillActive.length) {
+    bulkPollTimer = setTimeout(pollBulkJobs, 3000);
+  } else {
+    bulkPollTimer = null;
   }
 }
 
@@ -2275,10 +2336,10 @@ $("btnBulkContacts").addEventListener("click", () => triggerBulkJob($("btnBulkCo
 $("btnBulkFactoryFacts").addEventListener("click", () => triggerBulkJob($("btnBulkFactoryFacts"), "/factory-facts/jobs"));
 
 // Batch upload retired from this tab -- Find Suppliers' own "Have a
-// list instead?" block (findSubmitBulk/pollFindBulkJob) is a superset
-// (pasted list OR CSV file, same /batch/upload endpoint, same
-// recover_dead_domains/recovery_product_term/default_region options)
-// and is now the single entry point for it.
+// list instead?" block (findSubmitBulk/pollBulkJobs) is a superset
+// (pasted list OR one-or-more CSV/Excel files, same /batch/upload
+// endpoint, same recover_dead_domains/recovery_product_term/
+// default_region options) and is now the single entry point for it.
 
 document.addEventListener("click", async (e) => {
   const btn = e.target.closest("[data-download-batch]");
@@ -2287,16 +2348,7 @@ document.addEventListener("click", async (e) => {
   const original = btn.textContent;
   btn.disabled = true; btn.textContent = "Downloading…";
   try {
-    const res = await fetch(state.base + `/batch/${jobId}/export.csv`, {
-      headers: { "Authorization": "Bearer " + state.token },
-    });
-    if (!res.ok) throw Object.assign(new Error("Export failed"), { status: res.status });
-    const blob = await res.blob();
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `batch_${jobId}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    await downloadBatchCsv(jobId);
   } catch (err) {
     alert("Could not download CSV: " + err.message);
   } finally {
@@ -3214,9 +3266,8 @@ function renderAuditDetail(b, opts = {}) {
 (async function init() {
   await checkHealth();
   initFindView();
-  const resumeJobId = store.get("si.findBulkJobId");
-  if (resumeJobId && state.connected) {
-    pollFindBulkJob(resumeJobId);
+  if (getTrackedBulkJobs().length && state.connected) {
+    pollBulkJobs();
   }
   if (!state.base) {
     const connectPrompt = `<div class="empty">
