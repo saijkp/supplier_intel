@@ -1954,6 +1954,37 @@ class SupplierRepository:
                 (error, datetime.now(timezone.utc).isoformat(), job_id),
             )
 
+    def sweep_orphaned_running_jobs(self, *, reason: str) -> List[str]:
+        """Marks every pipeline_jobs row still 'running' as 'failed'
+        with `reason` -- meant to be called exactly once, at process
+        startup before any new job can be created, so every row this
+        finds is unambiguously orphaned from a PREVIOUS process: every
+        job here (POST /pipeline/jobs, /batch/upload, /collection/jobs,
+        etc.) runs as an in-process BackgroundTasks thread, and a
+        redeploy/restart kills that thread mid-flight with no graceful
+        shutdown hook -- nothing else ever revisits that row, so it
+        would otherwise stay 'running' forever, indistinguishable from
+        a genuinely slow job still in progress.
+
+        Real incident this closes: 6 real batch-upload jobs sat
+        'running' with literally zero progress for over 24 hours across
+        a night of frequent redeploys, permanently cluttering Job
+        History with jobs that looked identical to healthy slow ones
+        from the outside. Returns the affected job ids purely for the
+        caller to log -- this method itself never logs (repository
+        layer stays free of logging concerns, same as every other
+        method here)."""
+        with connection_scope(self.db_path) as conn:
+            rows = conn.execute("SELECT id FROM pipeline_jobs WHERE status = 'running'").fetchall()
+            job_ids = [row["id"] for row in rows]
+            if job_ids:
+                now = datetime.now(timezone.utc).isoformat()
+                conn.executemany(
+                    "UPDATE pipeline_jobs SET status = 'failed', error = ?, completed_at = ? WHERE id = ?",
+                    [(reason, now, job_id) for job_id in job_ids],
+                )
+            return job_ids
+
     def get_pipeline_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         with connection_scope(self.db_path) as conn:
             row = conn.execute("SELECT * FROM pipeline_jobs WHERE id = ?", (job_id,)).fetchone()

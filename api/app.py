@@ -32,6 +32,7 @@ redeploys.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
@@ -83,10 +84,38 @@ from config.settings import ALLOWED_ORIGINS
 from storage.database import initialise_schema
 from storage.repository import SupplierRepository
 
+logger = logging.getLogger(__name__)
+
+_ORPHANED_JOB_REASON = "orphaned by redeploy -- process restarted while this job was still running"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     initialise_schema()
+    # Every job here runs as an in-process BackgroundTasks thread; a
+    # redeploy/restart kills it mid-flight with no graceful shutdown
+    # hook, and nothing else ever revisits its pipeline_jobs row --
+    # without this it stays 'running' forever, indistinguishable from
+    # a genuinely slow job still in progress. Real incident: 6 real
+    # batch-upload jobs sat 'running' with zero progress for over 24
+    # hours across a night of frequent redeploys. Safe to run on every
+    # startup, not just after a crash -- any row this finds is
+    # unambiguously orphaned, since THIS process hasn't created or
+    # resumed any job yet at this point.
+    #
+    # get_repo() (a plain global-name lookup at call time), not
+    # SupplierRepository() directly -- tests monkeypatch api.app.get_repo
+    # to point at a temporary test database before triggering this
+    # lifespan (via `with TestClient(...)`); calling SupplierRepository()
+    # here directly would bypass that entirely and run a real UPDATE
+    # against the real default local DB_PATH on every test run,
+    # violating this codebase's own "tests never touch the real
+    # database" rule. FastAPI's `dependency_overrides` mechanism (used
+    # for every *route's* `Depends(get_repo)`) does NOT cover this --
+    # lifespan never goes through FastAPI's DI resolution at all.
+    orphaned = get_repo().sweep_orphaned_running_jobs(reason=_ORPHANED_JOB_REASON)
+    if orphaned:
+        logger.warning("startup: marked %d orphaned running job(s) as failed: %s", len(orphaned), orphaned)
     yield
 
 

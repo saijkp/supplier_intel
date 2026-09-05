@@ -30,6 +30,12 @@ def client(tmp_path, monkeypatch):
     initialise_schema(db_path)
     test_repo = SupplierRepository(db_path=db_path)
     api.app.app.dependency_overrides[api.app.get_repo] = lambda: test_repo
+    # dependency_overrides only covers routes' own `Depends(get_repo)` --
+    # lifespan's orphaned-job sweep calls get_repo() directly, never
+    # going through FastAPI's DI resolution, so it needs its own
+    # monkeypatch or it would hit the real default DB_PATH on every
+    # test that uses `with TestClient(...)` below.
+    monkeypatch.setattr(api.app, "get_repo", lambda: test_repo)
 
     def fake_run_pipeline_job(job_id, query, options):
         test_repo.mark_pipeline_job_running(job_id)

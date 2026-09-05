@@ -57,6 +57,12 @@ def client(tmp_path, monkeypatch):
     initialise_schema(db_path)
     test_repo = SupplierRepository(db_path=db_path)
     api.app.app.dependency_overrides[api.app.get_repo] = lambda: test_repo
+    # dependency_overrides only covers routes' own `Depends(get_repo)` --
+    # lifespan's orphaned-job sweep calls get_repo() directly (a plain
+    # name lookup, never going through FastAPI's DI resolution at all),
+    # so it needs its own monkeypatch or it would hit the real default
+    # DB_PATH on every test that uses `with TestClient(...)` below.
+    monkeypatch.setattr(api.app, "get_repo", lambda: test_repo)
 
     def fake_run_pipeline_job(job_id, query, options):
         test_repo.mark_pipeline_job_running(job_id)
@@ -136,6 +142,67 @@ def client(tmp_path, monkeypatch):
 
 def auth_headers():
     return {"Authorization": f"Bearer {TOKEN}"}
+
+
+class TestStartupOrphanedJobSweep:
+    """Real incident: 6 real batch-upload jobs sat 'running' with zero
+    progress for over 24 hours across a night of frequent redeploys --
+    api/app.py's lifespan now sweeps them at startup (see
+    storage.repository.SupplierRepository.sweep_orphaned_running_jobs).
+    Needs its own TestClient setup (not the shared `client` fixture)
+    since the job must exist BEFORE lifespan fires -- the shared
+    fixture's own `with TestClient(...)` already runs lifespan before
+    any test body gets a chance to insert anything."""
+
+    def test_a_running_job_present_before_startup_is_marked_failed(self, tmp_path, monkeypatch):
+        import api.app
+        import api.auth
+        from storage.database import initialise_schema
+        from storage.repository import SupplierRepository
+
+        monkeypatch.setattr(api.auth, "API_ACCESS_TOKEN", TOKEN)
+        db_path = tmp_path / "test_startup_sweep.db"
+        initialise_schema(db_path)
+        test_repo = SupplierRepository(db_path=db_path)
+        test_repo.create_pipeline_job(job_id="orphan-1", query="[batch] uk_lpg_suppliers.csv", options={})
+        test_repo.mark_pipeline_job_running("orphan-1")
+
+        api.app.app.dependency_overrides[api.app.get_repo] = lambda: test_repo
+        monkeypatch.setattr(api.app, "get_repo", lambda: test_repo)
+
+        with TestClient(api.app.app):
+            pass  # entering/exiting the context is enough to run lifespan startup
+
+        job = test_repo.get_pipeline_job("orphan-1")
+        assert job["status"] == "failed"
+        assert "orphaned by redeploy" in job["error"]
+
+        api.app.app.dependency_overrides.clear()
+
+    def test_a_queued_job_present_before_startup_is_left_alone(self, tmp_path, monkeypatch):
+        """Regression guard: a job that was merely queued (not started)
+        when the process died is NOT orphaned -- it's legitimate for it
+        to still be waiting its turn."""
+        import api.app
+        import api.auth
+        from storage.database import initialise_schema
+        from storage.repository import SupplierRepository
+
+        monkeypatch.setattr(api.auth, "API_ACCESS_TOKEN", TOKEN)
+        db_path = tmp_path / "test_startup_sweep_queued.db"
+        initialise_schema(db_path)
+        test_repo = SupplierRepository(db_path=db_path)
+        test_repo.create_pipeline_job(job_id="queued-1", query="[batch] new_list.csv", options={})
+
+        api.app.app.dependency_overrides[api.app.get_repo] = lambda: test_repo
+        monkeypatch.setattr(api.app, "get_repo", lambda: test_repo)
+
+        with TestClient(api.app.app):
+            pass
+
+        assert test_repo.get_pipeline_job("queued-1")["status"] == "queued"
+
+        api.app.app.dependency_overrides.clear()
 
 
 class TestHealth:

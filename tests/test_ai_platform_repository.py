@@ -411,6 +411,100 @@ class TestPipelineJobProgress:
         assert jobs[0]["progress"] == {"examined": 2}
 
 
+class TestSweepOrphanedRunningJobs:
+    """Real incident: 6 real batch-upload jobs sat 'running' with zero
+    progress for over 24 hours across a night of frequent redeploys --
+    every job runs as an in-process BackgroundTasks thread, and a
+    redeploy/restart kills it mid-flight with no graceful shutdown
+    hook, so nothing ever revisited its row. Meant to be called once
+    at process startup (see api/app.py's lifespan), before any new job
+    can exist, so every 'running' row found is unambiguously orphaned
+    from a PREVIOUS process."""
+
+    def test_a_running_job_is_marked_failed_with_the_given_reason(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_pipeline_job(job_id="job-1", query="[batch] test.csv", options={})
+        repo.mark_pipeline_job_running("job-1")
+
+        swept = repo.sweep_orphaned_running_jobs(reason="orphaned by redeploy")
+
+        assert swept == ["job-1"]
+        job = repo.get_pipeline_job("job-1")
+        assert job["status"] == "failed"
+        assert job["error"] == "orphaned by redeploy"
+        assert job["completed_at"] is not None
+
+    def test_multiple_running_jobs_are_all_swept(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        for job_id in ("job-1", "job-2", "job-3"):
+            repo.create_pipeline_job(job_id=job_id, query="[batch] test.csv", options={})
+            repo.mark_pipeline_job_running(job_id)
+
+        swept = repo.sweep_orphaned_running_jobs(reason="orphaned by redeploy")
+
+        assert sorted(swept) == ["job-1", "job-2", "job-3"]
+        assert all(repo.get_pipeline_job(j)["status"] == "failed" for j in swept)
+
+    def test_queued_job_is_untouched(self, tmp_path):
+        """A job that's been created but never started (still 'queued',
+        e.g. genuinely waiting for a BackgroundTasks slot) is NOT
+        orphaned -- it just hasn't run yet, and may still run normally
+        once this same process picks it up."""
+        repo = _make_repo(tmp_path)
+        repo.create_pipeline_job(job_id="job-1", query="[batch] test.csv", options={})
+
+        swept = repo.sweep_orphaned_running_jobs(reason="orphaned by redeploy")
+
+        assert swept == []
+        assert repo.get_pipeline_job("job-1")["status"] == "queued"
+
+    def test_completed_job_is_untouched(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_pipeline_job(job_id="job-1", query="[batch] test.csv", options={})
+        repo.mark_pipeline_job_running("job-1")
+        repo.mark_pipeline_job_completed("job-1", stats={"succeeded": 1})
+
+        swept = repo.sweep_orphaned_running_jobs(reason="orphaned by redeploy")
+
+        assert swept == []
+        assert repo.get_pipeline_job("job-1")["status"] == "completed"
+
+    def test_already_failed_job_is_untouched(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_pipeline_job(job_id="job-1", query="[batch] test.csv", options={})
+        repo.mark_pipeline_job_running("job-1")
+        repo.mark_pipeline_job_failed("job-1", error="a real, different failure")
+
+        swept = repo.sweep_orphaned_running_jobs(reason="orphaned by redeploy")
+
+        assert swept == []
+        assert repo.get_pipeline_job("job-1")["error"] == "a real, different failure"
+
+    def test_no_running_jobs_returns_empty_list_without_error(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        assert repo.sweep_orphaned_running_jobs(reason="orphaned by redeploy") == []
+
+    def test_mixed_statuses_only_running_ones_are_swept(self, tmp_path):
+        """The exact real shape: some jobs genuinely finished before the
+        redeploy that killed the others -- only the ones still
+        'running' at that moment are truly orphaned."""
+        repo = _make_repo(tmp_path)
+        repo.create_pipeline_job(job_id="done", query="[batch] a.csv", options={})
+        repo.mark_pipeline_job_running("done")
+        repo.mark_pipeline_job_completed("done", stats={})
+        repo.create_pipeline_job(job_id="stuck-1", query="[batch] b.csv", options={})
+        repo.mark_pipeline_job_running("stuck-1")
+        repo.create_pipeline_job(job_id="stuck-2", query="[batch] c.csv", options={})
+        repo.mark_pipeline_job_running("stuck-2")
+        repo.create_pipeline_job(job_id="never-started", query="[batch] d.csv", options={})
+
+        swept = repo.sweep_orphaned_running_jobs(reason="orphaned by redeploy")
+
+        assert sorted(swept) == ["stuck-1", "stuck-2"]
+        assert repo.get_pipeline_job("done")["status"] == "completed"
+        assert repo.get_pipeline_job("never-started")["status"] == "queued"
+
+
 class TestFindDiscoveredSuppliers:
     """discovery.discovery_service.DiscoveryService.export_for_batch_upload's
     data source -- deliberately reads persistent discovery_source/
