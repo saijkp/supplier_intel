@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -1929,29 +1929,32 @@ class SupplierRepository:
     def create_pipeline_job(self, *, job_id: str, query: str, options: Dict[str, Any]) -> None:
         with connection_scope(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO pipeline_jobs (id, query, options, status) VALUES (?, ?, ?, 'queued')",
-                (job_id, query, json.dumps(options)),
+                "INSERT INTO pipeline_jobs (id, query, options, status, updated_at) VALUES (?, ?, ?, 'queued', ?)",
+                (job_id, query, json.dumps(options), datetime.now(timezone.utc).isoformat()),
             )
 
     def mark_pipeline_job_running(self, job_id: str) -> None:
         with connection_scope(self.db_path) as conn:
+            now = datetime.now(timezone.utc).isoformat()
             conn.execute(
-                "UPDATE pipeline_jobs SET status = 'running', started_at = ? WHERE id = ?",
-                (datetime.now(timezone.utc).isoformat(), job_id),
+                "UPDATE pipeline_jobs SET status = 'running', started_at = ?, updated_at = ? WHERE id = ?",
+                (now, now, job_id),
             )
 
     def mark_pipeline_job_completed(self, job_id: str, *, stats: Dict[str, Any]) -> None:
         with connection_scope(self.db_path) as conn:
+            now = datetime.now(timezone.utc).isoformat()
             conn.execute(
-                "UPDATE pipeline_jobs SET status = 'completed', stats = ?, completed_at = ? WHERE id = ?",
-                (json.dumps(stats), datetime.now(timezone.utc).isoformat(), job_id),
+                "UPDATE pipeline_jobs SET status = 'completed', stats = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(stats), now, now, job_id),
             )
 
     def mark_pipeline_job_failed(self, job_id: str, *, error: str) -> None:
         with connection_scope(self.db_path) as conn:
+            now = datetime.now(timezone.utc).isoformat()
             conn.execute(
-                "UPDATE pipeline_jobs SET status = 'failed', error = ?, completed_at = ? WHERE id = ?",
-                (error, datetime.now(timezone.utc).isoformat(), job_id),
+                "UPDATE pipeline_jobs SET status = 'failed', error = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+                (error, now, now, job_id),
             )
 
     def sweep_orphaned_running_jobs(self, *, reason: str) -> List[str]:
@@ -1980,8 +1983,49 @@ class SupplierRepository:
             if job_ids:
                 now = datetime.now(timezone.utc).isoformat()
                 conn.executemany(
-                    "UPDATE pipeline_jobs SET status = 'failed', error = ?, completed_at = ? WHERE id = ?",
-                    [(reason, now, job_id) for job_id in job_ids],
+                    "UPDATE pipeline_jobs SET status = 'failed', error = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+                    [(reason, now, now, job_id) for job_id in job_ids],
+                )
+            return job_ids
+
+    def sweep_stalled_running_jobs(self, *, stale_after_seconds: int, reason: str) -> List[str]:
+        """Marks any 'running' pipeline_jobs row that hasn't had a real
+        write (create/running/progress/completed/failed) in over
+        `stale_after_seconds` as 'failed' with `reason`. This is the
+        live counterpart to sweep_orphaned_running_jobs above: that one
+        only runs once, at process startup, so it can only catch a job
+        orphaned by a redeploy killing the process mid-flight. It has
+        no way to catch a job that hangs while the SAME process keeps
+        running -- a stuck Playwright page or an unreleased lock, say
+        -- since there's no restart to trigger it. Meant to be called
+        periodically by a background watchdog (see api/app.py), not
+        once.
+
+        Real incident this closes: 7 real batch-upload jobs sat
+        'running' with no forward progress for hours to days, across a
+        stretch with zero redeploys -- invisible to the startup sweep
+        because the process never restarted, and invisible to a human
+        watching Job History because a stuck job looks identical to a
+        genuinely slow one from the outside.
+
+        Uses COALESCE(updated_at, started_at, created_at) rather than
+        updated_at alone so a row written before the v31 migration
+        (updated_at still NULL) is still correctly judged stale against
+        its last known activity, instead of being skipped forever or
+        swept immediately regardless of age."""
+        with connection_scope(self.db_path) as conn:
+            cutoff = (datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)).isoformat()
+            rows = conn.execute(
+                "SELECT id FROM pipeline_jobs "
+                "WHERE status = 'running' AND COALESCE(updated_at, started_at, created_at) < ?",
+                (cutoff,),
+            ).fetchall()
+            job_ids = [row["id"] for row in rows]
+            if job_ids:
+                now = datetime.now(timezone.utc).isoformat()
+                conn.executemany(
+                    "UPDATE pipeline_jobs SET status = 'failed', error = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+                    [(reason, now, now, job_id) for job_id in job_ids],
                 )
             return job_ids
 
@@ -2017,8 +2061,8 @@ class SupplierRepository:
         `stats` already is, just before the job actually completes."""
         with connection_scope(self.db_path) as conn:
             conn.execute(
-                "UPDATE pipeline_jobs SET progress = ? WHERE id = ?",
-                (json.dumps(progress, default=_json_default), job_id),
+                "UPDATE pipeline_jobs SET progress = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(progress, default=_json_default), datetime.now(timezone.utc).isoformat(), job_id),
             )
 
     # ═════════════════════════════════════════════════════

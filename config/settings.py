@@ -97,6 +97,25 @@ CONTACTS_MAX_CONCURRENT_JOBS: int = int(os.getenv("CONTACTS_MAX_CONCURRENT_JOBS"
 UK_VERIFICATION_JOB_MAX_SECONDS: int = int(os.getenv("UK_VERIFICATION_JOB_MAX_SECONDS") or 600)
 UK_VERIFICATION_MAX_CONCURRENT_JOBS: int = int(os.getenv("UK_VERIFICATION_MAX_CONCURRENT_JOBS") or 1)
 
+# --- Pipeline job watchdog (api/app.py) -----------------------------------
+# Every *_JOB_MAX_SECONDS above only bounds a batch's total wall-clock time,
+# checked BETWEEN items in that service's own loop -- it can't help if a
+# SINGLE item hangs forever inside one iteration (e.g. a stuck Playwright
+# page that never returns from page.goto()), since the loop never reaches
+# its own budget check. Real incident: 7 pipeline_jobs sat 'running' with
+# no forward progress for hours to days, across a stretch with zero
+# redeploys -- sweep_orphaned_running_jobs (api/app.py's startup sweep)
+# never got a chance to catch them, since it only runs once, at process
+# startup, and nothing restarted. This is the backstop for that: a
+# background watchdog task, started in api/app.py's lifespan, that
+# periodically marks any 'running' pipeline_jobs row stale (per
+# pipeline_jobs.updated_at) as 'failed'. Deliberately generous defaults --
+# a real capability-extraction/collection batch can legitimately go
+# several minutes between progress writes, so this should only fire on a
+# genuine hang, not a merely slow job.
+PIPELINE_JOB_STALL_TIMEOUT_SECONDS: int = int(os.getenv("PIPELINE_JOB_STALL_TIMEOUT_SECONDS") or 2700)  # 45 min
+PIPELINE_JOB_WATCHDOG_INTERVAL_SECONDS: int = int(os.getenv("PIPELINE_JOB_WATCHDOG_INTERVAL_SECONDS") or 300)  # 5 min
+
 # --- Collection Service (collection/) -- Playwright + rotating proxies ---
 # Webshare is the first (and, for now, only implemented) rotating-proxy
 # provider -- see collection/proxy_provider.py's module docstring for

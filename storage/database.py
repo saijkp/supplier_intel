@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 
 # ═══════════════════════════════════════════════════════════
@@ -437,7 +437,15 @@ CREATE TABLE IF NOT EXISTS pipeline_jobs (
                                            -- the same way `stats` already is, just before completion
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at      TIMESTAMP,
-    completed_at    TIMESTAMP
+    completed_at    TIMESTAMP,
+    updated_at      TIMESTAMP  -- (v31) bumped on every create/running/progress/
+                                -- completed/failed write; the live stalled-job
+                                -- watchdog (api/app.py) compares this against
+                                -- now() to catch a job hung INSIDE a still-running
+                                -- process -- something sweep_orphaned_running_jobs
+                                -- structurally can't do, since that only runs once
+                                -- at process startup. See MIGRATIONS[31] and
+                                -- SupplierRepository.sweep_stalled_running_jobs.
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON pipeline_jobs(status);
@@ -1677,6 +1685,27 @@ MIGRATIONS: dict[int, dict] = {
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_monitoring_due ON supplier_monitoring_settings(next_check_due_at)",
+        ],
+    },
+    31: {
+        "description": (
+            "pipeline_jobs.updated_at -- backs the live stalled-job watchdog "
+            "(api/app.py's periodic background task, distinct from the "
+            "startup-only sweep_orphaned_running_jobs added alongside the "
+            "v30-era incident response). Real incident this closes: 7 real "
+            "batch-upload jobs sat 'running' with no progress for hours to "
+            "days, across a stretch with ZERO redeploys -- an in-process "
+            "hang (stuck Playwright page / unreleased lock, not a crash), "
+            "which the startup sweep structurally cannot catch since it only "
+            "runs once, at process startup, and no restart had happened. "
+            "updated_at is set on every create/running/progress/completed/ "
+            "failed write (see SupplierRepository); the watchdog periodically "
+            "marks any 'running' row whose updated_at (or, for pre-migration "
+            "rows where it's still NULL, started_at/created_at) is older "
+            "than PIPELINE_JOB_STALL_TIMEOUT_SECONDS as 'failed'."
+        ),
+        "columns": [
+            ("pipeline_jobs", "updated_at", "TIMESTAMP"),
         ],
     },
 }

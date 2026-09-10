@@ -505,6 +505,139 @@ class TestSweepOrphanedRunningJobs:
         assert repo.get_pipeline_job("never-started")["status"] == "queued"
 
 
+def _backdate(repo, job_id, column, when):
+    """Test-only helper: directly rewrites a pipeline_jobs timestamp
+    column, bypassing the repository's own write paths (which always
+    stamp 'now'). Simulates a job that's been sitting untouched since
+    `when`, the way a genuinely stalled job would look in production."""
+    import sqlite3
+
+    conn = sqlite3.connect(str(repo.db_path))
+    conn.execute(f"UPDATE pipeline_jobs SET {column} = ? WHERE id = ?", (when.isoformat(), job_id))
+    conn.commit()
+    conn.close()
+
+
+class TestSweepStalledRunningJobs:
+    """Real incident: 7 real pipeline_jobs sat 'running' with no forward
+    progress for hours to days, across a stretch with ZERO redeploys --
+    sweep_orphaned_running_jobs (above) never got a chance to fire,
+    since it only runs once at process startup and nothing restarted.
+    This is the live counterpart: meant to be called periodically (see
+    api/app.py's watchdog task), comparing each 'running' row's last
+    real activity against a stale-after threshold rather than waiting
+    for a process restart that may never come."""
+
+    def test_a_stale_running_job_is_marked_failed_with_the_given_reason(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_pipeline_job(job_id="job-1", query="[batch] test.csv", options={})
+        repo.mark_pipeline_job_running("job-1")
+        _backdate(repo, "job-1", "updated_at", datetime.now(timezone.utc) - timedelta(seconds=3600))
+
+        swept = repo.sweep_stalled_running_jobs(stale_after_seconds=1800, reason="stalled")
+
+        assert swept == ["job-1"]
+        job = repo.get_pipeline_job("job-1")
+        assert job["status"] == "failed"
+        assert job["error"] == "stalled"
+        assert job["completed_at"] is not None
+
+    def test_a_recently_updated_running_job_is_left_alone(self, tmp_path):
+        """The exact regression this must never cause: a genuinely slow
+        but healthy job (e.g. mid-batch, just wrote progress a minute
+        ago) must not be killed out from under the user."""
+        repo = _make_repo(tmp_path)
+        repo.create_pipeline_job(job_id="job-1", query="[batch] test.csv", options={})
+        repo.mark_pipeline_job_running("job-1")
+
+        swept = repo.sweep_stalled_running_jobs(stale_after_seconds=1800, reason="stalled")
+
+        assert swept == []
+        assert repo.get_pipeline_job("job-1")["status"] == "running"
+
+    def test_a_progress_write_resets_the_staleness_clock(self, tmp_path):
+        """A job started long ago but still actively reporting progress
+        is healthy, not stalled -- update_pipeline_job_progress must
+        count as real activity, the same as the initial running-mark."""
+        repo = _make_repo(tmp_path)
+        repo.create_pipeline_job(job_id="job-1", query="[batch] test.csv", options={})
+        repo.mark_pipeline_job_running("job-1")
+        _backdate(repo, "job-1", "started_at", datetime.now(timezone.utc) - timedelta(hours=5))
+        _backdate(repo, "job-1", "updated_at", datetime.now(timezone.utc) - timedelta(hours=5))
+
+        repo.update_pipeline_job_progress("job-1", {"processed": 10, "total_rows": 100})
+        swept = repo.sweep_stalled_running_jobs(stale_after_seconds=1800, reason="stalled")
+
+        assert swept == []
+        assert repo.get_pipeline_job("job-1")["status"] == "running"
+
+    def test_pre_migration_row_with_null_updated_at_falls_back_to_started_at(self, tmp_path):
+        """A row written before the updated_at column existed (or by any
+        future write path that forgets to set it) must still be judged
+        on its real age via started_at/created_at, not skipped forever
+        just because updated_at is NULL."""
+        repo = _make_repo(tmp_path)
+        repo.create_pipeline_job(job_id="job-1", query="[batch] test.csv", options={})
+        repo.mark_pipeline_job_running("job-1")
+        _backdate(repo, "job-1", "started_at", datetime.now(timezone.utc) - timedelta(hours=5))
+        import sqlite3
+
+        conn = sqlite3.connect(str(repo.db_path))
+        conn.execute("UPDATE pipeline_jobs SET updated_at = NULL WHERE id = 'job-1'")
+        conn.commit()
+        conn.close()
+
+        swept = repo.sweep_stalled_running_jobs(stale_after_seconds=1800, reason="stalled")
+
+        assert swept == ["job-1"]
+
+    def test_queued_job_is_never_swept_regardless_of_age(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_pipeline_job(job_id="job-1", query="[batch] test.csv", options={})
+        _backdate(repo, "job-1", "created_at", datetime.now(timezone.utc) - timedelta(days=3))
+        _backdate(repo, "job-1", "updated_at", datetime.now(timezone.utc) - timedelta(days=3))
+
+        swept = repo.sweep_stalled_running_jobs(stale_after_seconds=1800, reason="stalled")
+
+        assert swept == []
+        assert repo.get_pipeline_job("job-1")["status"] == "queued"
+
+    def test_completed_and_failed_jobs_are_untouched(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_pipeline_job(job_id="done", query="[batch] a.csv", options={})
+        repo.mark_pipeline_job_running("done")
+        repo.mark_pipeline_job_completed("done", stats={})
+        _backdate(repo, "done", "updated_at", datetime.now(timezone.utc) - timedelta(days=1))
+        repo.create_pipeline_job(job_id="failed-1", query="[batch] b.csv", options={})
+        repo.mark_pipeline_job_running("failed-1")
+        repo.mark_pipeline_job_failed("failed-1", error="a real, different failure")
+        _backdate(repo, "failed-1", "updated_at", datetime.now(timezone.utc) - timedelta(days=1))
+
+        swept = repo.sweep_stalled_running_jobs(stale_after_seconds=1800, reason="stalled")
+
+        assert swept == []
+
+    def test_no_running_jobs_returns_empty_list_without_error(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        assert repo.sweep_stalled_running_jobs(stale_after_seconds=1800, reason="stalled") == []
+
+    def test_mixed_stale_and_fresh_running_jobs_only_stale_ones_swept(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        repo.create_pipeline_job(job_id="fresh", query="[batch] a.csv", options={})
+        repo.mark_pipeline_job_running("fresh")
+        repo.create_pipeline_job(job_id="stale-1", query="[batch] b.csv", options={})
+        repo.mark_pipeline_job_running("stale-1")
+        _backdate(repo, "stale-1", "updated_at", datetime.now(timezone.utc) - timedelta(hours=2))
+        repo.create_pipeline_job(job_id="stale-2", query="[batch] c.csv", options={})
+        repo.mark_pipeline_job_running("stale-2")
+        _backdate(repo, "stale-2", "updated_at", datetime.now(timezone.utc) - timedelta(hours=2))
+
+        swept = repo.sweep_stalled_running_jobs(stale_after_seconds=1800, reason="stalled")
+
+        assert sorted(swept) == ["stale-1", "stale-2"]
+        assert repo.get_pipeline_job("fresh")["status"] == "running"
+
+
 class TestFindDiscoveredSuppliers:
     """discovery.discovery_service.DiscoveryService.export_for_batch_upload's
     data source -- deliberately reads persistent discovery_source/

@@ -32,6 +32,8 @@ redeploys.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -80,13 +82,46 @@ from api.models import (
     SupplierSearchResult,
     VerificationJobRequest,
 )
-from config.settings import ALLOWED_ORIGINS
+from config.settings import ALLOWED_ORIGINS, PIPELINE_JOB_STALL_TIMEOUT_SECONDS, PIPELINE_JOB_WATCHDOG_INTERVAL_SECONDS
 from storage.database import initialise_schema
 from storage.repository import SupplierRepository
 
 logger = logging.getLogger(__name__)
 
 _ORPHANED_JOB_REASON = "orphaned by redeploy -- process restarted while this job was still running"
+_STALLED_JOB_REASON = (
+    f"stalled -- no progress in over {PIPELINE_JOB_STALL_TIMEOUT_SECONDS // 60} minutes, "
+    "likely an in-process hang (e.g. a stuck Playwright page or an unreleased lock), "
+    "caught by the live watchdog"
+)
+
+
+async def _stalled_job_watchdog() -> None:
+    """Background task, started in lifespan below: periodically sweeps
+    for a 'running' pipeline_jobs row that's gone stale (see
+    SupplierRepository.sweep_stalled_running_jobs's own docstring for
+    why this exists as a SEPARATE mechanism from the startup-only
+    sweep_orphaned_running_jobs above -- short version: that one can
+    only catch a job orphaned by a redeploy, this one catches a job
+    that hangs while the same process keeps running, with no restart
+    at all). Sleeps first, then checks, on a fixed interval -- runs for
+    the lifetime of the process, cancelled on shutdown by lifespan.
+
+    Wrapped in try/except per-iteration so a transient DB hiccup (e.g.
+    a momentary SQLITE_BUSY under load) logs and retries next interval
+    instead of silently killing this task forever -- an uncaught
+    exception in an asyncio.create_task() coroutine doesn't crash the
+    process, it just ends the task with nothing to restart it."""
+    while True:
+        await asyncio.sleep(PIPELINE_JOB_WATCHDOG_INTERVAL_SECONDS)
+        try:
+            stalled = get_repo().sweep_stalled_running_jobs(
+                stale_after_seconds=PIPELINE_JOB_STALL_TIMEOUT_SECONDS, reason=_STALLED_JOB_REASON
+            )
+            if stalled:
+                logger.warning("watchdog: marked %d stalled running job(s) as failed: %s", len(stalled), stalled)
+        except Exception:
+            logger.exception("watchdog: stalled-job sweep failed, will retry next interval")
 
 
 @asynccontextmanager
@@ -116,7 +151,18 @@ async def lifespan(app: FastAPI):
     orphaned = get_repo().sweep_orphaned_running_jobs(reason=_ORPHANED_JOB_REASON)
     if orphaned:
         logger.warning("startup: marked %d orphaned running job(s) as failed: %s", len(orphaned), orphaned)
-    yield
+
+    # The startup sweep above only ever catches a job orphaned by THIS
+    # restart. This watchdog is the live counterpart, running for as
+    # long as the process does, to catch a job that hangs without any
+    # restart at all -- see _stalled_job_watchdog's own docstring.
+    watchdog_task = asyncio.create_task(_stalled_job_watchdog())
+    try:
+        yield
+    finally:
+        watchdog_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watchdog_task
 
 
 app = FastAPI(

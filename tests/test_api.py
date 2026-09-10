@@ -9,7 +9,9 @@ injection, auth, and JSON serialisation path a real client would hit.
 
 from __future__ import annotations
 
+import asyncio
 import io
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -203,6 +205,46 @@ class TestStartupOrphanedJobSweep:
         assert test_repo.get_pipeline_job("queued-1")["status"] == "queued"
 
         api.app.app.dependency_overrides.clear()
+
+
+class TestStalledJobWatchdog:
+    """The startup sweep above only ever catches a job orphaned by a
+    redeploy that already happened -- it can't help a job that hangs
+    while the SAME process keeps running, since there's no restart to
+    trigger it. That's the gap the real incident (7 stuck pipeline_jobs
+    across a stretch with ZERO redeploys) exposed. This tests the
+    wiring only -- that lifespan actually starts a background watchdog
+    task on startup and actually cancels it on shutdown -- not the
+    stale-detection logic itself, which is unit-tested directly against
+    SupplierRepository.sweep_stalled_running_jobs in
+    tests/test_ai_platform_repository.py. Uses threading.Event, not
+    asyncio.Event -- TestClient runs the app's event loop on a separate
+    thread via anyio's portal, so a primitive tied to this test's own
+    (nonexistent) event loop wouldn't be safe to wait on here."""
+
+    def test_lifespan_starts_and_cancels_the_watchdog_task(self, monkeypatch):
+        import api.app
+        import api.auth
+
+        monkeypatch.setattr(api.auth, "API_ACCESS_TOKEN", TOKEN)
+
+        started = threading.Event()
+        cancelled = threading.Event()
+
+        async def fake_watchdog():
+            started.set()
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        monkeypatch.setattr(api.app, "_stalled_job_watchdog", fake_watchdog)
+
+        with TestClient(api.app.app):
+            assert started.wait(timeout=2), "watchdog task was never started by lifespan"
+
+        assert cancelled.wait(timeout=2), "watchdog task was never cancelled on shutdown"
 
 
 class TestHealth:
