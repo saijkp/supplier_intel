@@ -768,7 +768,7 @@ class SiteCollector:
         documents: List[CertificateDocument] = []
         for url, keyword in candidates:
             try:
-                response = context.request.get(url)
+                response = context.request.get(url, timeout=self.page_timeout_ms)
                 if not response.ok:
                     continue
                 filename = url.split("?")[0].rstrip("/").split("/")[-1] or "certificate"

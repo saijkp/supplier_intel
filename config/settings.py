@@ -173,6 +173,31 @@ COLLECTION_PARALLEL_WORKERS: int = int(os.getenv("COLLECTION_PARALLEL_WORKERS") 
 # happens to be running concurrently right now).
 COLLECTION_MAX_CONCURRENT_BROWSERS: int = int(os.getenv("COLLECTION_MAX_CONCURRENT_BROWSERS") or 3)
 
+# A single supplier's collection call has NO ceiling of its own today --
+# page.goto() has its own COLLECTION_PAGE_TIMEOUT_MS, but the surrounding
+# playwright.chromium.launch()/browser.new_context()/context.new_page()
+# calls (site_collector.py's _launch/_collect_with) have none, and none of
+# them raise on the same resource-exhaustion condition documented just
+# above (COLLECTION_MAX_CONCURRENT_BROWSERS's own incident) -- under
+# exactly that condition they can block forever instead of raising
+# BlockingIOError. Real incident this closes: a real batch-upload job hung
+# mid-file with zero progress and zero exception/crash trace for 13+
+# minutes and counting, confirmed live by its own deploy logs (activity
+# for 7 suppliers, then total silence starting the 8th's browser launch).
+# collection.collection_service.CollectionService._collect_one is the
+# ONLY place SiteCollector.collect() is ever invoked (see its own
+# comment), so a hard wall-clock ceiling there, in a daemon thread so a
+# genuinely-abandoned call can never block process shutdown, bounds the
+# damage from an indefinite hang to this many seconds instead of the
+# entire pipeline_jobs row (and everything queued behind it) -- the
+# PIPELINE_JOB_STALL_TIMEOUT_SECONDS watchdog above is the last-resort
+# backstop, this is the fix that stops a single bad row from burning the
+# whole 45-minute budget by itself. Deliberately generous: the worst-case
+# LEGITIMATE crawl (6 pages x 25s COLLECTION_PAGE_TIMEOUT_MS each, plus a
+# sitemap fetch and up to 5 certificate downloads at the same per-request
+# timeout) is comfortably under half of this.
+COLLECTION_SINGLE_ITEM_TIMEOUT_SECONDS: int = int(os.getenv("COLLECTION_SINGLE_ITEM_TIMEOUT_SECONDS") or 360)
+
 # --- Sourcing Agent (sourcing/sourcing_agent.py) -------------------------
 # Candidates processed concurrently within one _process_batch() wave --
 # same reasoning/default as COLLECTION_PARALLEL_WORKERS above, since
