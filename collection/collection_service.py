@@ -89,14 +89,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from collection.proxy_provider import ProxyProvider, select_proxy_provider
-from collection.schemas import CollectionResult
 from collection.site_collector import SiteCollector
 from config.settings import (
     COLLECTION_JOB_MAX_SECONDS,
     COLLECTION_MAX_CONCURRENT_BROWSERS,
     COLLECTION_MAX_CONCURRENT_JOBS,
     COLLECTION_PARALLEL_WORKERS,
-    COLLECTION_SINGLE_ITEM_TIMEOUT_SECONDS,
 )
 from deduplication.domain_utils import domains_match, extract_domain
 from deduplication.name_utils import names_plausibly_corroborate
@@ -140,7 +138,6 @@ class CollectionService:
         proxy_provider: Optional[ProxyProvider] = None,
         job_max_seconds: int = COLLECTION_JOB_MAX_SECONDS,
         parallel_workers: int = COLLECTION_PARALLEL_WORKERS,
-        single_item_timeout_seconds: int = COLLECTION_SINGLE_ITEM_TIMEOUT_SECONDS,
         default_region_fallback: Optional[str] = None,
     ):
         self.repo = repo or SupplierRepository()
@@ -148,7 +145,6 @@ class CollectionService:
         self.site_collector = site_collector or SiteCollector(proxy_provider=self.proxy_provider)
         self.job_max_seconds = job_max_seconds
         self.parallel_workers = parallel_workers
-        self.single_item_timeout_seconds = single_item_timeout_seconds
         # ISO 3166-1 alpha-2 fallback (e.g. "GB") used for phone parsing
         # ONLY when the supplier's own `country` isn't set yet -- always
         # true for a freshly-created supplier, since collect() runs
@@ -211,15 +207,33 @@ class CollectionService:
             # see _BROWSER_SEMAPHORE's own comment. This is the ONLY
             # place SiteCollector.collect() is ever invoked, so gating
             # here covers every caller uniformly, not just this one.
-            # _collect_with_hard_timeout (not a bare call) -- see its own
-            # docstring for the real incident this closes: SiteCollector
-            # itself has no ceiling on a launch()/new_context()/new_page()
-            # that hangs instead of raising, so without this the semaphore
-            # `with` block above would never exit either, permanently
-            # starving every other caller of a browser-launch slot on top
-            # of blocking this one forever.
+            #
+            # A daemon-thread wrapper with a hard join() timeout briefly
+            # lived here (see git history) to bound a SiteCollector call
+            # that hangs instead of raising -- REVERTED as a real, worse
+            # regression found live: Python threads can't be force-killed,
+            # so an abandoned thread's OWN internals (Playwright's asyncio
+            # loop, its subprocess/thread handles) never get reclaimed.
+            # Over hours of a long-running process, repeated real hangs
+            # (the exact condition COLLECTION_MAX_CONCURRENT_BROWSERS's
+            # own docstring already documents a live incident for)
+            # accumulated until the container's OS thread table was fully
+            # exhausted -- at which point sync_playwright() itself could
+            # no longer even start (it needs a thread/subprocess too), so
+            # EVERY row in EVERY subsequent batch failed near-instantly
+            # with BlockingIOError/"can't start new thread", silently
+            # recorded as a normal per-row failure by SiteCollector's own
+            # broad exception handler. Confirmed live: 4 consecutive real
+            # batch jobs completed with 0 successes out of 60-110 rows
+            # each. A direct call can still block this one job/thread on
+            # a genuine hang, same as before that wrapper existed, but it
+            # cannot leak OS resources that corrupt every OTHER job
+            # running on this process afterward -- pipeline_jobs' own
+            # stalled-job watchdog (api/app.py, a pure DB-polling
+            # mechanism that creates no new OS resources) is the correct
+            # backstop for a genuine per-job hang, not a per-call thread.
             with _BROWSER_SEMAPHORE:
-                result = self._collect_with_hard_timeout(supplier_id, domain, source_url)
+                result = self.site_collector.collect(supplier_id, domain, source_url=source_url)
         except Exception as e:  # noqa: BLE001 -- SiteCollector already never raises; this is defence in depth,
             # matching every other pipeline stage's per-supplier fault isolation in this codebase.
             logger.error("collection: unexpected error for supplier #%s: %s", supplier_id, e)
@@ -320,78 +334,6 @@ class CollectionService:
         if return_pages:
             outcome["pages"] = on_domain_pages
         return outcome
-
-    def _collect_with_hard_timeout(
-        self, supplier_id: int, domain: str, source_url: Optional[str],
-    ) -> CollectionResult:
-        """Runs self.site_collector.collect() in a background thread and
-        waits at most self.single_item_timeout_seconds (default
-        COLLECTION_SINGLE_ITEM_TIMEOUT_SECONDS) for it, instead of
-        calling it directly and trusting it to always return. Real
-        incident this closes: SiteCollector's own
-        page.goto() has its own timeout, but the launch()/new_context()/
-        new_page() calls around it (see site_collector.py's _launch/
-        _collect_with) have none -- under real resource exhaustion
-        (COLLECTION_MAX_CONCURRENT_BROWSERS's own docstring documents a
-        real BlockingIOError incident from exactly this) they can block
-        forever instead of raising, with no exception and nothing in the
-        logs, confirmed live: a real batch job's deploy logs showed
-        normal per-supplier activity for 7 suppliers, then total silence
-        starting the 8th's browser launch.
-
-        A plain daemon threading.Thread, not concurrent.futures -- a
-        ThreadPoolExecutor registers an atexit hook that JOINS every
-        still-running worker thread before the interpreter is allowed to
-        exit, which would make a genuinely wedged call block graceful
-        process shutdown too, not just this one call. A daemon thread is
-        never waited on at exit, by design.
-
-        Trade-off, accepted deliberately: if the abandoned call is still
-        holding the module-level _BROWSER_SEMAPHORE's underlying OS
-        resource (a real Chromium process) when we give up waiting, that
-        process leaks until it exits on its own or the container
-        restarts -- but the semaphore PERMIT itself is correctly freed
-        the moment this method returns (the `with _BROWSER_SEMAPHORE:`
-        block in _collect_one wraps this whole call, not the inner
-        thread), so one hang no longer permanently starves every other
-        caller of a browser-launch slot the way it would with no timeout
-        at all. Bounding the visible symptom (the whole batch/job stuck)
-        matters more than reclaiming that one process immediately --
-        pipeline_jobs' own stalled-job watchdog (api/app.py) is the
-        last-resort backstop if this still isn't enough."""
-        result_holder: List[CollectionResult] = []
-        exc_holder: List[BaseException] = []
-
-        def _run() -> None:
-            try:
-                result_holder.append(self.site_collector.collect(supplier_id, domain, source_url=source_url))
-            except BaseException as e:  # noqa: BLE001 -- re-raised as-is in the calling thread below, exact
-                # same "SiteCollector never raises by contract, but CollectionService catches it anyway as
-                # defence in depth" behaviour this method must preserve from before the timeout wrapper existed.
-                exc_holder.append(e)
-
-        thread = threading.Thread(target=_run, name=f"site-collector-{supplier_id}", daemon=True)
-        thread.start()
-        thread.join(timeout=self.single_item_timeout_seconds)
-
-        if thread.is_alive():
-            logger.warning(
-                "collection: supplier #%s (%s) exceeded the %ds single-item timeout with no result -- "
-                "abandoning the wait so the rest of the batch/job can continue; the underlying call keeps "
-                "running in the background until it finishes on its own or the process restarts",
-                supplier_id, domain, self.single_item_timeout_seconds,
-            )
-            return CollectionResult(
-                domain=domain, success=False,
-                error=(
-                    f"collection exceeded {self.single_item_timeout_seconds}s with no result -- likely a "
-                    "hung browser launch/context call (no exception, no progress); abandoned so the rest of "
-                    "the batch could continue"
-                ),
-            )
-        if exc_holder:
-            raise exc_holder[0]
-        return result_holder[0]
 
     def _record_off_domain_pages(self, supplier_id: int, expected_domain: str, off_domain_pages: List[Any]) -> None:
         """Visible, never-silent record of a page that redirected away

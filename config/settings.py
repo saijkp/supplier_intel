@@ -173,30 +173,25 @@ COLLECTION_PARALLEL_WORKERS: int = int(os.getenv("COLLECTION_PARALLEL_WORKERS") 
 # happens to be running concurrently right now).
 COLLECTION_MAX_CONCURRENT_BROWSERS: int = int(os.getenv("COLLECTION_MAX_CONCURRENT_BROWSERS") or 3)
 
-# A single supplier's collection call has NO ceiling of its own today --
-# page.goto() has its own COLLECTION_PAGE_TIMEOUT_MS, but the surrounding
-# playwright.chromium.launch()/browser.new_context()/context.new_page()
-# calls (site_collector.py's _launch/_collect_with) have none, and none of
-# them raise on the same resource-exhaustion condition documented just
-# above (COLLECTION_MAX_CONCURRENT_BROWSERS's own incident) -- under
-# exactly that condition they can block forever instead of raising
-# BlockingIOError. Real incident this closes: a real batch-upload job hung
-# mid-file with zero progress and zero exception/crash trace for 13+
-# minutes and counting, confirmed live by its own deploy logs (activity
-# for 7 suppliers, then total silence starting the 8th's browser launch).
-# collection.collection_service.CollectionService._collect_one is the
-# ONLY place SiteCollector.collect() is ever invoked (see its own
-# comment), so a hard wall-clock ceiling there, in a daemon thread so a
-# genuinely-abandoned call can never block process shutdown, bounds the
-# damage from an indefinite hang to this many seconds instead of the
-# entire pipeline_jobs row (and everything queued behind it) -- the
-# PIPELINE_JOB_STALL_TIMEOUT_SECONDS watchdog above is the last-resort
-# backstop, this is the fix that stops a single bad row from burning the
-# whole 45-minute budget by itself. Deliberately generous: the worst-case
-# LEGITIMATE crawl (6 pages x 25s COLLECTION_PAGE_TIMEOUT_MS each, plus a
-# sitemap fetch and up to 5 certificate downloads at the same per-request
-# timeout) is comfortably under half of this.
-COLLECTION_SINGLE_ITEM_TIMEOUT_SECONDS: int = int(os.getenv("COLLECTION_SINGLE_ITEM_TIMEOUT_SECONDS") or 360)
+# A per-supplier hard timeout (a daemon thread with a bounded join()) was
+# tried here and REVERTED -- real regression found live: an abandoned
+# Python thread can't be force-killed, so its own internals (Playwright's
+# asyncio loop, its subprocess/thread handles) never get reclaimed. Over
+# hours of a long-running process, repeated real hangs (the same
+# resource-exhaustion condition documented just above) accumulated until
+# the container's OS thread table was fully exhausted, at which point
+# sync_playwright() itself could no longer even start -- every row in
+# every subsequent batch failed near-instantly with BlockingIOError,
+# silently recorded as an ordinary per-row failure. Confirmed live: 4
+# consecutive real batch jobs completed with 0 successes out of 60-110
+# rows each. See collection/collection_service.py's _collect_one for the
+# full incident writeup. pipeline_jobs' own stalled-job watchdog
+# (PIPELINE_JOB_STALL_TIMEOUT_SECONDS above, a pure DB-polling mechanism
+# that creates no new OS resources) is the correct backstop for a genuine
+# per-job hang -- a per-call thread is not, and no replacement for this
+# constant should be added without a way to actually reclaim the
+# abandoned call's resources (e.g. a real subprocess that can be killed),
+# not just abandon it.
 
 # --- Sourcing Agent (sourcing/sourcing_agent.py) -------------------------
 # Candidates processed concurrently within one _process_batch() wave --
