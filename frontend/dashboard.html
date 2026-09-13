@@ -117,6 +117,10 @@
   .dash-grid{ display:grid; grid-template-columns:1fr 1fr 1.5fr; gap:16px; margin-bottom:16px; }
   .stat-col{ display:flex; flex-direction:column; gap:16px; }
   .stat-card{ padding:18px 20px; display:flex; flex-direction:column; }
+  .clickable-card{ cursor:pointer; transition:border-color 0.15s, transform 0.15s; }
+  .clickable-card:hover{ border-color:var(--accent); }
+  .clickable-card:active{ transform:scale(0.99); }
+  .clickable-card:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
   .stat-top{ display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:2px; }
   .stat-big{ font-family:"IBM Plex Mono"; font-size:1.7rem; font-weight:600; }
   .stat-big .cur{ font-size:1rem; color:var(--text-faint); font-weight:500; margin-right:1px; }
@@ -285,14 +289,14 @@
 
         <div class="dash-grid">
           <div class="stat-col">
-            <div class="card stat-card">
+            <div class="card stat-card clickable-card" id="cardSuppliersTotal" tabindex="0" role="button" aria-label="View all suppliers">
               <div class="card-title">Suppliers in database</div>
               <div class="donut-wrap">
                 <canvas id="entityDonut"></canvas>
                 <div class="donut-legend" id="entityLegend"></div>
               </div>
             </div>
-            <div class="card stat-card">
+            <div class="card stat-card clickable-card" id="cardVerifiedHigh" tabindex="0" role="button" aria-label="View verified high-confidence suppliers">
               <div class="stat-top">
                 <div><div class="stat-big" id="statVerifiedHigh">—</div><div class="stat-label">Verified — High confidence</div></div>
                 <span class="trend down" id="statVerifiedHighTrend">—</span>
@@ -312,7 +316,7 @@
               </div>
               <div class="mini-chart"><canvas id="avgDailyBar"></canvas></div>
             </div>
-            <div class="card stat-card">
+            <div class="card stat-card clickable-card" id="cardPipelineJobs" tabindex="0" role="button" aria-label="View pipeline jobs">
               <div class="stat-top">
                 <div><div class="stat-big" id="statPipelineJobs">—</div><div class="stat-label">Pipeline jobs completed this month</div></div>
                 <span class="trend up" id="statPipelineTrend">—</span>
@@ -322,7 +326,7 @@
             </div>
           </div>
 
-          <div class="card tall-card">
+          <div class="card tall-card clickable-card" id="cardNewSuppliers" tabindex="0" role="button" aria-label="View suppliers">
             <div class="stat-top">
               <div>
                 <div class="card-title">New suppliers this month</div>
@@ -779,6 +783,35 @@
       document.getElementById('supSearchBtn').click();
     }
   });
+
+  /* ---------------- Dashboard card drill-through ---------------- */
+  // Keep in sync with config.settings.DASHBOARD_VERIFIED_HIGH_MIN_SCORE on
+  // the backend -- there's no endpoint that exposes it separately from the
+  // already-computed verified_high_count, so it's duplicated here rather
+  // than fetched.
+  var VERIFIED_HIGH_MIN_SCORE = 85;
+
+  function goToSuppliers(minScore){
+    document.getElementById('supProduct').value = '';
+    document.getElementById('supCountry').value = '';
+    document.getElementById('supManuOnly').checked = false;
+    document.getElementById('supMinScore').value = minScore || '';
+    showPage('suppliers');
+    document.getElementById('supSearchBtn').click();
+  }
+
+  function bindCardNav(id, handler){
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('click', handler);
+    el.addEventListener('keydown', function(e){
+      if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); handler(); }
+    });
+  }
+  bindCardNav('cardSuppliersTotal', function(){ goToSuppliers(); });
+  bindCardNav('cardVerifiedHigh', function(){ goToSuppliers(VERIFIED_HIGH_MIN_SCORE); });
+  bindCardNav('cardNewSuppliers', function(){ goToSuppliers(); });
+  bindCardNav('cardPipelineJobs', function(){ showPage('pipeline'); });
 
   /* ---------------- Boot ---------------- */
   state.lastDashboardData = sample;
