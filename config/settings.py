@@ -240,6 +240,20 @@ ALLOWED_ORIGINS: list[str] = [
     origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "").split(",") if origin.strip()
 ]
 
+# --- Dashboard summary (storage/repository.py's get_dashboard_summary) ---
+# composite_score cutoff for the dashboard's "Verified -- High confidence"
+# tile. Not reused from anywhere else -- no other part of this codebase
+# buckets composite_score into a "verified_high" style category (the
+# closest thing, verification_ai/procurement_recommendation.py's
+# thresholds, are on ai_confidence_score, a deliberately separate score --
+# see that module's own docstring on never blending the two). Kept as a
+# plain constant, same as DEDUP_*_THRESHOLD above, so it's easy to find
+# and retune without touching the query itself.
+DASHBOARD_VERIFIED_HIGH_MIN_SCORE: int = int(os.getenv("DASHBOARD_VERIFIED_HIGH_MIN_SCORE") or 85)
+# Target count for the same tile's progress bar -- a target, not a
+# measured value, so it has no natural home in the database itself.
+DASHBOARD_VERIFIED_HIGH_GOAL: int = int(os.getenv("DASHBOARD_VERIFIED_HIGH_GOAL") or 1200)
+
 REQUIRED_API_KEYS_FOR_LIVE_SCRAPING = (
     "APIFY_TOKEN",
     "QICHACHA_API_KEY",

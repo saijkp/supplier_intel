@@ -275,6 +275,24 @@ def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/dashboard/summary", dependencies=[Depends(require_api_token)])
+def get_dashboard_summary(repo: SupplierRepository = Depends(get_repo)) -> Dict[str, Any]:
+    """Backs frontend/dashboard.html's Dashboard page -- one call
+    instead of several. All the actual aggregation lives in
+    repo.get_dashboard_summary() (see its own docstring for the
+    threshold/trend/bucketing decisions); this route's only job is
+    converting `recent_suppliers` from raw SQLite rows to the same
+    SupplierSearchResult shape every other supplier-returning endpoint
+    uses, via the same _to_search_result this module already relies on
+    elsewhere -- no response_model here since the rest of the payload
+    (counts, trends, sparkline arrays) isn't a per-supplier shape and
+    isn't worth a dedicated Pydantic model yet, same precedent as
+    /audit/* below."""
+    summary = repo.get_dashboard_summary()
+    summary["recent_suppliers"] = [_to_search_result(r) for r in summary["recent_suppliers"]]
+    return summary
+
+
 @app.get(
     "/suppliers/search",
     response_model=List[SupplierSearchResult],

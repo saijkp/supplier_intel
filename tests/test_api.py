@@ -420,6 +420,45 @@ class TestGetSupplierEndpoint:
         assert response.status_code == 404
 
 
+class TestDashboardSummaryEndpoint:
+    """The aggregation logic itself is covered exhaustively in
+    tests/test_dashboard_summary.py against the repository method
+    directly -- this only proves the HTTP route is wired up (auth,
+    real request/response round-trip) and that recent_suppliers is
+    actually converted to the SupplierSearchResult shape, not left as
+    raw SQLite rows."""
+
+    def test_requires_auth(self, client):
+        response = client.get("/dashboard/summary")
+        assert response.status_code == 401
+
+    def test_returns_the_documented_shape_against_an_empty_database(self, client):
+        response = client.get("/dashboard/summary", headers=auth_headers())
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total_suppliers"] == 0
+        assert body["entity_mix"] == {"manufacturer": 0, "trading_company": 0, "unclear": 0}
+        assert len(body["avg_daily_verifications_7d"]) == 7
+        assert len(body["new_suppliers_trend_30d"]) == 7
+        assert len(body["confidence_trend_30d"]) == 7
+        assert body["recent_suppliers"] == []
+
+    def test_recent_suppliers_are_converted_to_supplier_search_result_shape(self, client):
+        client.repo.create_golden_record({
+            "canonical_name": "Acme Trailer Parts", "country": "United Kingdom",
+            "domain": "acme.example.com",
+        })
+        response = client.get("/dashboard/summary", headers=auth_headers())
+        assert response.status_code == 200
+        row = response.json()["recent_suppliers"][0]
+        assert row["canonical_name"] == "Acme Trailer Parts"
+        # SupplierSearchResult fields that a raw suppliers row wouldn't
+        # carry under these exact names -- proves _to_search_result ran,
+        # not just that the row passed through unmodified.
+        assert "matched_capabilities" in row
+        assert "ai_strengths" in row
+
+
 class TestPipelineJobEndpoints:
 
     def test_creating_a_job_returns_202_with_a_job_id(self, client):

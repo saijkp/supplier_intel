@@ -28,6 +28,7 @@ from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from config.settings import DASHBOARD_VERIFIED_HIGH_GOAL, DASHBOARD_VERIFIED_HIGH_MIN_SCORE
 from storage.database import connection_scope
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,17 @@ def _country_aliases(country: str) -> frozenset:
         if normalised in group:
             return group
     return frozenset({normalised})
+
+
+def _initials(name: Optional[str]) -> str:
+    """Up to 2 uppercase initials from the first 2 words of `name`, for
+    get_dashboard_summary's "recently verified" avatar row -- mirrors
+    frontend/dashboard.html's own client-side initialsOf() exactly, so a
+    supplier's initials look the same whether they come from live data
+    or the frontend's sample fallback. "??" for a blank/whitespace-only
+    name, same fallback the frontend uses."""
+    letters = "".join(word[0] for word in (name or "").split()[:2] if word)
+    return (letters or "??").upper()
 
 
 class SupplierRepository:
@@ -570,6 +582,234 @@ class SupplierRepository:
                     supplier["matched_capabilities"] = []
 
             return suppliers
+
+    def get_dashboard_summary(self) -> Dict[str, Any]:
+        """Aggregates real data from `suppliers` and `pipeline_jobs` into
+        the shape frontend/dashboard.html's Dashboard page renders in one
+        call, rather than making it stitch together several separate
+        queries client-side. Every count/average below excludes
+        flagged=1 suppliers, same "not a valid candidate, never
+        resurfaces" convention as search_suppliers/search_suppliers_full.
+
+        Design decisions worth writing down (none of these values existed
+        as a pre-defined concept anywhere else in this codebase, so each
+        is a new, deliberate choice rather than a reuse of something
+        established):
+
+        - "Verified -- High confidence" means composite_score >=
+          config.settings.DASHBOARD_VERIFIED_HIGH_MIN_SCORE. This is a
+          NEW threshold, not reused from verification_ai/
+          procurement_recommendation.py -- that module's thresholds are
+          on ai_confidence_score, a deliberately separate score (see its
+          own docstring on never blending the two). composite_score is
+          the only one of the two with no existing bucket boundary
+          anywhere, so this dashboard defines its own.
+        - "Verification" (avg_daily_verifications*, recent_verified_*,
+          avg_confidence*) means an ai_confidence_assessed_at event --
+          i.e. a verification_ai.VerificationService.verify() run -- the
+          same signal already headlines this dashboard's separate
+          confidence-score tile, so both draw from the same underlying
+          event rather than inventing a second, disconnected notion of
+          "verified."
+        - Every *_trend_pct compares a full calendar month against the
+          previous one, or a rolling 7-day window against the 7 days
+          before that, per the spec this was built against. A period
+          with zero suppliers in the PRIOR window returns a trend of
+          0.0 rather than a fabricated +100% -- "went from nothing to
+          something" has no meaningful percentage, and 0.0 reads as "no
+          baseline yet" rather than a real, comparable swing.
+        - The two "*_30d" sparkline arrays (`new_suppliers_trend_30d`,
+          `confidence_trend_30d`) are 7 weekly buckets spanning the
+          trailing 49 days, not 30 literal days -- matching the 7-point
+          shape the frontend already expects (it labels each point "Wk
+          N"), just extended a bit further back than one day per point
+          would allow while staying readable as a sparkline.
+        - Date-boundary comparisons use plain YYYY-MM-DD strings, not
+          full ISO datetimes: SQLite's own `DEFAULT CURRENT_TIMESTAMP`
+          writes "YYYY-MM-DD HH:MM:SS" (space-separated), while this
+          repository's own manual writes use `datetime.isoformat()`
+          ("YYYY-MM-DDTHH:MM:SS..." -- a "T" separator). Comparing a
+          full boundary datetime string against both formats would
+          silently misorder rows written right at a day boundary,
+          since ' ' (0x20) and 'T' (0x54) sort differently once the
+          date prefix is otherwise equal. A bare date string is a
+          prefix of both formats, so `>=`/`<` against it sorts
+          correctly regardless of which format produced the row.
+        """
+        min_score = DASHBOARD_VERIFIED_HIGH_MIN_SCORE
+        goal = DASHBOARD_VERIFIED_HIGH_GOAL
+
+        now = datetime.now(timezone.utc)
+        today = now.date()
+
+        def day_str(d: date) -> str:
+            return d.strftime("%Y-%m-%d")
+
+        this_month_start = day_str(today.replace(day=1))
+        if today.month == 1:
+            last_month_start = day_str(date(today.year - 1, 12, 1))
+        else:
+            last_month_start = day_str(date(today.year, today.month - 1, 1))
+        if today.month == 12:
+            next_month_start = day_str(date(today.year + 1, 1, 1))
+        else:
+            next_month_start = day_str(date(today.year, today.month + 1, 1))
+
+        last_7_start = day_str(today - timedelta(days=6))
+        prev_7_start = day_str(today - timedelta(days=13))
+
+        def pct_change(before: int, after: int) -> float:
+            if before <= 0:
+                return 0.0
+            return round(((after - before) / before) * 100, 1)
+
+        with connection_scope(self.db_path) as conn:
+            total_suppliers = conn.execute(
+                "SELECT COUNT(*) FROM suppliers WHERE flagged = 0"
+            ).fetchone()[0]
+
+            mix_row = conn.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN is_manufacturer = 1 THEN 1 ELSE 0 END) AS manufacturer,
+                    SUM(CASE WHEN is_manufacturer = 0 THEN 1 ELSE 0 END) AS trading_company,
+                    SUM(CASE WHEN is_manufacturer IS NULL THEN 1 ELSE 0 END) AS unclear
+                FROM suppliers WHERE flagged = 0
+                """
+            ).fetchone()
+            entity_mix = {
+                "manufacturer": mix_row["manufacturer"] or 0,
+                "trading_company": mix_row["trading_company"] or 0,
+                "unclear": mix_row["unclear"] or 0,
+            }
+
+            def count_suppliers(extra_where: str, params: tuple) -> int:
+                return conn.execute(
+                    f"SELECT COUNT(*) FROM suppliers WHERE flagged = 0 AND {extra_where}",
+                    params,
+                ).fetchone()[0]
+
+            verified_high_count = count_suppliers("composite_score >= ?", (min_score,))
+            verified_high_this_month = count_suppliers(
+                "composite_score >= ? AND last_updated >= ?", (min_score, this_month_start)
+            )
+            verified_high_last_month = count_suppliers(
+                "composite_score >= ? AND last_updated >= ? AND last_updated < ?",
+                (min_score, last_month_start, this_month_start),
+            )
+            verified_high_trend_pct = pct_change(verified_high_last_month, verified_high_this_month)
+
+            # avg_daily_verifications_7d: one count per calendar day, the
+            # last 7 days oldest-to-newest (today last).
+            avg_daily_verifications_7d = [
+                count_suppliers(
+                    "ai_confidence_assessed_at IS NOT NULL AND ai_confidence_assessed_at >= ? AND ai_confidence_assessed_at < ?",
+                    (day_str(today - timedelta(days=6 - i)), day_str(today - timedelta(days=5 - i))),
+                )
+                for i in range(7)
+            ]
+            avg_daily_verifications = round(sum(avg_daily_verifications_7d) / 7)
+            last_7_total = count_suppliers(
+                "ai_confidence_assessed_at IS NOT NULL AND ai_confidence_assessed_at >= ?", (last_7_start,)
+            )
+            prev_7_total = count_suppliers(
+                "ai_confidence_assessed_at IS NOT NULL AND ai_confidence_assessed_at >= ? AND ai_confidence_assessed_at < ?",
+                (prev_7_start, last_7_start),
+            )
+            avg_daily_trend_pct = pct_change(prev_7_total, last_7_total)
+
+            new_suppliers_this_month = count_suppliers("first_seen >= ?", (this_month_start,))
+            new_suppliers_last_month = count_suppliers(
+                "first_seen >= ? AND first_seen < ?", (last_month_start, this_month_start)
+            )
+            new_suppliers_trend_pct = pct_change(new_suppliers_last_month, new_suppliers_this_month)
+
+            # The two "30d" sparklines: 7 weekly buckets spanning the
+            # trailing 49 days, oldest first -- see this method's own
+            # docstring for why 49 days, not a literal 30.
+            new_suppliers_trend_30d = []
+            confidence_trend_30d = []
+            for i in range(7):
+                start = day_str(today - timedelta(days=7 * (7 - i) - 1))
+                end = day_str(today - timedelta(days=7 * (6 - i) - 1))
+                new_suppliers_trend_30d.append(
+                    count_suppliers("first_seen >= ? AND first_seen < ?", (start, end))
+                )
+                avg_row = conn.execute(
+                    "SELECT AVG(ai_confidence_score) FROM suppliers "
+                    "WHERE flagged = 0 AND ai_confidence_score IS NOT NULL "
+                    "AND ai_confidence_assessed_at >= ? AND ai_confidence_assessed_at < ?",
+                    (start, end),
+                ).fetchone()[0]
+                confidence_trend_30d.append(int(round(avg_row)) if avg_row is not None else 0)
+
+            pipeline_this_month = conn.execute(
+                "SELECT COUNT(*) FROM pipeline_jobs WHERE status = 'completed' "
+                "AND completed_at >= ? AND completed_at < ?",
+                (this_month_start, next_month_start),
+            ).fetchone()[0]
+            pipeline_last_month = conn.execute(
+                "SELECT COUNT(*) FROM pipeline_jobs WHERE status = 'completed' "
+                "AND completed_at >= ? AND completed_at < ?",
+                (last_month_start, this_month_start),
+            ).fetchone()[0]
+            pipeline_jobs_trend_pct = pct_change(pipeline_last_month, pipeline_this_month)
+
+            recent_verified_rows = conn.execute(
+                "SELECT canonical_name FROM suppliers "
+                "WHERE flagged = 0 AND ai_confidence_assessed_at IS NOT NULL "
+                "ORDER BY ai_confidence_assessed_at DESC LIMIT 5"
+            ).fetchall()
+            recent_verified_initials = [_initials(row["canonical_name"]) for row in recent_verified_rows]
+            total_verified = count_suppliers("ai_confidence_assessed_at IS NOT NULL", ())
+            recent_verified_extra = max(0, total_verified - len(recent_verified_initials))
+
+            avg_confidence_row = conn.execute(
+                "SELECT AVG(ai_confidence_score) FROM suppliers "
+                "WHERE flagged = 0 AND ai_confidence_score IS NOT NULL"
+            ).fetchone()[0]
+            avg_confidence_score = int(round(avg_confidence_row)) if avg_confidence_row is not None else 0
+            avg_confidence_this_month = conn.execute(
+                "SELECT AVG(ai_confidence_score) FROM suppliers "
+                "WHERE flagged = 0 AND ai_confidence_score IS NOT NULL AND ai_confidence_assessed_at >= ?",
+                (this_month_start,),
+            ).fetchone()[0]
+            avg_confidence_last_month = conn.execute(
+                "SELECT AVG(ai_confidence_score) FROM suppliers "
+                "WHERE flagged = 0 AND ai_confidence_score IS NOT NULL "
+                "AND ai_confidence_assessed_at >= ? AND ai_confidence_assessed_at < ?",
+                (last_month_start, this_month_start),
+            ).fetchone()[0]
+            avg_confidence_trend_pct = pct_change(
+                avg_confidence_last_month or 0, avg_confidence_this_month or 0
+            )
+
+            recent_supplier_rows = conn.execute(
+                "SELECT * FROM suppliers WHERE flagged = 0 ORDER BY last_updated DESC LIMIT 6"
+            ).fetchall()
+            recent_suppliers = _rows_to_dicts(recent_supplier_rows, SUPPLIER_JSON_FIELDS)
+
+        return {
+            "total_suppliers": total_suppliers,
+            "entity_mix": entity_mix,
+            "avg_daily_verifications_7d": avg_daily_verifications_7d,
+            "avg_daily_verifications": avg_daily_verifications,
+            "avg_daily_trend_pct": avg_daily_trend_pct,
+            "new_suppliers_this_month": new_suppliers_this_month,
+            "new_suppliers_trend_pct": new_suppliers_trend_pct,
+            "new_suppliers_trend_30d": new_suppliers_trend_30d,
+            "verified_high_count": verified_high_count,
+            "verified_high_goal": goal,
+            "verified_high_trend_pct": verified_high_trend_pct,
+            "pipeline_jobs_completed_this_month": pipeline_this_month,
+            "pipeline_jobs_trend_pct": pipeline_jobs_trend_pct,
+            "recent_verified_initials": recent_verified_initials,
+            "recent_verified_extra": recent_verified_extra,
+            "avg_confidence_score": avg_confidence_score,
+            "avg_confidence_trend_pct": avg_confidence_trend_pct,
+            "confidence_trend_30d": confidence_trend_30d,
+            "recent_suppliers": recent_suppliers,
+        }
 
     # ═════════════════════════════════════════════════════
     # SUPPLIERS — write paths (create / merge)
