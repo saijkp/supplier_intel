@@ -153,6 +153,30 @@ class TestManufacturersOnly:
         assert len(results) == 1
 
 
+class TestVerifiedOnly:
+    """verified_only restricts to suppliers with a non-NULL
+    ai_confidence_score -- the same 'verification' event
+    get_dashboard_summary's avg_daily_verifications/recent_verified_*
+    fields are keyed off of, and the filter the dashboard's 'Avg daily
+    verifications' card links to."""
+
+    def test_excludes_suppliers_with_no_ai_confidence_score(self, repo):
+        _make_supplier(repo, canonical_name="Never Verified")
+        results = repo.search_suppliers_full(verified_only=True)
+        assert results == []
+
+    def test_includes_suppliers_with_an_ai_confidence_score(self, repo):
+        supplier_id = _make_supplier(repo, canonical_name="Verified Co")
+        repo.update_supplier_fields(supplier_id, {"ai_confidence_score": 72})
+        results = repo.search_suppliers_full(verified_only=True)
+        assert any(r["id"] == supplier_id for r in results)
+
+    def test_flag_off_includes_everyone(self, repo):
+        _make_supplier(repo, canonical_name="Never Verified")
+        results = repo.search_suppliers_full(verified_only=False)
+        assert len(results) == 1
+
+
 class TestCombinedFilters:
 
     def test_product_plus_capability_plus_manufacturer_all_apply_together(self, repo):

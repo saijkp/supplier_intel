@@ -396,6 +396,27 @@ class TestSearchEndpoint:
         assert len(results) == 1
         assert results[0]["is_manufacturer"] is True
 
+    def test_verified_only_excludes_suppliers_with_no_ai_confidence_score(self, client):
+        client.repo.create_golden_record({
+            "canonical_name": "Never Verified", "domain": "never.example.com",
+        })
+        response = client.get(
+            "/suppliers/search", params={"verified_only": "true"}, headers=auth_headers(),
+        )
+        assert response.json() == []
+
+    def test_verified_only_includes_suppliers_with_an_ai_confidence_score(self, client):
+        supplier_id = client.repo.create_golden_record({
+            "canonical_name": "Verified Co", "domain": "verified2.example.com",
+        })
+        client.repo.update_supplier_fields(supplier_id, {"ai_confidence_score": 80})
+        response = client.get(
+            "/suppliers/search", params={"verified_only": "true"}, headers=auth_headers(),
+        )
+        results = response.json()
+        assert len(results) == 1
+        assert results[0]["id"] == supplier_id
+
 
 class TestGetSupplierEndpoint:
 

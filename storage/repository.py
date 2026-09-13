@@ -423,6 +423,7 @@ class SupplierRepository:
         category_query: Optional[str] = None,
         required_capabilities: Optional[List[str]] = None,
         manufacturers_only: bool = False,
+        verified_only: bool = False,
         min_capability_confidence: float = 0.0,
         min_score: Optional[int] = None,
         country: Optional[str] = None,
@@ -470,6 +471,15 @@ class SupplierRepository:
         specifically, normalise it before calling this (pycountry is
         already a project dependency, unused elsewhere, and is the
         natural place to add that if it becomes a real pain point).
+
+        `verified_only` restricts to suppliers with a non-NULL
+        `ai_confidence_score` -- i.e. verification_ai.VerificationService.
+        verify() has actually run against them at least once. This is the
+        same "verification" event get_dashboard_summary's avg_daily_
+        verifications/recent_verified_* fields are keyed off of (see that
+        method's own docstring); added so the dashboard's "Avg daily
+        verifications" card has a real filter to link to rather than
+        dropping the user on an unfiltered search.
 
         Each result carries a `matched_capabilities` list (canonical
         term, relationship, confidence, evidence quote, source URL) so
@@ -524,6 +534,9 @@ class SupplierRepository:
 
         if manufacturers_only:
             clauses.append("is_manufacturer = 1")
+
+        if verified_only:
+            clauses.append("ai_confidence_score IS NOT NULL")
 
         if min_score is not None:
             clauses.append("composite_score >= ?")

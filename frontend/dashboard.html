@@ -309,7 +309,7 @@
           </div>
 
           <div class="stat-col">
-            <div class="card stat-card">
+            <div class="card stat-card clickable-card" id="cardAvgDaily" tabindex="0" role="button" aria-label="View verified suppliers">
               <div class="stat-top">
                 <div><div class="stat-big" id="statAvgDaily">—</div><div class="stat-label">Avg daily verifications</div></div>
                 <span class="trend up" id="statAvgDailyTrend">—</span>
@@ -380,6 +380,7 @@
             <div class="field"><label>Country</label><input id="supCountry" placeholder="e.g. China"></div>
             <div class="field"><label>Min score</label><input id="supMinScore" type="number" placeholder="0-100"></div>
             <label class="checkline"><input type="checkbox" id="supManuOnly"> Manufacturers only</label>
+            <label class="checkline"><input type="checkbox" id="supVerifiedOnly"> Verified only</label>
             <button class="btn btn-primary" id="supSearchBtn">Search</button>
           </div>
         </div>
@@ -724,6 +725,7 @@
     if (document.getElementById('supCountry').value) qs.set('country', document.getElementById('supCountry').value);
     if (document.getElementById('supMinScore').value) qs.set('min_score', document.getElementById('supMinScore').value);
     if (document.getElementById('supManuOnly').checked) qs.set('manufacturers_only', 'true');
+    if (document.getElementById('supVerifiedOnly').checked) qs.set('verified_only', 'true');
     apiFetch('/suppliers/search?' + qs.toString()).then(function(rows){
       document.getElementById('suppliersBody').innerHTML = rows.map(function(r){
         return '<tr><td>'+r.canonical_name+'</td><td>'+(r.country||'—')+'</td><td class="mono">'+(r.composite_score!=null?r.composite_score:'—')+'</td>' +
@@ -791,11 +793,13 @@
   // than fetched.
   var VERIFIED_HIGH_MIN_SCORE = 85;
 
-  function goToSuppliers(minScore){
+  function goToSuppliers(opts){
+    opts = opts || {};
     document.getElementById('supProduct').value = '';
     document.getElementById('supCountry').value = '';
     document.getElementById('supManuOnly').checked = false;
-    document.getElementById('supMinScore').value = minScore || '';
+    document.getElementById('supMinScore').value = opts.minScore || '';
+    document.getElementById('supVerifiedOnly').checked = !!opts.verifiedOnly;
     showPage('suppliers');
     document.getElementById('supSearchBtn').click();
   }
@@ -809,9 +813,10 @@
     });
   }
   bindCardNav('cardSuppliersTotal', function(){ goToSuppliers(); });
-  bindCardNav('cardVerifiedHigh', function(){ goToSuppliers(VERIFIED_HIGH_MIN_SCORE); });
+  bindCardNav('cardVerifiedHigh', function(){ goToSuppliers({minScore: VERIFIED_HIGH_MIN_SCORE}); });
   bindCardNav('cardNewSuppliers', function(){ goToSuppliers(); });
   bindCardNav('cardPipelineJobs', function(){ showPage('pipeline'); });
+  bindCardNav('cardAvgDaily', function(){ goToSuppliers({verifiedOnly: true}); });
 
   /* ---------------- Boot ---------------- */
   state.lastDashboardData = sample;

@@ -302,6 +302,7 @@ def search_suppliers(
     product: Optional[str] = None,
     require: List[str] = Query(default=[]),
     manufacturers_only: bool = False,
+    verified_only: bool = False,
     country: Optional[str] = None,
     min_score: Optional[int] = None,
     limit: int = 25,
@@ -310,7 +311,9 @@ def search_suppliers(
 ) -> List[SupplierSearchResult]:
     """Thin HTTP wrapper over `search_suppliers_full` -- see that
     method's own docstring for the actual matching semantics
-    (`require` is AND, not OR; `country` is exact match, not fuzzy).
+    (`require` is AND, not OR; `country` is exact match, not fuzzy;
+    `verified_only` restricts to suppliers with a non-NULL
+    ai_confidence_score).
 
     `search_suppliers_full` only populates `matched_capabilities` when
     `require` is set (it's a byproduct of the capability-filter join,
@@ -328,6 +331,7 @@ def search_suppliers(
             product_query=product,
             required_capabilities=require,
             manufacturers_only=manufacturers_only,
+            verified_only=verified_only,
             country=country,
             min_score=min_score,
             limit=limit,
