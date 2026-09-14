@@ -21,8 +21,10 @@ import pytest
 from collection.artifact_store import ArtifactStore
 from collection.site_collector import (
     SiteCollector,
+    _IFRAME_SKIP_ORIGINS,
     _MAX_IFRAMES_PER_PAGE,
     _build_candidate_urls,
+    _collect_iframe_html,
     _extract_facility_photo_urls,
     _extract_footer_text,
     _extract_sitemap_locs,
@@ -35,6 +37,7 @@ from collection.site_collector import (
     _find_tel_phones,
     _has_contact_form,
     _prioritise_relevant_links,
+    _should_skip_iframe,
 )
 
 _SITE_FILES = {
@@ -662,13 +665,17 @@ class _FakeResponse:
 
 
 class _FakeFrame:
-    """Mirrors a real Playwright Frame's one method _collect_iframe_html
-    actually calls. `raises=True` simulates a frame that's detached/
-    mid-navigation by the time it's read -- must be skipped, never
-    fatal (see TestIframeContentExtraction)."""
-    def __init__(self, html, raises=False):
+    """Mirrors a real Playwright Frame's one method and one attribute
+    _collect_iframe_html actually reads. `raises=True` simulates a frame
+    that's detached/mid-navigation by the time it's read -- must be
+    skipped, never fatal (see TestIframeContentExtraction). `url`
+    defaults to "" (never matches _IFRAME_SKIP_ORIGINS) so every
+    existing test keeps exercising the content() path unchanged; tests
+    for the skip-origin behaviour pass a real Maps/YouTube/etc. url."""
+    def __init__(self, html, raises=False, url=""):
         self._html = html
         self._raises = raises
+        self.url = url
 
     def content(self):
         if self._raises:
@@ -1169,6 +1176,90 @@ class TestIframeContentExtraction:
 
         assert result.success is True  # the raising frame past the cap never gets read, so never crashes
         assert len(result.pages[0].mailto_emails) == _MAX_IFRAMES_PER_PAGE
+
+
+class TestIframeSkipOrigins:
+    """Real incident: a supplier's page embedded a Google Maps location
+    iframe and frame.content() against it hung indefinitely -- Frame.
+    content() takes no timeout parameter at all, so there was no bounded
+    wait to add. These origins are skipped BEFORE content() is ever
+    called on them: safe (no threading/subprocess involved, unlike the
+    per-supplier timeout collection/collection_service.py already tried
+    and reverted for the identical "Python threads can't be forcibly
+    reclaimed" reason) and correct (see _collect_iframe_html's own
+    docstring -- its whole purpose is contact-form widgets, and none of
+    these origins could ever contain one)."""
+
+    @pytest.mark.parametrize("url", [
+        "https://maps.google.com/maps?q=Foshan,China&output=embed",
+        "https://www.google.com/maps/embed?pb=...",
+        "https://www.youtube.com/embed/dQw4w9WgXcQ",
+        "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
+        "https://player.vimeo.com/video/12345",
+        "https://www.facebook.com/plugins/page.php?href=...",
+    ])
+    def test_known_non_contact_origins_are_skipped(self, url):
+        frame = _FakeFrame("<html>should never be read</html>", url=url)
+        assert _should_skip_iframe(frame) is True
+
+    def test_an_unknown_third_party_form_widget_is_not_skipped(self):
+        """The general case this whole function exists for -- an
+        unrecognised (e.g. Marketo/HubSpot/self-hosted) widget origin
+        must still be read normally."""
+        frame = _FakeFrame("<html>real contact form</html>", url="https://forms.hubspot.com/embed/12345")
+        assert _should_skip_iframe(frame) is False
+
+    def test_a_frame_whose_url_property_raises_is_not_skipped(self):
+        """Matches _collect_iframe_html's existing fault-isolation
+        discipline -- an unreadable .url must fail open (attempt the
+        normal content() read/skip-on-error path) rather than crash."""
+        class _RaisingUrlFrame:
+            @property
+            def url(self):
+                raise RuntimeError("frame is detached")
+        assert _should_skip_iframe(_RaisingUrlFrame()) is False
+
+    def test_skipped_iframe_content_is_never_read_even_if_it_would_raise(self):
+        """The real point of skipping BEFORE content() rather than
+        catching a slow/hung call AFTER starting it: a frame matching a
+        skip origin must never have .content() invoked on it at all."""
+        class _ExplodingFrame:
+            url = "https://maps.google.com/maps?q=test"
+            def content(self):
+                raise AssertionError("content() must never be called on a skipped frame")
+
+        class _FakeMainFrame:
+            url = ""
+
+        class _FakePageWithExplodingIframe:
+            main_frame = _FakeMainFrame()
+            frames = [main_frame, _ExplodingFrame()]
+
+        # Must not raise -- confirms the exploding frame's content() was
+        # genuinely never invoked, not just that its result was discarded.
+        assert _collect_iframe_html(_FakePageWithExplodingIframe()) == ""
+
+    def test_a_real_contact_widget_alongside_a_skipped_maps_embed(self, artifact_store):
+        """The realistic shape of the actual incident: a page with BOTH
+        a Google Maps location embed AND a real contact-form widget --
+        the Maps frame must be skipped while the real widget is still
+        read normally."""
+        homepage_html = "<html><body>No contact info in the main document.</body></html>"
+        maps_frame = _FakeFrame("<html>maps content, should never be read</html>",
+                                 url="https://maps.google.com/maps?q=Foshan,China")
+        contact_widget = _FakeFrame('<html><body><a href="mailto:sales@realsite.com">Email</a></body></html>',
+                                     url="https://forms.hubspot.com/embed/1")
+        fake = _FakePlaywright(
+            working_urls={"https://www.daroaxle.com"},
+            html_by_url={"https://www.daroaxle.com": homepage_html},
+            iframe_html_by_url={"https://www.daroaxle.com": [maps_frame, contact_widget]},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.success is True
+        assert result.pages[0].mailto_emails == ["sales@realsite.com"]
 
 
 class TestWaitUntilDomContentLoaded:

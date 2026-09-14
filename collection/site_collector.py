@@ -461,6 +461,36 @@ def _extract_facility_photo_urls(base_url: str, html: str) -> List[str]:
 # widget's frame included.
 _MAX_IFRAMES_PER_PAGE = 10
 
+# Origins that are never a contact-form widget (this function's whole
+# purpose -- see its own docstring) and are skipped BEFORE frame.content()
+# is ever called on them, not just deprioritised. Real incident: a
+# supplier's page embedded a Google Maps location iframe
+# (maps.google.com/maps?q=...) and frame.content() against it hung
+# indefinitely -- Frame.content() takes no timeout parameter in
+# Playwright's API at all, so there was no bounded wait to add here even
+# in principle. A per-call background-thread timeout was considered and
+# rejected: Python threads can't be forcibly reclaimed (the exact reason
+# collection/collection_service.py's own per-supplier timeout was added
+# and then reverted -- see that module's git history), so wrapping
+# frame.content() the same way would just leak one unkillable OS thread
+# per hang instead of the whole collect() call, same failure mode at
+# smaller scale, not a safe fix. Skipping the read entirely is both safe
+# (no threading at all) and correct (these origins could never contain
+# the contact info this function looks for, hang or no hang).
+_IFRAME_SKIP_ORIGINS: tuple[str, ...] = (
+    "maps.google.", "google.com/maps", "google.co.uk/maps",
+    "youtube.com", "youtube-nocookie.com", "vimeo.com",
+    "facebook.com/plugins", "facebook.com/v",
+)
+
+
+def _should_skip_iframe(frame: Any) -> bool:
+    try:
+        url = (frame.url or "").lower()
+    except Exception:
+        return False
+    return any(origin in url for origin in _IFRAME_SKIP_ORIGINS)
+
 
 def _collect_iframe_html(page: Any) -> str:
     """Concatenated HTML of every child frame (iframe) attached to
@@ -490,7 +520,14 @@ def _collect_iframe_html(page: Any) -> str:
     read (detached, mid-navigation, or any other transient state) is
     skipped, same per-item fault isolation as every other step in this
     module -- one bad frame must never lose the rest of the page's
-    real content."""
+    real content.
+
+    Frames matching _IFRAME_SKIP_ORIGINS (Google Maps, YouTube, Vimeo,
+    Facebook plugins) are skipped before content() is ever called on
+    them -- see that constant's own comment for why this is a correctness
+    fix, not just a defensive one: none of those origins could ever
+    contain the contact info this function looks for, and Frame.content()
+    has no timeout parameter to bound a hang against one regardless."""
     try:
         frames = page.frames
     except Exception:
@@ -498,6 +535,8 @@ def _collect_iframe_html(page: Any) -> str:
     fragments: List[str] = []
     for frame in frames:
         if frame is page.main_frame:
+            continue
+        if _should_skip_iframe(frame):
             continue
         if len(fragments) >= _MAX_IFRAMES_PER_PAGE:
             break
