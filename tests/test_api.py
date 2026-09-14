@@ -1107,6 +1107,33 @@ class TestSetCanonicalNameEndpoint:
         assert job["options"]["reason"] == "matches Companies House"
 
 
+class TestRescoreSuppliersEndpoint:
+    """Pure DB read/write, no external API calls -- same 'runs
+    synchronously, not through the job queue' precedent as
+    POST /discovery/backfill-product-keywords below."""
+
+    def test_rescores_a_previously_unscored_supplier_to_a_real_value(self, client):
+        supplier_id = client.repo.create_golden_record({
+            "canonical_name": "Acme Winch Co", "domain": "acmewinch.example.com",
+        })
+        assert client.repo.get_supplier(supplier_id)["composite_score"] == 0
+
+        response = client.post("/suppliers/rescore", headers=auth_headers())
+
+        assert response.status_code == 200
+        assert response.json()["scored"] == 1
+        assert client.repo.get_supplier(supplier_id)["composite_score"] > 0
+
+    def test_runs_synchronously_not_through_the_job_queue(self, client):
+        response = client.post("/suppliers/rescore", headers=auth_headers())
+        assert response.status_code == 200
+        assert "id" not in response.json()
+
+    def test_requires_auth(self, client):
+        response = client.post("/suppliers/rescore")
+        assert response.status_code == 401
+
+
 class TestBackfillDiscoveryProductKeywordsEndpoint:
 
     def test_backfills_supplier_created_by_a_completed_discovery_job(self, client):

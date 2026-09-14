@@ -361,6 +361,30 @@ def get_supplier(
 
 
 @app.post(
+    "/suppliers/rescore",
+    dependencies=[Depends(require_api_token)],
+)
+def rescore_suppliers(repo: SupplierRepository = Depends(get_repo)) -> Dict[str, Any]:
+    """The HTTP equivalent of `main.py rescore --all`
+    (pipeline.orchestrator.SupplierIntelligencePipeline.run_full_rescore)
+    -- re-scores every supplier via verification.scorer.SupplierScorer.
+    Pure DB read/write, no external API calls (composite_score is
+    computed entirely from fields already stored: product_keywords,
+    domain, address, capability findings already on file -- see
+    scorer.py's own module docstring), so unlike every paid-integration
+    job endpoint above this runs synchronously instead of through the
+    pipeline_jobs queue -- same precedent as
+    POST /discovery/backfill-product-keywords. Safe to call more than
+    once; re-running against an already-scored supplier just reproduces
+    the same value unless SCORING_WEIGHTS or the scoring logic itself
+    has changed since."""
+    from pipeline.orchestrator import SupplierIntelligencePipeline
+
+    pipeline = SupplierIntelligencePipeline(repo=repo)
+    return pipeline.run_full_rescore()
+
+
+@app.post(
     "/pipeline/jobs",
     response_model=PipelineJobResponse,
     status_code=202,
