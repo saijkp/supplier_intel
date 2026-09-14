@@ -6,7 +6,7 @@ they talk directly to your Railway API over HTTPS:
 
 - **`index.html`** (deployed default, live at
   `https://grand-alfajores-a9d7ee.netlify.app/`) — the "Supplier Intel
-  Console" dashboard UI: a sidebar-nav app (Dashboard, Suppliers,
+  Console" dashboard UI: a sidebar-nav app (Dashboard, Find suppliers,
   Pipeline Jobs, Buyer Profiles, Settings) backed by `GET
   /dashboard/summary` plus the same search/job endpoints below. See
   "Current default UI" further down. `frontend/dashboard.html` is an
@@ -65,15 +65,31 @@ Sidebar-nav dashboard console, five pages:
 - **Dashboard** — `GET /dashboard/summary` in one call: entity mix,
   verified-high count vs. goal, daily/weekly verification and
   new-supplier trends, recent suppliers. Every stat card with a real
-  backing filter is clickable, jumping to Suppliers or Pipeline Jobs
-  pre-filtered (e.g. "Verified — High confidence" → `min_score=85`,
-  "Avg daily verifications" → `verified_only=true`).
-- **Suppliers** — search by product/country/min score/manufacturers-only/
-  verified-only. Clicking a row opens a detail modal (`GET
-  /suppliers/{id}`) with AI summary, strengths/risks, key contacts,
-  matched capabilities with evidence, and certificates — the same
-  underlying data the Legacy UI's evidence stamps below show, just in a
-  different layout.
+  backing filter is clickable, jumping to Find suppliers' browse view
+  or Pipeline Jobs pre-filtered (e.g. "Verified — High confidence" →
+  `min_score=85`, "Avg daily verifications" → `verified_only=true`).
+- **Find suppliers** — single free-text box, classifies input the same
+  way `deduplication.domain_utils.looks_like_url` does server-side (no
+  spaces + contains a dot = URL):
+  - Product/requirement or company name → always free: cleaned into a
+    product term and run against `GET /suppliers/search` (existing
+    database only, no paid discovery is ever auto-triggered by typing
+    and hitting Go).
+  - Website URL/bare domain → real cost, confirm-gated: shows an inline
+    "Verify X? This visits the site directly" banner before calling
+    `POST /companies/enrich`; on resolution opens the same supplier
+    detail modal search results use.
+  - "Attach a list" → `POST /batch/upload` (multipart), then switches to
+    Pipeline Jobs to watch it run — real cost, one per row.
+  - "Browse the database with filters instead" reveals the previous
+    filter-form + table view (product/country/min score/manufacturers-
+    only/verified-only; row click opens the same detail modal, with AI
+    summary, strengths/risks, key contacts, matched capabilities with
+    evidence, and certificates — the same underlying data the Legacy
+    UI's evidence stamps below show, just in a different layout).
+  - Not wired: the reference design's "Shortlists" sidebar item has no
+    backing endpoint anywhere in this API, so it isn't in the sidebar —
+    add a real save/shortlist capability first if that's wanted.
 - **Pipeline Jobs** — start a search-driven pipeline run, poll status.
 - **Buyer Profiles** — create/list saved buyer requirement bundles.
 - **Settings** — the same API-address/access-token connection flow

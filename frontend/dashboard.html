@@ -237,6 +237,45 @@
   .settings-card .field input{ width:100%; }
   .status-line{ display:flex; align-items:center; gap:8px; margin-top:14px; font-size:0.83rem; color:var(--text-muted); }
 
+  /* Find-suppliers ask view */
+  .ask-hero{ display:flex; flex-direction:column; align-items:center; padding:56px 16px 0; text-align:center; }
+  .ask-kicker{ font-size:0.72rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--text-faint); margin-bottom:16px; }
+  .ask-lede{ font-size:1.9rem; font-weight:700; margin:0 0 12px; max-width:18ch; }
+  .ask-sublede{ font-size:0.92rem; color:var(--text-muted); max-width:46ch; margin:0 0 28px; }
+  .ask-shell{ width:100%; max-width:640px; }
+  .ask-box{ background:var(--card); border:1px solid var(--border); border-radius:14px; padding:16px 18px 12px; box-shadow:var(--shadow); text-align:left; }
+  .ask-box:focus-within{ border-color:var(--accent); }
+  .ask-box textarea{
+    width:100%; border:none; outline:none; background:transparent; resize:none;
+    font-family:inherit; font-size:0.98rem; color:var(--text); line-height:1.5;
+    min-height:66px;
+  }
+  .ask-box textarea::placeholder{ color:var(--text-faint); }
+  .ask-foot{ display:flex; justify-content:space-between; align-items:center; margin-top:4px; }
+  .ask-go{ display:flex; align-items:center; gap:7px; }
+  .input-types{ display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin-top:14px; }
+  .type-chip{ font-size:0.76rem; color:var(--text-faint); border:1px solid var(--border); border-radius:20px; padding:5px 12px; white-space:nowrap; }
+  .ask-try{ width:100%; max-width:640px; margin-top:30px; text-align:left; }
+  .ask-try-label{ font-size:0.72rem; letter-spacing:0.04em; text-transform:uppercase; color:var(--text-faint); margin-bottom:8px; padding-left:2px; }
+  .ask-try-list{ display:flex; flex-direction:column; gap:1px; }
+  .ask-try-item{
+    display:flex; align-items:center; gap:11px; width:100%; text-align:left;
+    padding:10px 10px; border-radius:8px; border:none; background:none; cursor:pointer;
+    color:var(--text-muted); font-size:0.87rem; font-family:inherit;
+  }
+  .ask-try-item:hover{ background:var(--card-2); color:var(--text); }
+  .ask-try-icon{ flex:none; width:30px; height:30px; border-radius:8px; background:var(--card-2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; color:var(--text-muted); }
+  .ask-try-icon svg{ width:15px; height:15px; }
+  .ask-try-item:hover .ask-try-icon{ color:var(--accent); }
+  .ask-mode-row{ width:100%; max-width:640px; margin-top:36px; display:flex; align-items:center; gap:12px; }
+  .ask-mode-line{ flex:1; height:1px; background:var(--border); }
+  .ask-mode-text{ font-size:0.76rem; color:var(--text-faint); }
+  .ask-mode-link{ background:none; border:none; cursor:pointer; font-size:0.82rem; color:var(--accent-strong); margin-top:14px; font-family:inherit; }
+  .ask-confirm{ max-width:640px; margin:24px auto 0; padding:16px 18px; }
+  .ask-confirm p{ margin:0 0 12px; font-size:0.87rem; color:var(--text-muted); }
+  .ask-confirm .row{ display:flex; gap:10px; }
+  .ask-status{ max-width:640px; margin:24px auto 0; padding:16px 18px; font-size:0.87rem; color:var(--text-muted); text-align:center; }
+
   [hidden]{ display:none !important; }
 
   @media (max-width:1100px){
@@ -254,6 +293,8 @@
     .dash-grid, .stat-col{ grid-template-columns:1fr; }
     .dash-grid{ grid-template-columns:1fr; }
     .search-box{ display:none; }
+    .ask-hero{ padding-top:32px; }
+    .ask-lede{ font-size:1.5rem; }
   }
 </style>
 </head>
@@ -272,7 +313,7 @@
     <div class="nav-label">Research</div>
     <button class="navitem" data-page="suppliers">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-      Suppliers
+      Find suppliers
     </button>
     <button class="navitem" data-page="pipeline">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.2 11l7.6-4M8.2 13l7.6 4"/></svg>
@@ -407,25 +448,91 @@
         </div>
       </section>
 
-      <!-- ============ SUPPLIERS ============ -->
+      <!-- ============ SUPPLIERS (Find suppliers) ============ -->
       <section id="page-suppliers" hidden>
-        <div class="page-head"><div><h1>Suppliers</h1><div class="crumb">Search the live database</div></div></div>
-        <div class="card card-pad" style="margin-bottom:18px;">
-          <div class="toolbar">
-            <div class="field"><label>Product</label><input id="supProduct" placeholder="e.g. wheel bearings"></div>
-            <div class="field"><label>Country</label><input id="supCountry" placeholder="e.g. China"></div>
-            <div class="field"><label>Min score</label><input id="supMinScore" type="number" placeholder="0-100"></div>
-            <label class="checkline"><input type="checkbox" id="supManuOnly"> Manufacturers only</label>
-            <label class="checkline"><input type="checkbox" id="supVerifiedOnly"> Verified only</label>
-            <button class="btn btn-primary" id="supSearchBtn">Search</button>
+
+        <!-- ---- Ask view (default) ---- -->
+        <div id="suppliers-ask">
+          <div class="ask-hero">
+            <span class="ask-kicker">Supplier Intel</span>
+            <h1 class="ask-lede">Start with anything you've got</h1>
+            <p class="ask-sublede">A product, a company name, or a website to verify — we'll search the database for free. A spreadsheet of leads runs a real bulk check.</p>
+
+            <div class="ask-shell">
+              <div class="ask-box">
+                <textarea id="askInput" rows="3" placeholder="Describe a product, paste a company or website…"></textarea>
+                <div class="ask-foot">
+                  <label class="attach-btn" for="askFileInput" id="askAttachLabel">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05 12.25 20.24a5 5 0 0 1-7.07-7.07l9.19-9.19a3.33 3.33 0 0 1 4.71 4.71l-9.2 9.19a1.67 1.67 0 0 1-2.36-2.36l8.49-8.48"/></svg>
+                    Attach a list
+                  </label>
+                  <input type="file" id="askFileInput" accept=".csv,.xlsx" hidden>
+                  <button class="btn btn-primary ask-go" id="askGoBtn">
+                    Find suppliers
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="input-types">
+                <span class="type-chip">Product or requirement — free</span>
+                <span class="type-chip">Company name — free</span>
+                <span class="type-chip">Website URL — real check</span>
+                <span class="type-chip">CSV / XLSX list — real check</span>
+              </div>
+            </div>
+
+            <div id="askResultArea" hidden></div>
+
+            <div class="ask-try">
+              <div class="ask-try-label">Try</div>
+              <div class="ask-try-list">
+                <button class="ask-try-item" data-fill="Find suppliers of wheel bearings in China">
+                  <span class="ask-try-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></span>
+                  Find suppliers of wheel bearings in China
+                </button>
+                <button class="ask-try-item" data-fill="AL-KO">
+                  <span class="ask-try-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 21h18M6 21V9l6-4 6 4v12M10 21v-6h4v6"/></svg></span>
+                  Find suppliers similar to AL-KO
+                </button>
+                <button class="ask-try-item" data-fill="alko-tt.com">
+                  <span class="ask-try-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z"/></svg></span>
+                  alko-tt.com — verify this is a real manufacturer
+                </button>
+                <button class="ask-try-item" id="askTryUpload">
+                  <span class="ask-try-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg></span>
+                  Upload a spreadsheet of leads to verify in bulk
+                </button>
+              </div>
+            </div>
+
+            <div class="ask-mode-row"><div class="ask-mode-line"></div><span class="ask-mode-text">or</span><div class="ask-mode-line"></div></div>
+            <button class="ask-mode-link" id="browseFiltersLink">Browse the database with filters instead →</button>
           </div>
         </div>
-        <div class="card table-card">
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Company</th><th>Country</th><th class="mono">Score</th><th class="mono">AI Conf.</th><th>Status</th><th>Manufacturer</th><th>Employees</th><th>Exports to</th><th>Domain</th></tr></thead>
-              <tbody id="suppliersBody"><tr><td colspan="9" class="empty-note">Connect your API in Settings, then search above.</td></tr></tbody>
-            </table>
+
+        <!-- ---- Browse view (filters + table, existing) ---- -->
+        <div id="suppliers-browse" hidden>
+          <div class="page-head">
+            <div><h1>Suppliers</h1><div class="crumb">Search the live database</div></div>
+            <button class="btn btn-ghost" id="backToAskBtn">← Back</button>
+          </div>
+          <div class="card card-pad" style="margin-bottom:18px;">
+            <div class="toolbar">
+              <div class="field"><label>Product</label><input id="supProduct" placeholder="e.g. wheel bearings"></div>
+              <div class="field"><label>Country</label><input id="supCountry" placeholder="e.g. China"></div>
+              <div class="field"><label>Min score</label><input id="supMinScore" type="number" placeholder="0-100"></div>
+              <label class="checkline"><input type="checkbox" id="supManuOnly"> Manufacturers only</label>
+              <label class="checkline"><input type="checkbox" id="supVerifiedOnly"> Verified only</label>
+              <button class="btn btn-primary" id="supSearchBtn">Search</button>
+            </div>
+          </div>
+          <div class="card table-card">
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Company</th><th>Country</th><th class="mono">Score</th><th class="mono">AI Conf.</th><th>Status</th><th>Manufacturer</th><th>Employees</th><th>Exports to</th><th>Domain</th></tr></thead>
+                <tbody id="suppliersBody"><tr><td colspan="9" class="empty-note">Connect your API in Settings, then search above.</td></tr></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </section>
@@ -887,6 +994,147 @@
     if (row) openSupplierDetail(row.dataset.supplierId);
   });
 
+  /* ---------------- Find suppliers (ask box) ---------------- */
+  // Mirrors deduplication/domain_utils.py's looks_like_url exactly (no
+  // internal whitespace, contains a literal dot) -- same classification
+  // the backend itself uses in run_single_company_job, so what triggers
+  // the paid verify path here is what would trigger it server-side too.
+  function looksLikeUrl(text){
+    if (!text) return false;
+    text = text.trim();
+    if (!text || text.indexOf(' ') !== -1) return false;
+    return text.indexOf('.') !== -1;
+  }
+  // Deliberately simple heuristic, not real NLP -- search_suppliers_full
+  // is a LIKE-based match against canonical_name/product_keywords/
+  // primary_categories anyway, so stripping common wrapper phrasing
+  // matters more than precise parsing.
+  function cleanProductQuery(text){
+    var t = text.trim();
+    t = t.replace(/^(find|show me|search for|looking for|i need)\s+/i, '');
+    t = t.replace(/^(oem\s+)?manufacturers?\s+of\s+/i, '');
+    t = t.replace(/^suppliers?\s+(of|similar to|like)\s+/i, '');
+    t = t.replace(/\s+(in|from)\s+(europe|china|asia|the\s+uk|uk|usa?|india|vietnam)\b.*$/i, '');
+    t = t.trim();
+    return t || text.trim();
+  }
+  function showAskResult(html){
+    var area = document.getElementById('askResultArea');
+    area.innerHTML = html;
+    area.hidden = false;
+  }
+  function clearAskResult(){
+    var area = document.getElementById('askResultArea');
+    area.hidden = true;
+    area.innerHTML = '';
+  }
+  function pollJobUntilDone(jobId, onDone){
+    (function poll(){
+      apiFetch('/pipeline/jobs/' + jobId).then(function(job){
+        if (job.status === 'completed' || job.status === 'failed') onDone(job);
+        else setTimeout(poll, 2500);
+      }).catch(function(){ onDone(null); });
+    })();
+  }
+  function runAskSearch(rawText){
+    clearAskResult();
+    document.getElementById('supProduct').value = cleanProductQuery(rawText);
+    document.getElementById('supCountry').value = '';
+    document.getElementById('supMinScore').value = '';
+    document.getElementById('supManuOnly').checked = false;
+    document.getElementById('supVerifiedOnly').checked = false;
+    showPage('suppliers');
+    showSuppliersBrowse();
+    document.getElementById('supSearchBtn').click();
+  }
+  function runAskVerify(rawText){
+    showAskResult(
+      '<div class="card ask-confirm"><p>Verify <strong>' + esc(rawText) + '</strong>? This visits the site ' +
+      'directly to check it\'s a real, reachable company -- real time, usually well under a minute.</p>' +
+      '<div class="row"><button class="btn btn-primary" id="askConfirmYes">Verify</button>' +
+      '<button class="btn btn-ghost" id="askConfirmNo">Cancel</button></div></div>'
+    );
+    document.getElementById('askConfirmNo').addEventListener('click', clearAskResult);
+    document.getElementById('askConfirmYes').addEventListener('click', function(){
+      showAskResult('<div class="card ask-status">Verifying ' + esc(rawText) + '… this can take up to a minute.</div>');
+      apiFetch('/companies/enrich', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input_text: rawText }),
+      }).then(function(job){
+        pollJobUntilDone(job.id, function(finished){
+          if (!finished){
+            showAskResult('<div class="card ask-status">Lost track of that check -- try again from Settings.</div>');
+            return;
+          }
+          var stats = finished.stats || {};
+          if (stats.resolved_supplier_id){
+            clearAskResult();
+            document.getElementById('askInput').value = '';
+            openSupplierDetail(stats.resolved_supplier_id);
+          } else if (stats.status === 'needs_url'){
+            showAskResult('<div class="card ask-status">Couldn\'t find a real website for "' + esc(rawText) + '"' +
+              (stats.website_finder_reason ? ' (' + esc(stats.website_finder_reason) + ')' : '') +
+              '. Try pasting the website URL directly instead.</div>');
+          } else {
+            showAskResult('<div class="card ask-status">Couldn\'t verify "' + esc(rawText) + '" -- the site may be unreachable.' +
+              (finished.error ? ' ' + esc(finished.error) : '') + '</div>');
+          }
+        });
+      }).catch(function(){
+        showAskResult('<div class="card ask-status">Could not start verification — check your connection in Settings.</div>');
+      });
+    });
+  }
+  function submitAsk(){
+    var raw = document.getElementById('askInput').value.trim();
+    if (!raw) return;
+    if (looksLikeUrl(raw)) runAskVerify(raw);
+    else runAskSearch(raw);
+  }
+  document.getElementById('askGoBtn').addEventListener('click', submitAsk);
+  document.getElementById('askInput').addEventListener('keydown', function(e){
+    if (e.key === 'Enter' && !e.shiftKey){
+      e.preventDefault();
+      submitAsk();
+    }
+  });
+  document.querySelectorAll('.ask-try-item[data-fill]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      document.getElementById('askInput').value = btn.dataset.fill;
+      document.getElementById('askInput').focus();
+    });
+  });
+  document.getElementById('askTryUpload').addEventListener('click', function(){
+    document.getElementById('askFileInput').click();
+  });
+  document.getElementById('askFileInput').addEventListener('change', function(){
+    var file = this.files[0];
+    this.value = '';
+    if (!file) return;
+    showAskResult('<div class="card ask-status">Uploading ' + esc(file.name) + '… this runs a real check against every row.</div>');
+    var formData = new FormData();
+    formData.append('file', file);
+    fetch(api.url.replace(/\/$/, '') + '/batch/upload', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + api.token },
+      body: formData,
+    }).then(function(r){
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function(){
+      clearAskResult();
+      showPage('pipeline');
+      if (api.connected) loadJobs();
+    }).catch(function(){
+      showAskResult('<div class="card ask-status">Upload failed — check your connection in Settings.</div>');
+    });
+  });
+  document.getElementById('browseFiltersLink').addEventListener('click', showSuppliersBrowse);
+  document.getElementById('backToAskBtn').addEventListener('click', function(){
+    document.getElementById('suppliers-browse').hidden = true;
+    document.getElementById('suppliers-ask').hidden = false;
+  });
+
   /* ---------------- Pipeline page ---------------- */
   function loadJobs(){
     apiFetch('/pipeline/jobs?limit=50').then(function(jobs){
@@ -929,9 +1177,7 @@
   /* ---------------- Quick search ---------------- */
   document.getElementById('quickSearch').addEventListener('keydown', function(e){
     if (e.key === 'Enter' && this.value.trim()){
-      document.getElementById('supProduct').value = this.value.trim();
-      showPage('suppliers');
-      document.getElementById('supSearchBtn').click();
+      runAskSearch(this.value.trim());
     }
   });
 
@@ -942,6 +1188,11 @@
   // than fetched.
   var VERIFIED_HIGH_MIN_SCORE = 85;
 
+  function showSuppliersBrowse(){
+    document.getElementById('suppliers-ask').hidden = true;
+    document.getElementById('suppliers-browse').hidden = false;
+  }
+
   function goToSuppliers(opts){
     opts = opts || {};
     document.getElementById('supProduct').value = '';
@@ -950,6 +1201,7 @@
     document.getElementById('supMinScore').value = opts.minScore || '';
     document.getElementById('supVerifiedOnly').checked = !!opts.verifiedOnly;
     showPage('suppliers');
+    showSuppliersBrowse();
     document.getElementById('supSearchBtn').click();
   }
 
