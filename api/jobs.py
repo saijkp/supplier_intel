@@ -121,6 +121,7 @@ def run_collection_job(job_id: str, options: Dict[str, Any]) -> None:
         else:
             stats = service.collect_pending(
                 limit=options.get("limit", 20), force=options.get("force", False),
+                exclude_marketplace_domains=options.get("exclude_marketplace_domains", False),
             )
         repo.mark_pipeline_job_completed(job_id, stats=stats)
     except Exception as e:

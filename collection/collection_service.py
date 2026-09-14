@@ -483,7 +483,9 @@ class CollectionService:
             logger.error("collection: saving certificate documents failed for supplier #%s: %s", supplier_id, e)
             return 0
 
-    def collect_pending(self, limit: int = 20, force: bool = False) -> Dict[str, Any]:
+    def collect_pending(
+        self, limit: int = 20, force: bool = False, exclude_marketplace_domains: bool = False,
+    ) -> Dict[str, Any]:
         """Standalone batch pass across every supplier needing
         collection -- mirrors pipeline.orchestrator's own
         run_capability_extraction_only/run_facility_verification_only
@@ -497,6 +499,13 @@ class CollectionService:
         unit of work" semantics as the old per-supplier loop, just at
         wave granularity) -- a budget of 0/negative therefore still
         stops before wave 1 with attempted=0, unchanged behaviour.
+
+        `exclude_marketplace_domains`: see
+        SupplierRepository.get_suppliers_needing_collection's own
+        docstring -- skips suppliers whose stored domain is a
+        marketplace listing page, not a real company site, so a bulk
+        sweep doesn't spend real headless-browser visits on near-certain
+        failures.
         """
         acquired = _BATCH_SEMAPHORE.acquire(blocking=False)
         if not acquired:
@@ -507,7 +516,9 @@ class CollectionService:
             }
 
         try:
-            suppliers = self.repo.get_suppliers_needing_collection(limit=limit, force=force)
+            suppliers = self.repo.get_suppliers_needing_collection(
+                limit=limit, force=force, exclude_marketplace_domains=exclude_marketplace_domains,
+            )
             start_time = time.monotonic()
             attempted = 0
             succeeded = 0

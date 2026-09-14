@@ -729,6 +729,11 @@ def export_discovered(product: str, output: Optional[str], discovery_source: str
 @click.option("--force", is_flag=True,
               help="In --pending mode, re-collect every supplier with a domain, not just "
                    "ones never collected.")
+@click.option("--exclude-marketplace-domains", is_flag=True,
+              help="In --pending mode, skip suppliers whose stored domain is a marketplace "
+                   "listing page (Alibaba/IndiaMART/HKTDC/1688/Made-in-China) rather than "
+                   "their own site -- there's no real company page to extract from a listing "
+                   "URL, so these are near-certain failures rather than worth retrying.")
 @click.option("--default-region", default=None,
               help="ISO 3166-1 alpha-2 fallback (e.g. GB) for phone-number parsing when a "
                    "supplier's own country isn't set yet -- always true for a freshly-created "
@@ -737,7 +742,7 @@ def export_discovered(product: str, output: Optional[str], discovery_source: str
                    "regionally scoped (e.g. a UK-only category) -- never overrides a real, "
                    "known country.")
 def collect(supplier_id: Optional[int], pending: bool, limit: int, force: bool,
-            default_region: Optional[str]) -> None:
+            exclude_marketplace_domains: bool, default_region: Optional[str]) -> None:
     """Visit supplier website(s) with a real headless browser (collection.
     SiteCollector) and save HTML/screenshots/extracted contact+product data.
     Either --supplier-id ONE or --pending a batch -- see collection/
@@ -756,7 +761,9 @@ def collect(supplier_id: Optional[int], pending: bool, limit: int, force: bool,
                        f"({outcome['pages_visited']} page(s) visited)"
                        + (f" -- {outcome['error']}" if outcome.get("error") else ""))
     else:
-        stats = service.collect_pending(limit=limit, force=force)
+        stats = service.collect_pending(
+            limit=limit, force=force, exclude_marketplace_domains=exclude_marketplace_domains,
+        )
         table = Table(show_header=False)
         table.add_column("Metric", style="cyan")
         table.add_column("Count", justify="right", style="magenta")

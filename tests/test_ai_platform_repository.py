@@ -76,6 +76,45 @@ class TestGetSuppliersNeedingCollection:
         assert [s["id"] for s in results] == [new_id]
         assert old_id != new_id
 
+    def test_exclude_marketplace_domains_is_off_by_default(self, tmp_path):
+        """Existing callers (main.py collect --pending, the pre-existing
+        POST /collection/jobs behaviour) must see no change -- same
+        marketplace-domain supplier as test_existing_alibaba_sourced_
+        suppliers_are_immediately_eligible above, still included."""
+        repo = _make_repo(tmp_path)
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Legacy Alibaba Co", "domain": "legacyco.en.alibaba.com",
+        })
+        results = repo.get_suppliers_needing_collection()
+        assert [s["id"] for s in results] == [supplier_id]
+
+    def test_exclude_marketplace_domains_skips_known_listing_patterns(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        real_site = repo.create_golden_record({"canonical_name": "Real Co", "domain": "realco.example.com"})
+        for name, domain in [
+            ("Alibaba listing", "someco.en.alibaba.com"),
+            ("IndiaMART listing", "someco.indiamart.com"),
+            ("HKTDC listing", "someco.hktdc.com"),
+            ("Made-in-China listing", "someco.made-in-china.com"),
+            ("1688 listing", "someco.1688.com"),
+        ]:
+            repo.create_golden_record({"canonical_name": name, "domain": domain})
+
+        results = repo.get_suppliers_needing_collection(exclude_marketplace_domains=True)
+
+        assert [s["id"] for s in results] == [real_site]
+
+    def test_exclude_marketplace_domains_applies_under_force_too(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        real_site = repo.create_golden_record({"canonical_name": "Real Co", "domain": "realco.example.com"})
+        listing = repo.create_golden_record({"canonical_name": "Listing Co", "domain": "someco.en.alibaba.com"})
+        repo.record_collection_run(supplier_id=real_site, status="success", pages_visited=1)
+        repo.record_collection_run(supplier_id=listing, status="failed", pages_visited=0)
+
+        results = repo.get_suppliers_needing_collection(force=True, exclude_marketplace_domains=True)
+
+        assert [s["id"] for s in results] == [real_site]
+
 
 class TestGetSuppliersNeedingContacts:
 

@@ -180,6 +180,15 @@ class CollectionJobRequest(BaseModel):
         description="In pending mode, re-collect every supplier with a domain, not just ones "
                      "never collected.",
     )
+    exclude_marketplace_domains: bool = Field(
+        default=False,
+        description="Pending mode only: skip suppliers whose stored domain is a marketplace "
+                     "listing page (Alibaba/IndiaMART/HKTDC/1688/Made-in-China) rather than "
+                     "their own site -- Collection Service has no real company page to extract "
+                     "from a listing URL, so these are near-certain failures. Off by default; "
+                     "opt in for a bulk sweep that shouldn't waste real headless-browser visits "
+                     "on them.",
+    )
 
 
 class VerificationJobRequest(BaseModel):

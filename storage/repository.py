@@ -159,6 +159,28 @@ def _rows_to_dicts(rows: List[sqlite3.Row], json_fields: Sequence[str] = ()) -> 
 # match's row from the candidate pool entirely -- SupplierMatcher's
 # fuzzy name scoring (Level 3) never even got a chance to run on it,
 # even though the two canonical_name values were identical.
+# Substrings identifying a `domain` value that's a marketplace LISTING
+# page (an Alibaba/IndiaMART/HKTDC/1688/Made-in-China subdomain or path)
+# rather than the supplier's own site. Found live investigating why
+# Collection Service's success rate was so low for a chunk of never-run
+# suppliers: 541 suppliers had this shape of domain, and only 5 of them
+# ever succeeded at collection -- CollectionService visits whatever URL
+# is in `domain`, and there's no real company page to extract from a
+# marketplace listing itself. Not a retry-harder problem; these need a
+# real company domain first (see scrapers/company_website_finder.py /
+# main.py find-websites), a separate paid decision from a free bulk
+# collection sweep, so get_suppliers_needing_collection's
+# exclude_marketplace_domains flag skips them rather than wasting a real
+# headless-browser visit on a near-certain failure.
+MARKETPLACE_LISTING_DOMAIN_PATTERNS: tuple[str, ...] = (
+    ".en.alibaba.com",
+    "indiamart.com",
+    "hktdc.com",
+    "made-in-china.com",
+    "madeinchina.com",
+    ".1688.com",
+)
+
 _COUNTRY_ALIAS_GROUPS: tuple[frozenset, ...] = (
     frozenset({"us", "usa", "u.s.", "u.s.a.", "united states", "united states of america"}),
     frozenset({"uk", "u.k.", "united kingdom", "great britain"}),
@@ -2624,7 +2646,7 @@ class SupplierRepository:
     # ═════════════════════════════════════════════════════
 
     def get_suppliers_needing_collection(
-        self, limit: int = 1000, force: bool = False
+        self, limit: int = 1000, force: bool = False, exclude_marketplace_domains: bool = False,
     ) -> List[Dict[str, Any]]:
         """Suppliers with a known domain that Collection Service hasn't
         run against yet. Mirrors get_suppliers_needing_capability_extraction's
@@ -2640,23 +2662,45 @@ class SupplierRepository:
         "collect/verify pending" run against a database that's mostly
         an old imported base processes the OLDEST suppliers first, not
         the ones a user just discovered and expected to see enriched.
+
+        `exclude_marketplace_domains` (opt-in): skips any supplier whose
+        stored `domain` is a marketplace LISTING page (an Alibaba/
+        IndiaMART/HKTDC/1688/Made-in-China subdomain or path) rather than
+        the company's own site -- see MARKETPLACE_LISTING_DOMAIN_PATTERNS'
+        own comment for why Collection Service structurally can't
+        succeed against those regardless of how many times it's retried.
+        Off by default so existing callers (main.py collect --pending,
+        the pre-existing POST /collection/jobs behaviour) are unchanged;
+        a caller that specifically wants to skip the un-collectible
+        marketplace-listing rows opts in explicitly.
         """
         with connection_scope(self.db_path) as conn:
+            marketplace_clause = ""
+            params: List[Any] = [limit]
+            if exclude_marketplace_domains:
+                marketplace_clause = " AND " + " AND ".join(
+                    "domain NOT LIKE ?" for _ in MARKETPLACE_LISTING_DOMAIN_PATTERNS
+                )
+                like_params = [f"%{p}%" for p in MARKETPLACE_LISTING_DOMAIN_PATTERNS]
+                params = like_params + [limit]
+
             if force:
                 rows = conn.execute(
-                    "SELECT * FROM suppliers WHERE domain IS NOT NULL AND domain != '' ORDER BY id DESC LIMIT ?",
-                    (limit,),
+                    f"SELECT * FROM suppliers WHERE domain IS NOT NULL AND domain != ''"
+                    f"{marketplace_clause} ORDER BY id DESC LIMIT ?",
+                    params,
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT * FROM suppliers
                     WHERE domain IS NOT NULL AND domain != ''
                     AND collection_status IS NULL
+                    {marketplace_clause}
                     ORDER BY id DESC
                     LIMIT ?
                     """,
-                    (limit,),
+                    params,
                 ).fetchall()
             return _rows_to_dicts(rows, SUPPLIER_JSON_FIELDS)
 

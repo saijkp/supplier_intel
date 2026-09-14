@@ -252,8 +252,10 @@ class FakeCollectionService:
         self.last_collect_call = supplier_id
         return {"supplier_id": supplier_id, "status": "success", "pages_visited": 3}
 
-    def collect_pending(self, limit=20, force=False):
-        self.last_collect_pending_call = {"limit": limit, "force": force}
+    def collect_pending(self, limit=20, force=False, exclude_marketplace_domains=False):
+        self.last_collect_pending_call = {
+            "limit": limit, "force": force, "exclude_marketplace_domains": exclude_marketplace_domains,
+        }
         return {"attempted": 2, "succeeded": 2, "failed": 0, "total_eligible": 2, "status": "completed"}
 
 
@@ -261,7 +263,7 @@ class FailingFakeCollectionService(FakeCollectionService):
     def collect(self, supplier_id):
         raise RuntimeError("browser crashed")
 
-    def collect_pending(self, limit=20, force=False):
+    def collect_pending(self, limit=20, force=False, exclude_marketplace_domains=False):
         raise RuntimeError("browser crashed")
 
 
@@ -287,10 +289,26 @@ class TestRunCollectionJob:
         jobs_module.run_collection_job("job21", {"supplier_id": None, "pending": True, "limit": 15, "force": True})
 
         assert FakeCollectionService.last_instance.last_collect_call is None
-        assert FakeCollectionService.last_instance.last_collect_pending_call == {"limit": 15, "force": True}
+        assert FakeCollectionService.last_instance.last_collect_pending_call == {
+            "limit": 15, "force": True, "exclude_marketplace_domains": False,
+        }
         job = repo.get_pipeline_job("job21")
         assert job["status"] == "completed"
         assert job["stats"]["attempted"] == 2
+
+    def test_pending_dispatches_exclude_marketplace_domains_through(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "CollectionService", FakeCollectionService)
+
+        repo.create_pipeline_job(job_id="job21b", query="[collection] pending batch",
+                                  options={"pending": True, "limit": 10, "exclude_marketplace_domains": True})
+        jobs_module.run_collection_job(
+            "job21b",
+            {"supplier_id": None, "pending": True, "limit": 10, "force": False, "exclude_marketplace_domains": True},
+        )
+
+        assert FakeCollectionService.last_instance.last_collect_pending_call == {
+            "limit": 10, "force": False, "exclude_marketplace_domains": True,
+        }
 
     def test_supplier_id_takes_priority_over_pending_if_both_set(self, repo, monkeypatch):
         monkeypatch.setattr(jobs_module, "CollectionService", FakeCollectionService)
