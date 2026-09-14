@@ -1,8 +1,21 @@
 # Supplier Intel — web frontend
 
-A single self-contained `index.html`. No build step, no framework, no
-dependencies — Netlify serves it as-is and it talks directly to your
-Railway API over HTTPS.
+Two self-contained single-file frontends live in `frontend/`, no build
+step, no framework, no dependencies — Netlify serves either as-is and
+they talk directly to your Railway API over HTTPS:
+
+- **`index.html`** (deployed default, live at
+  `https://grand-alfajores-a9d7ee.netlify.app/`) — the "Supplier Intel
+  Console" dashboard UI: a sidebar-nav app (Dashboard, Suppliers,
+  Pipeline Jobs, Buyer Profiles, Settings) backed by `GET
+  /dashboard/summary` plus the same search/job endpoints below. See
+  "Current default UI" further down. `frontend/dashboard.html` is an
+  identical copy, also served at `/dashboard.html` on the same site —
+  edit both together.
+- **`legacy.html`** — the original four-tab evidence-rich app (Search,
+  Buyer profiles, Pipeline, Compare). No longer the deployed default,
+  kept for reference/rollback. The rest of this file below "Current
+  default UI" documents *this* app.
 
 ## Deploy
 
@@ -45,7 +58,31 @@ Storage access is wrapped so that a browser or preview frame that
 blocks local storage falls back to keeping the details in memory for
 the session rather than breaking the page.
 
-## What each screen does
+## Current default UI (`index.html` / `dashboard.html`)
+
+Sidebar-nav dashboard console, five pages:
+
+- **Dashboard** — `GET /dashboard/summary` in one call: entity mix,
+  verified-high count vs. goal, daily/weekly verification and
+  new-supplier trends, recent suppliers. Every stat card with a real
+  backing filter is clickable, jumping to Suppliers or Pipeline Jobs
+  pre-filtered (e.g. "Verified — High confidence" → `min_score=85`,
+  "Avg daily verifications" → `verified_only=true`).
+- **Suppliers** — search by product/country/min score/manufacturers-only/
+  verified-only. Clicking a row opens a detail modal (`GET
+  /suppliers/{id}`) with AI summary, strengths/risks, key contacts,
+  matched capabilities with evidence, and certificates — the same
+  underlying data the Legacy UI's evidence stamps below show, just in a
+  different layout.
+- **Pipeline Jobs** — start a search-driven pipeline run, poll status.
+- **Buyer Profiles** — create/list saved buyer requirement bundles.
+- **Settings** — the same API-address/access-token connection flow
+  described in "First run" above.
+
+## Legacy UI (`frontend/legacy.html`)
+
+Everything below this point describes `legacy.html`'s four-tab app —
+not the deployed default, kept for reference.
 
 **Search** — product, country, minimum score, and certifications that
 must be evidenced. Requirements combine with AND: every selected term
