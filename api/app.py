@@ -217,6 +217,7 @@ def _to_search_result(row: Dict[str, Any]) -> SupplierSearchResult:
         alibaba_years=row.get("alibaba_years"),
         matched_capabilities=row.get("matched_capabilities") or [],
         ai_confidence_score=row.get("ai_confidence_score"),
+        ai_confidence_assessed_at=_stringify(row.get("ai_confidence_assessed_at")),
         ai_summary=row.get("ai_summary"),
         ai_strengths=row.get("ai_strengths") or [],
         ai_risks=row.get("ai_risks") or [],

@@ -180,6 +180,42 @@
 
   .empty-note{ padding:26px 4px; color:var(--text-faint); font-size:0.85rem; text-align:center; }
 
+  .row-clickable{ cursor:pointer; }
+  .row-clickable:hover{ background:var(--card-2); }
+
+  /* Supplier detail modal */
+  .modal-overlay{
+    position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:100;
+    display:flex; align-items:flex-start; justify-content:center; padding:40px 16px; overflow-y:auto;
+  }
+  .modal-panel{
+    background:var(--card); border:1px solid var(--border); border-radius:14px; box-shadow:var(--shadow);
+    max-width:720px; width:100%; padding:24px 26px 28px;
+  }
+  .detail-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:10px; }
+  .detail-head h2{ font-size:1.15rem; font-weight:600; margin:0 0 3px; }
+  .detail-head .crumb{ font-size:0.8rem; color:var(--text-faint); }
+  .detail-badges{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+  .detail-reason{ font-size:0.84rem; color:var(--text-muted); margin:0 0 16px; }
+  .detail-stats{ display:grid; grid-template-columns:repeat(auto-fill, minmax(120px,1fr)); gap:12px; margin-bottom:18px; }
+  .detail-stat{ background:var(--card-2); border:1px solid var(--border); border-radius:9px; padding:10px 12px; }
+  .detail-stat-label{ font-size:0.68rem; text-transform:uppercase; letter-spacing:0.03em; color:var(--text-faint); margin-bottom:4px; }
+  .detail-stat-value{ font-family:"IBM Plex Mono"; font-size:0.95rem; color:var(--text); }
+  .detail-section{ margin-bottom:18px; }
+  .detail-section p{ font-size:0.86rem; color:var(--text-muted); margin:4px 0 0; }
+  .detail-section-row{ display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-bottom:18px; }
+  .detail-list{ list-style:none; padding:0; margin:6px 0 0; font-size:0.84rem; }
+  .detail-list li{ padding:5px 0 5px 16px; position:relative; color:var(--text-muted); }
+  .detail-list li::before{ content:'•'; position:absolute; left:0; }
+  .good-list li::before{ color:var(--good); }
+  .risk-list li::before{ color:var(--risk); }
+  .detail-table{ width:100%; border-collapse:collapse; font-size:0.82rem; margin-top:6px; }
+  .detail-table th{ text-align:left; color:var(--text-faint); font-weight:500; font-size:0.68rem; text-transform:uppercase; padding:6px 8px; border-bottom:1px solid var(--border); }
+  .detail-table td{ padding:8px; border-bottom:1px solid var(--border-soft); color:var(--text-muted); }
+  @media (max-width:600px){
+    .detail-section-row{ grid-template-columns:1fr; }
+  }
+
   /* generic page (Suppliers / Pipeline / Buyer Profiles / Settings) */
   .toolbar{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:18px; }
   .field{ display:flex; flex-direction:column; gap:5px; }
@@ -387,8 +423,8 @@
         <div class="card table-card">
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Company</th><th>Country</th><th class="mono">Score</th><th>Status</th><th>Manufacturer</th><th>Domain</th></tr></thead>
-              <tbody id="suppliersBody"><tr><td colspan="6" class="empty-note">Connect your API in Settings, then search above.</td></tr></tbody>
+              <thead><tr><th>Company</th><th>Country</th><th class="mono">Score</th><th class="mono">AI Conf.</th><th>Status</th><th>Manufacturer</th><th>Employees</th><th>Exports to</th><th>Domain</th></tr></thead>
+              <tbody id="suppliersBody"><tr><td colspan="9" class="empty-note">Connect your API in Settings, then search above.</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -449,6 +485,10 @@
 
     </div>
   </div>
+</div>
+
+<div class="modal-overlay" id="supplierDetailOverlay" hidden>
+  <div class="modal-panel" id="supplierDetailBody" role="dialog" aria-modal="true"></div>
 </div>
 
 <script>
@@ -596,11 +636,36 @@
   function initialsOf(name){
     return (name||'??').split(/\s+/).map(function(w){return w[0];}).slice(0,2).join('').toUpperCase();
   }
-  function recommendationFromScore(s){
-    if (s == null) return 'unverified_caution';
-    if (s >= 85) return 'verified_high';
-    if (s >= 65) return 'verified_medium';
-    return 'unverified_caution';
+  // Real backend fields, deliberately shown as two SEPARATE badges rather
+  // than merged into one status -- `recommendation` (verification/scorer.py,
+  // composite_score/platform-track-record) and `procurement_recommendation`
+  // (verification_ai/, ai_confidence_score-driven) are independently
+  // computed on purpose (see CLAUDE.md's "never blend independently-
+  // computed scores"); showing only one would silently blend them.
+  function recommendationBadge(rec){
+    var map = {
+      recommended: ['good', 'Recommended'],
+      review: ['accent', 'Needs Review'],
+      unverified: ['warn', 'Unverified'],
+      unscored: ['warn', 'Unscored'],
+      avoid: ['risk', 'Avoid']
+    };
+    var v = map[rec] || ['warn', rec || 'Unreviewed'];
+    return '<span class="badge '+v[0]+'">'+v[1]+'</span>';
+  }
+  function procurementBadge(cat){
+    if (!cat) return '';
+    var map = {
+      recommended_for_rfq: ['good', 'AI: RFQ-Ready'],
+      recommended_for_prototype: ['accent', 'AI: Prototype'],
+      recommended_for_mass_production: ['good', 'AI: Mass Production'],
+      requires_factory_audit: ['warn', 'AI: Needs Audit'],
+      needs_more_verification: ['warn', 'AI: More Verification'],
+      high_risk: ['risk', 'AI: High Risk'],
+      avoid: ['risk', 'AI: Avoid']
+    };
+    var v = map[cat] || ['warn', 'AI: ' + cat];
+    return '<span class="badge '+v[0]+'" style="margin-left:4px;">'+v[1]+'</span>';
   }
   function entityKey(row){
     if (row.is_manufacturer === true) return 'manufacturer';
@@ -629,12 +694,64 @@
     confidence_trend_30d: [71,73,72,75,74,76,78],
     new_suppliers_trend_30d: [110,128,119,145,152,168,186],
     recent_suppliers: [
-      { id:1, canonical_name:'Meridian Precision Components', country:'China', composite_score:92, is_manufacturer:true, updated_at:'2026-09-09' },
-      { id:2, canonical_name:'Ashcroft Tanker Fabrication', country:'United Kingdom', composite_score:88, is_manufacturer:true, updated_at:'2026-09-08' },
-      { id:3, canonical_name:'Vantage Global Trading Co.', country:'India', composite_score:61, is_manufacturer:false, updated_at:'2026-09-08' },
-      { id:4, canonical_name:'Northtec Axle Systems', country:'Germany', composite_score:81, is_manufacturer:true, updated_at:'2026-09-07' },
-      { id:5, canonical_name:'Lumen Fasteners Ltd', country:'Vietnam', composite_score:47, is_manufacturer:null, updated_at:'2026-09-06' },
-      { id:6, canonical_name:'Baltic Forge Works', country:'Poland', composite_score:90, is_manufacturer:true, updated_at:'2026-09-05' },
+      { id:1, canonical_name:'Meridian Precision Components', domain:'meridian-precision.example.com', country:'China',
+        composite_score:92, evidence_coverage:88, recommendation:'recommended', is_manufacturer:true,
+        year_established:2004, employee_count:'201-500', factory_size_sqm:12000,
+        ai_confidence_score:91, ai_confidence_assessed_at:'2026-09-09',
+        procurement_recommendation:'recommended_for_rfq',
+        procurement_recommendation_reason:'Confirmed as a manufacturer with a verified facility address and real export shipment records on file.',
+        ai_summary:'Established precision-components manufacturer with strong export history to the UK and EU.',
+        ai_strengths:['Verified facility address', 'ISO 9001 corroborated on their own site', 'Confirmed export shipments to UK/EU'],
+        ai_risks:[],
+        exports_to_uk:true, exports_to_eu:true, exports_to_us:false, active_export_countries:['United Kingdom','Germany','France'],
+        primary_email:'sales@meridian-precision.example.com', primary_phone:'+86 20 5551 0192',
+        key_contacts:[{name:'Li Wei', title:'Export Sales Manager', email:'liwei@meridian-precision.example.com', phone:null, linkedin_url:null, role_category:'sales'}],
+        matched_capabilities:[{canonical_term:'CNC machining', relationship:'in_house', confidence:0.92, evidence:'we operate 40+ CNC machining centres in-house', source_url:'https://meridian-precision.example.com/capabilities'}],
+        certificate_document_urls:[{url:'https://meridian-precision.example.com/iso9001.pdf', matched_keyword:'iso 9001', filename:'iso9001.pdf'}] },
+      { id:2, canonical_name:'Ashcroft Tanker Fabrication', domain:'ashcroft-tanker.example.com', country:'United Kingdom',
+        composite_score:88, evidence_coverage:80, recommendation:'recommended', is_manufacturer:true,
+        year_established:1988, employee_count:'51-200',
+        ai_confidence_score:84, ai_confidence_assessed_at:'2026-09-08',
+        procurement_recommendation:'recommended_for_mass_production',
+        procurement_recommendation_reason:'OEM-readiness evidence (PPAP/CAD/traceability) found on their own site.',
+        ai_summary:'UK-based tanker fabricator with clear OEM production evidence.',
+        ai_strengths:['OEM-readiness evidence on their own site'], ai_risks:[],
+        exports_to_uk:true, exports_to_eu:true, exports_to_us:false, active_export_countries:['Ireland','Netherlands'],
+        key_contacts:[], matched_capabilities:[], certificate_document_urls:[] },
+      { id:3, canonical_name:'Vantage Global Trading Co.', domain:'vantage-global.example.com', country:'India',
+        composite_score:61, evidence_coverage:52, recommendation:'review', is_manufacturer:false,
+        ai_confidence_score:58, ai_confidence_assessed_at:'2026-09-08',
+        procurement_recommendation:'requires_factory_audit',
+        procurement_recommendation_reason:'Identified as a trader, not a manufacturer -- claimed facility address could not be independently verified.',
+        ai_summary:'Trading company reselling multiple manufacturers’ output; no owned facility confirmed.',
+        ai_strengths:[], ai_risks:['Identified as a trader, not a manufacturer', 'Facility address not independently verified'],
+        exports_to_uk:false, exports_to_eu:false, exports_to_us:true, active_export_countries:['United States'],
+        key_contacts:[], matched_capabilities:[], certificate_document_urls:[] },
+      { id:4, canonical_name:'Northtec Axle Systems', domain:'northtec-axle.example.com', country:'Germany',
+        composite_score:81, evidence_coverage:70, recommendation:'recommended', is_manufacturer:true,
+        employee_count:'101-200',
+        ai_confidence_score:null, ai_confidence_assessed_at:null,
+        procurement_recommendation:null, procurement_recommendation_reason:null,
+        ai_summary:null, ai_strengths:[], ai_risks:[],
+        exports_to_uk:true, exports_to_eu:true, exports_to_us:false, active_export_countries:['Poland','Austria'],
+        key_contacts:[], matched_capabilities:[], certificate_document_urls:[] },
+      { id:5, canonical_name:'Lumen Fasteners Ltd', domain:'lumen-fasteners.example.com', country:'Vietnam',
+        composite_score:47, evidence_coverage:30, recommendation:'unscored', is_manufacturer:null,
+        ai_confidence_score:null, ai_confidence_assessed_at:null,
+        procurement_recommendation:null, procurement_recommendation_reason:null,
+        ai_summary:null, ai_strengths:[], ai_risks:[],
+        exports_to_uk:false, exports_to_eu:false, exports_to_us:false, active_export_countries:[],
+        key_contacts:[], matched_capabilities:[], certificate_document_urls:[] },
+      { id:6, canonical_name:'Baltic Forge Works', domain:'baltic-forge.example.com', country:'Poland',
+        composite_score:90, evidence_coverage:85, recommendation:'recommended', is_manufacturer:true,
+        year_established:1996, employee_count:'201-500', factory_size_sqm:18000,
+        ai_confidence_score:38, ai_confidence_assessed_at:'2026-09-05',
+        procurement_recommendation:'high_risk',
+        procurement_recommendation_reason:'Claimed certifications were not corroborated on their own site.',
+        ai_summary:'Strong platform track record, but recent AI cross-check flagged uncorroborated certification claims.',
+        ai_strengths:['Confirmed export shipments'], ai_risks:['Claimed certifications not corroborated on their own site'],
+        exports_to_uk:true, exports_to_eu:true, exports_to_us:true, active_export_countries:['United States','Canada','Germany'],
+        key_contacts:[], matched_capabilities:[], certificate_document_urls:[] },
     ],
   };
 
@@ -671,18 +788,37 @@
     renderSupplierRows();
   }
 
+  function formatDate(s){
+    return s ? String(s).slice(0, 10) : '—';
+  }
+  // Supplier free-text fields (ai_summary, capability evidence, contact
+  // names...) are scraped/LLM-derived from suppliers' own websites, not
+  // typed by a trusted operator -- escape before interpolating into HTML
+  // so adversarial page content can't inject markup/script into this UI.
+  function esc(s){
+    if (s == null) return '';
+    var d = document.createElement('div');
+    d.textContent = String(s);
+    return d.innerHTML;
+  }
+  function exportsSummary(r){
+    var m = [];
+    if (r.exports_to_uk) m.push('UK');
+    if (r.exports_to_eu) m.push('EU');
+    if (r.exports_to_us) m.push('US');
+    return m.length ? m.join(', ') : '—';
+  }
   function renderSupplierRows(){
     var rows = state.recentSuppliers.filter(function(r){
       return state.filter === 'all' || entityKey(r) === state.filter;
     });
     document.getElementById('recentSuppliersBody').innerHTML = rows.map(function(r){
-      var rec = recommendationFromScore(r.composite_score);
-      return '<tr><td><div class="co-cell"><div class="co-ic">'+initialsOf(r.canonical_name)+'</div>' +
-        '<div><div class="co-name">'+r.canonical_name+'</div><div class="co-sub">'+(r.is_manufacturer===true?'Manufacturer':r.is_manufacturer===false?'Trading company':'Unclear')+'</div></div></div></td>' +
-        '<td>'+(r.country||'—')+'</td>' +
+      return '<tr class="row-clickable" data-supplier-id="'+r.id+'"><td><div class="co-cell"><div class="co-ic">'+esc(initialsOf(r.canonical_name))+'</div>' +
+        '<div><div class="co-name">'+esc(r.canonical_name)+'</div><div class="co-sub">'+(r.is_manufacturer===true?'Manufacturer':r.is_manufacturer===false?'Trading company':'Unclear')+'</div></div></div></td>' +
+        '<td>'+esc(r.country||'—')+'</td>' +
         '<td class="mono">'+(r.composite_score!=null?r.composite_score:'—')+'</td>' +
-        '<td>'+statusBadge(rec)+'</td>' +
-        '<td>'+(r.updated_at||'—')+'</td></tr>';
+        '<td>'+recommendationBadge(r.recommendation)+procurementBadge(r.procurement_recommendation)+'</td>' +
+        '<td>'+formatDate(r.ai_confidence_assessed_at)+'</td></tr>';
     }).join('') || '<tr><td colspan="5" class="empty-note">No suppliers match this filter yet.</td></tr>';
   }
   document.querySelectorAll('#supplierTabs .tab-btn').forEach(function(b){
@@ -692,6 +828,10 @@
       state.filter = b.dataset.filter;
       renderSupplierRows();
     });
+  });
+  document.getElementById('recentSuppliersBody').addEventListener('click', function(e){
+    var row = e.target.closest('tr[data-supplier-id]');
+    if (row) openSupplierDetail(row.dataset.supplierId);
   });
 
   function renderCharts(){
@@ -727,15 +867,24 @@
     if (document.getElementById('supManuOnly').checked) qs.set('manufacturers_only', 'true');
     if (document.getElementById('supVerifiedOnly').checked) qs.set('verified_only', 'true');
     apiFetch('/suppliers/search?' + qs.toString()).then(function(rows){
+      state.lastSearchResults = rows;
       document.getElementById('suppliersBody').innerHTML = rows.map(function(r){
-        return '<tr><td>'+r.canonical_name+'</td><td>'+(r.country||'—')+'</td><td class="mono">'+(r.composite_score!=null?r.composite_score:'—')+'</td>' +
-          '<td>'+statusBadge(recommendationFromScore(r.composite_score))+'</td>' +
+        return '<tr class="row-clickable" data-supplier-id="'+r.id+'"><td>'+esc(r.canonical_name)+'</td><td>'+esc(r.country||'—')+'</td>' +
+          '<td class="mono">'+(r.composite_score!=null?r.composite_score:'—')+'</td>' +
+          '<td class="mono">'+(r.ai_confidence_score!=null?r.ai_confidence_score:'—')+'</td>' +
+          '<td>'+recommendationBadge(r.recommendation)+procurementBadge(r.procurement_recommendation)+'</td>' +
           '<td>'+(r.is_manufacturer===true?'Yes':r.is_manufacturer===false?'No':'—')+'</td>' +
-          '<td>'+(r.domain?('<a href="https://'+r.domain+'" target="_blank" rel="noopener">'+r.domain+'</a>'):'—')+'</td></tr>';
-      }).join('') || '<tr><td colspan="6" class="empty-note">No results for this search.</td></tr>';
+          '<td>'+esc(r.employee_count||'—')+'</td>' +
+          '<td>'+exportsSummary(r)+'</td>' +
+          '<td>'+(r.domain?('<a href="https://'+esc(r.domain)+'" target="_blank" rel="noopener" onclick="event.stopPropagation()">'+esc(r.domain)+'</a>'):'—')+'</td></tr>';
+      }).join('') || '<tr><td colspan="9" class="empty-note">No results for this search.</td></tr>';
     }).catch(function(){
-      document.getElementById('suppliersBody').innerHTML = '<tr><td colspan="6" class="empty-note">Search failed — check your connection in Settings.</td></tr>';
+      document.getElementById('suppliersBody').innerHTML = '<tr><td colspan="9" class="empty-note">Search failed — check your connection in Settings.</td></tr>';
     });
+  });
+  document.getElementById('suppliersBody').addEventListener('click', function(e){
+    var row = e.target.closest('tr[data-supplier-id]');
+    if (row) openSupplierDetail(row.dataset.supplierId);
   });
 
   /* ---------------- Pipeline page ---------------- */
@@ -817,6 +966,90 @@
   bindCardNav('cardNewSuppliers', function(){ goToSuppliers(); });
   bindCardNav('cardPipelineJobs', function(){ showPage('pipeline'); });
   bindCardNav('cardAvgDaily', function(){ goToSuppliers({verifiedOnly: true}); });
+
+  /* ---------------- Supplier detail modal ---------------- */
+  function statTile(label, value){
+    return '<div class="detail-stat"><div class="detail-stat-label">'+esc(label)+'</div><div class="detail-stat-value">'+esc(value)+'</div></div>';
+  }
+  function detailListItems(items, emptyMsg){
+    if (!items || !items.length) return '<li style="padding-left:0;">'+esc(emptyMsg)+'</li>';
+    return items.map(function(x){ return '<li>'+esc(x)+'</li>'; }).join('');
+  }
+  function renderSupplierDetail(s){
+    var panel = document.getElementById('supplierDetailBody');
+    if (!s){
+      panel.innerHTML = '<div class="detail-head"><h2>Could not load supplier</h2>' +
+        '<button class="icon-btn" id="supplierDetailClose" aria-label="Close">&times;</button></div>' +
+        '<p class="detail-section" style="color:var(--text-muted);">Check your connection in Settings and try again.</p>';
+      document.getElementById('supplierDetailClose').addEventListener('click', closeSupplierDetail);
+      return;
+    }
+    var domainLine = s.domain
+      ? '<a href="https://'+esc(s.domain)+'" target="_blank" rel="noopener">'+esc(s.domain)+'</a>'
+      : 'No domain on file';
+    var contactsRows = (s.key_contacts || []).map(function(c){
+      return '<tr><td>'+esc(c.name||'—')+'</td><td>'+esc(c.title||'—')+'</td><td>'+esc(c.role_category||'—')+'</td>' +
+        '<td>'+(c.email ? '<a href="mailto:'+esc(c.email)+'">'+esc(c.email)+'</a>' : '—')+'</td></tr>';
+    }).join('');
+    var capRows = (s.matched_capabilities || []).map(function(c){
+      return '<tr><td>'+esc(c.canonical_term||c.reported_term||'—')+'</td><td>'+esc(c.relationship||'—')+'</td>' +
+        '<td class="mono">'+(c.confidence!=null?Math.round(c.confidence*100)+'%':'—')+'</td>' +
+        '<td>'+esc(c.evidence||'—')+'</td></tr>';
+    }).join('');
+    var certItems = (s.certificate_document_urls || []).map(function(c){
+      return '<li>'+esc(c.filename || c.matched_keyword || 'certificate') +
+        (c.url ? ' — <a href="'+esc(c.url)+'" target="_blank" rel="noopener">source</a>' : '')+'</li>';
+    }).join('');
+    var exportList = (s.active_export_countries && s.active_export_countries.length)
+      ? s.active_export_countries.map(esc).join(', ')
+      : exportsSummary(s);
+
+    panel.innerHTML =
+      '<div class="detail-head">' +
+        '<div><h2>'+esc(s.canonical_name)+'</h2><div class="crumb">'+esc(s.country||'—')+' · '+domainLine+'</div></div>' +
+        '<button class="icon-btn" id="supplierDetailClose" aria-label="Close">&times;</button>' +
+      '</div>' +
+      '<div class="detail-badges">'+recommendationBadge(s.recommendation)+procurementBadge(s.procurement_recommendation)+'</div>' +
+      (s.procurement_recommendation_reason ? '<p class="detail-reason">'+esc(s.procurement_recommendation_reason)+'</p>' : '') +
+      '<div class="detail-stats">' +
+        statTile('Composite score', s.composite_score!=null?s.composite_score:'—') +
+        statTile('Evidence coverage', s.evidence_coverage!=null?s.evidence_coverage+'%':'—') +
+        statTile('AI confidence', s.ai_confidence_score!=null?s.ai_confidence_score:'—') +
+        statTile('Manufacturer', s.is_manufacturer===true?'Yes':s.is_manufacturer===false?'No':'—') +
+        statTile('Employees', s.employee_count||'—') +
+        statTile('Year established', s.year_established||'—') +
+      '</div>' +
+      (s.ai_summary ? '<div class="detail-section"><div class="card-title">AI summary</div><p>'+esc(s.ai_summary)+'</p></div>' : '') +
+      '<div class="detail-section-row">' +
+        '<div class="detail-section"><div class="card-title">Strengths</div><ul class="detail-list good-list">'+detailListItems(s.ai_strengths, 'None on file')+'</ul></div>' +
+        '<div class="detail-section"><div class="card-title">Risks</div><ul class="detail-list risk-list">'+detailListItems(s.ai_risks, 'None on file')+'</ul></div>' +
+      '</div>' +
+      '<div class="detail-section"><div class="card-title">Exports to</div><p>'+exportList+'</p></div>' +
+      (contactsRows ? '<div class="detail-section"><div class="card-title">Key contacts</div><table class="detail-table"><thead><tr><th>Name</th><th>Title</th><th>Role</th><th>Email</th></tr></thead><tbody>'+contactsRows+'</tbody></table></div>' : '') +
+      (capRows ? '<div class="detail-section"><div class="card-title">Matched capabilities</div><table class="detail-table"><thead><tr><th>Term</th><th>Relationship</th><th>Confidence</th><th>Evidence</th></tr></thead><tbody>'+capRows+'</tbody></table></div>' : '') +
+      (certItems ? '<div class="detail-section"><div class="card-title">Certificates</div><ul class="detail-list">'+certItems+'</ul></div>' : '');
+
+    document.getElementById('supplierDetailClose').addEventListener('click', closeSupplierDetail);
+  }
+  function openSupplierDetail(id){
+    document.getElementById('supplierDetailBody').innerHTML = '<div class="empty-note">Loading…</div>';
+    document.getElementById('supplierDetailOverlay').hidden = false;
+    if (api.connected){
+      apiFetch('/suppliers/' + id).then(renderSupplierDetail).catch(function(){ renderSupplierDetail(null); });
+    } else {
+      var local = state.recentSuppliers.filter(function(r){ return String(r.id) === String(id); })[0];
+      renderSupplierDetail(local || null);
+    }
+  }
+  function closeSupplierDetail(){
+    document.getElementById('supplierDetailOverlay').hidden = true;
+  }
+  document.getElementById('supplierDetailOverlay').addEventListener('click', function(e){
+    if (e.target === this) closeSupplierDetail();
+  });
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'Escape' && !document.getElementById('supplierDetailOverlay').hidden) closeSupplierDetail();
+  });
 
   /* ---------------- Boot ---------------- */
   state.lastDashboardData = sample;

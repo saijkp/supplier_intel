@@ -396,6 +396,24 @@ class TestSearchEndpoint:
         assert len(results) == 1
         assert results[0]["is_manufacturer"] is True
 
+    def test_ai_confidence_assessed_at_is_surfaced_on_search_results(self, client):
+        """The 'Last verified' column on frontend/dashboard.html reads
+        this field -- previously the frontend referenced a field
+        (updated_at) that never existed on SupplierSearchResult at all,
+        always rendering '—'. This proves the real timestamp round-trips."""
+        supplier_id = client.repo.create_golden_record({
+            "canonical_name": "Timestamped Co", "domain": "timestamped.example.com",
+        })
+        client.repo.update_supplier_fields(supplier_id, {
+            "ai_confidence_score": 80, "ai_confidence_assessed_at": "2026-09-10T12:00:00+00:00",
+        })
+        response = client.get(
+            "/suppliers/search", params={"product": "Timestamped"}, headers=auth_headers(),
+        )
+        results = response.json()
+        assert len(results) == 1
+        assert results[0]["ai_confidence_assessed_at"] == "2026-09-10T12:00:00+00:00"
+
     def test_verified_only_excludes_suppliers_with_no_ai_confidence_score(self, client):
         client.repo.create_golden_record({
             "canonical_name": "Never Verified", "domain": "never.example.com",

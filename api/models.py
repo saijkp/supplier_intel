@@ -40,6 +40,7 @@ class SupplierSearchResult(BaseModel):
     # platform (v11) -- all Optional/absent-safe so existing frontend
     # consumers are unaffected until they choose to read them.
     ai_confidence_score: Optional[int] = None
+    ai_confidence_assessed_at: Optional[str] = None
     ai_summary: Optional[str] = None
     ai_strengths: List[str] = Field(default_factory=list)
     ai_risks: List[str] = Field(default_factory=list)
