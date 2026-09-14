@@ -2656,6 +2656,17 @@ class SupplierRepository:
         existing suppliers (all already have a domain, none have ever
         had collection_status set) work with no special-casing.
 
+        Always excludes flagged=1 suppliers (unconditionally, not an
+        opt-in) -- same "flagged, never resurfaces" discipline
+        search_suppliers/search_suppliers_full already enforce. Found
+        live: a supplier flagged specifically because Collection Service
+        hung indefinitely against it (an unbounded frame.content() call
+        against an embedded Google Maps iframe -- see
+        collection/site_collector.py's _collect_iframe_html) would
+        otherwise be picked straight back up by the very next
+        collect_pending() sweep and hang again, making the flag a no-op
+        for the one thing it was meant to prevent.
+
         Ordered newest-first (id DESC) -- a real, observed confusion
         otherwise: with no ordering, SQLite returns whatever rows it
         happens to first (effectively id ASC in practice), so a bulk
@@ -2686,7 +2697,7 @@ class SupplierRepository:
 
             if force:
                 rows = conn.execute(
-                    f"SELECT * FROM suppliers WHERE domain IS NOT NULL AND domain != ''"
+                    f"SELECT * FROM suppliers WHERE domain IS NOT NULL AND domain != '' AND flagged = 0"
                     f"{marketplace_clause} ORDER BY id DESC LIMIT ?",
                     params,
                 ).fetchall()
@@ -2696,6 +2707,7 @@ class SupplierRepository:
                     SELECT * FROM suppliers
                     WHERE domain IS NOT NULL AND domain != ''
                     AND collection_status IS NULL
+                    AND flagged = 0
                     {marketplace_clause}
                     ORDER BY id DESC
                     LIMIT ?

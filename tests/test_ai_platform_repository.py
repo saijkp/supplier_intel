@@ -115,6 +115,33 @@ class TestGetSuppliersNeedingCollection:
 
         assert [s["id"] for s in results] == [real_site]
 
+    def test_flagged_supplier_is_excluded_even_though_never_collected(self, tmp_path):
+        """Real incident: a supplier flagged specifically because
+        Collection Service hung indefinitely against it (an unbounded
+        frame.content() call against an embedded Google Maps iframe)
+        would otherwise be picked straight back up by the very next
+        sweep and hang again -- the flag must actually stop that, same
+        as it already does for search_suppliers/search_suppliers_full."""
+        repo = _make_repo(tmp_path)
+        ok_supplier = repo.create_golden_record({"canonical_name": "Good Co", "domain": "good.example.com"})
+        hangs = repo.create_golden_record({"canonical_name": "Hangs Co", "domain": "hangs.example.com"})
+        repo.update_supplier_fields(hangs, {"flagged": True, "flag_reason": "Collection Service hangs on this site"})
+
+        results = repo.get_suppliers_needing_collection()
+
+        assert [s["id"] for s in results] == [ok_supplier]
+
+    def test_flagged_supplier_is_excluded_under_force_too(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        ok_supplier = repo.create_golden_record({"canonical_name": "Good Co", "domain": "good.example.com"})
+        hangs = repo.create_golden_record({"canonical_name": "Hangs Co", "domain": "hangs.example.com"})
+        repo.record_collection_run(supplier_id=hangs, status="failed", pages_visited=0)
+        repo.update_supplier_fields(hangs, {"flagged": True, "flag_reason": "Collection Service hangs on this site"})
+
+        results = repo.get_suppliers_needing_collection(force=True)
+
+        assert [s["id"] for s in results] == [ok_supplier]
+
 
 class TestGetSuppliersNeedingContacts:
 
