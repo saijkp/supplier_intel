@@ -485,10 +485,27 @@ _IFRAME_SKIP_ORIGINS: tuple[str, ...] = (
 
 
 def _should_skip_iframe(frame: Any) -> bool:
+    """A second, distinct real incident beyond the named-origin list
+    above: supplier #3024 (shilong-bedframe.com) still hung on
+    frame.content() after the origin-skip fix landed -- reproduced live
+    with a standalone script replaying this exact sequence -- on a
+    child frame whose `frame.url` is the EMPTY STRING, not a Maps/
+    YouTube/etc. origin. Frame.content() waits internally for the frame
+    to reach a ready state; a frame with no URL at all (never started
+    navigating) or an explicit "about:blank" placeholder never reaches
+    one, so the wait never returns -- same failure shape as the
+    named-origin case, just impossible to catch by origin-substring
+    matching since there's no origin to match against an empty string.
+    Same correctness argument still applies: a frame with no loaded
+    document could never contain the contact-form HTML this function
+    looks for, hang or no hang, so skipping it is strictly a filter for
+    "can this frame possibly have what we want", not a workaround."""
     try:
-        url = (frame.url or "").lower()
+        url = (frame.url or "").strip().lower()
     except Exception:
         return False
+    if not url or url == "about:blank":
+        return True
     return any(origin in url for origin in _IFRAME_SKIP_ORIGINS)
 
 

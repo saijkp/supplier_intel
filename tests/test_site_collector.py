@@ -669,10 +669,15 @@ class _FakeFrame:
     _collect_iframe_html actually reads. `raises=True` simulates a frame
     that's detached/mid-navigation by the time it's read -- must be
     skipped, never fatal (see TestIframeContentExtraction). `url`
-    defaults to "" (never matches _IFRAME_SKIP_ORIGINS) so every
-    existing test keeps exercising the content() path unchanged; tests
-    for the skip-origin behaviour pass a real Maps/YouTube/etc. url."""
-    def __init__(self, html, raises=False, url=""):
+    defaults to a generic non-empty, non-skip-matching placeholder (a
+    real loaded widget's URL, matching neither _IFRAME_SKIP_ORIGINS nor
+    the empty/about:blank "no loaded document" condition) so every
+    existing "a real widget's content must still be read" test keeps
+    exercising the content() path unchanged regardless of which
+    condition is being tested elsewhere; tests for either skip
+    condition (named origin, or empty/about:blank) pass an explicit
+    url= of their own."""
+    def __init__(self, html, raises=False, url="https://widget.example.com/embed"):
         self._html = html
         self._raises = raises
         self.url = url
@@ -1219,6 +1224,23 @@ class TestIframeSkipOrigins:
                 raise RuntimeError("frame is detached")
         assert _should_skip_iframe(_RaisingUrlFrame()) is False
 
+    @pytest.mark.parametrize("url", ["", "about:blank", "ABOUT:BLANK", "  "])
+    def test_frame_with_no_loaded_document_is_skipped(self, url):
+        """Second real incident, distinct from the named-origin case
+        above: supplier #3024 (shilong-bedframe.com) hung on
+        frame.content() for a child frame whose .url was the empty
+        string -- reproduced live with a standalone script replaying
+        site_collector.py's exact sequence. Frame.content() waits
+        internally for the frame to reach a ready state a frame with no
+        URL (never started navigating) or an explicit about:blank
+        placeholder never reaches, so the wait never returns. Not
+        catchable by origin-substring matching, since there's no origin
+        to match against an empty string -- this is a second, separate
+        condition in _should_skip_iframe, not an addition to
+        _IFRAME_SKIP_ORIGINS."""
+        frame = _FakeFrame("<html>should never be read</html>", url=url)
+        assert _should_skip_iframe(frame) is True
+
     def test_skipped_iframe_content_is_never_read_even_if_it_would_raise(self):
         """The real point of skipping BEFORE content() rather than
         catching a slow/hung call AFTER starting it: a frame matching a
@@ -1238,6 +1260,47 @@ class TestIframeSkipOrigins:
         # Must not raise -- confirms the exploding frame's content() was
         # genuinely never invoked, not just that its result was discarded.
         assert _collect_iframe_html(_FakePageWithExplodingIframe()) == ""
+
+    def test_content_never_read_on_a_frame_with_no_loaded_document(self):
+        """Same discipline as the named-origin case above, for the
+        empty-url/about:blank condition: a frame that never started
+        navigating must never have .content() invoked on it either --
+        this is the exact call that hung against #3024 in production."""
+        class _ExplodingUnloadedFrame:
+            url = ""
+            def content(self):
+                raise AssertionError("content() must never be called on an unloaded frame")
+
+        class _FakeMainFrame:
+            url = "https://www.shilong-bedframe.com"
+
+        class _FakePageWithUnloadedIframe:
+            main_frame = _FakeMainFrame()
+            frames = [main_frame, _ExplodingUnloadedFrame()]
+
+        assert _collect_iframe_html(_FakePageWithUnloadedIframe()) == ""
+
+    def test_a_real_contact_widget_alongside_an_unloaded_frame(self, artifact_store):
+        """The realistic shape of the #3024 incident: a page with an
+        unloaded/empty-url child frame alongside a real contact-form
+        widget -- the unloaded frame must be skipped while the real
+        widget is still read normally, same guarantee already proven
+        for the Maps-embed case below."""
+        homepage_html = "<html><body>No contact info in the main document.</body></html>"
+        unloaded_frame = _FakeFrame("<html>should never be read</html>", url="")
+        contact_widget = _FakeFrame('<html><body><a href="mailto:sales@realsite.com">Email</a></body></html>',
+                                     url="https://forms.hubspot.com/embed/1")
+        fake = _FakePlaywright(
+            working_urls={"https://www.daroaxle.com"},
+            html_by_url={"https://www.daroaxle.com": homepage_html},
+            iframe_html_by_url={"https://www.daroaxle.com": [unloaded_frame, contact_widget]},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.success is True
+        assert result.pages[0].mailto_emails == ["sales@realsite.com"]
 
     def test_a_real_contact_widget_alongside_a_skipped_maps_embed(self, artifact_store):
         """The realistic shape of the actual incident: a page with BOTH
