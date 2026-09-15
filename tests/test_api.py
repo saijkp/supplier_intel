@@ -986,6 +986,26 @@ class TestSupplierCorrectionEndpoint:
         job = client.repo.get_pipeline_job(job_id)
         assert job["options"]["flag_reason"] == "duplicate of #123 (Aspoeck Systems, aspoeck.com)"
 
+    def test_unflag_passes_through_to_job_options(self, client):
+        """Mirrors test_flag_reason_passes_through_to_job_options above --
+        this fixture's run_supplier_correction_job is faked (see client
+        fixture's own comment) so this only proves the API layer threads
+        `unflag` through correctly, same scope as the flag_reason test.
+        The real DB effect (flagged/flag_reason actually cleared) is
+        proven directly against SupplierCorrectionService in
+        tests/test_supplier_correction.py::TestUnflag, not here."""
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Foshan Shilong Metal Products Factory"})
+        response = client.post(
+            f"/suppliers/{supplier_id}/correct-domain",
+            json={"unflag": True, "reason": "hang fixed and confirmed"},
+            headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        job_id = response.json()["id"]
+        job = client.repo.get_pipeline_job(job_id)
+        assert job["options"]["unflag"] is True
+        assert job["options"]["reason"] == "hang fixed and confirmed"
+
 
 class TestSetProductKeywordsEndpoint:
 

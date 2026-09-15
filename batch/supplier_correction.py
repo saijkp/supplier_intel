@@ -209,6 +209,50 @@ class SupplierCorrectionService:
             "status": "flagged", "flag_reason": flag_reason,
         }
 
+    def unflag(self, supplier_id: int, reason: Optional[str] = None) -> Dict[str, Any]:
+        """Reverses flag_duplicate -- for a record that was flagged for an
+        OPERATIONAL reason (e.g. excluded from a Collection Service sweep
+        while a real hang was being diagnosed, real case: supplier #3024/
+        shilong-bedframe.com, collection/site_collector.py's
+        _should_skip_iframe hang) rather than because it's actually a bad/
+        duplicate record. flag_duplicate's own docstring's "flagged, never
+        deleted" rule is about never silently resurfacing a genuinely bad
+        record -- once the underlying reason for an operational flag is
+        fixed and confirmed, there's nothing left to protect against, so
+        clearing it back to a normal, visible supplier is the correct
+        reversal, not a violation of that rule. `flag_reason` is cleared
+        too (not left stale describing a condition that no longer holds);
+        the old reason is preserved via clear_reason and the normal
+        supplier_change_log audit trail (see get_supplier_change_log), not
+        silently lost."""
+        supplier = self.repo.get_supplier(supplier_id)
+        if supplier is None:
+            raise ValueError(f"No supplier with id={supplier_id}")
+
+        old_flag_reason = supplier.get("flag_reason")
+        clear_reason = reason or (
+            f"manual: unflagged (was flagged: {old_flag_reason!r})" if old_flag_reason
+            else "manual: unflagged"
+        )
+        # Two calls, not one update_supplier_fields_with_history({"flagged":
+        # False, "flag_reason": None}) -- that path's own
+        # _prepare_supplier_payload silently DROPS any field whose incoming
+        # value is None (see clear_supplier_field's own docstring), so
+        # flag_reason: None would be a no-op, leaving the stale reason
+        # behind while flagged correctly goes False. clear_supplier_field
+        # is the documented, deliberate-NULL counterpart for exactly this.
+        self.repo.update_supplier_fields_with_history(
+            supplier_id, {"flagged": False},
+            changed_by="manual", change_reason=clear_reason,
+        )
+        self.repo.clear_supplier_field(
+            supplier_id, "flag_reason", changed_by="manual", change_reason=clear_reason,
+        )
+        return {
+            "supplier_id": supplier_id, "canonical_name": supplier.get("canonical_name"),
+            "status": "unflagged", "old_flag_reason": old_flag_reason,
+        }
+
     def set_product_keywords(
         self, supplier_id: int, product_keywords: List[str], reason: Optional[str] = None,
     ) -> Dict[str, Any]:

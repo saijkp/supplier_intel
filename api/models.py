@@ -370,16 +370,20 @@ class SupplierCorrectionRequest(BaseModel):
     database is a SQLite file on a Railway volume and can only be
     corrected from inside the running service itself (see
     api/jobs.py's run_supplier_correction_job for the full flow).
-    Three modes, checked in this order: `flag_reason` present -> marks
+    Four modes, checked in this order: `flag_reason` present -> marks
     the record excluded (flagged, never deleted -- for a bad record
     that turns out to be a duplicate of an already-existing real
     supplier, e.g. after a `domain` attempt below returns
-    "domain_conflict"); else `domain` present -> writes an already-
-    human-verified domain/name directly, no search (for when the
-    ORIGINAL search term, e.g. the stored name, was itself wrong);
-    else -> the search-based correct_domain path (clears the wrong
-    value, re-resolves via CompanyWebsiteFinder -- for when the domain
-    alone was wrong but the company name is right)."""
+    "domain_conflict"); else `unflag` true -> reverses that (for a
+    record flagged for an OPERATIONAL reason, e.g. excluded from a
+    Collection Service sweep while a real hang was diagnosed, once the
+    underlying issue is fixed and confirmed -- not for a genuinely bad/
+    duplicate record, which should stay flagged); else `domain` present
+    -> writes an already-human-verified domain/name directly, no search
+    (for when the ORIGINAL search term, e.g. the stored name, was
+    itself wrong); else -> the search-based correct_domain path (clears
+    the wrong value, re-resolves via CompanyWebsiteFinder -- for when
+    the domain alone was wrong but the company name is right)."""
 
     domain: Optional[str] = Field(
         default=None,
@@ -395,7 +399,14 @@ class SupplierCorrectionRequest(BaseModel):
         default=None,
         description="Marks this record excluded (flagged, never deleted) instead of correcting "
                      "it -- for a bad record that turns out to be a duplicate of an already-"
-                     "existing real supplier. Takes priority over `domain` if both are given.",
+                     "existing real supplier. Takes priority over `unflag`/`domain` if more than "
+                     "one is given.",
+    )
+    unflag: bool = Field(
+        default=False,
+        description="Reverses a previous flag_reason exclusion -- for a record flagged for an "
+                     "operational reason (not because it's actually a bad/duplicate record) once "
+                     "that reason is resolved. Ignored if `flag_reason` is also given.",
     )
     reason: Optional[str] = Field(
         default=None,

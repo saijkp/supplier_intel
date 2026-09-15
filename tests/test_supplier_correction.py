@@ -226,6 +226,68 @@ class TestFlagDuplicate:
             service.flag_duplicate(999999, "x")
 
 
+class TestUnflag:
+
+    def test_clears_flagged_and_flag_reason_and_logs(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Shilong Bedframe"})
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+        service.flag_duplicate(supplier_id, "collection hang, see #3024 investigation")
+
+        result = service.unflag(supplier_id, reason="hang fixed and confirmed, see iframe-skip fix")
+
+        assert result["status"] == "unflagged"
+        assert result["old_flag_reason"] == "collection hang, see #3024 investigation"
+        supplier = repo.get_supplier(supplier_id)
+        assert supplier["flagged"] == 0
+        assert supplier["flag_reason"] is None
+
+        log = repo.get_supplier_change_log(supplier_id)
+        logged_fields = {entry["field_name"] for entry in log}
+        assert "flagged" in logged_fields
+        assert "flag_reason" in logged_fields
+        flag_reason_entry = next(e for e in log if e["field_name"] == "flag_reason")
+        assert flag_reason_entry["old_value"] == "collection hang, see #3024 investigation"
+        assert flag_reason_entry["new_value"] is None
+
+    def test_defaults_reason_when_omitted(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Shilong Bedframe"})
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+        service.flag_duplicate(supplier_id, "some reason")
+
+        result = service.unflag(supplier_id)  # no explicit reason
+
+        assert result["status"] == "unflagged"
+        log = repo.get_supplier_change_log(supplier_id)  # DESC order -- most recent first
+        unflag_entry = [e for e in log if e["field_name"] == "flagged"][0]
+        assert "unflagged" in unflag_entry["change_reason"].lower()
+
+    def test_unflagging_an_already_unflagged_supplier_is_a_harmless_noop(self, repo):
+        """Never flagged in the first place -- must not raise, just
+        confirm the already-correct state."""
+        supplier_id = repo.create_golden_record({"canonical_name": "Never Flagged Co"})
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+
+        result = service.unflag(supplier_id)
+
+        assert result["status"] == "unflagged"
+        assert result["old_flag_reason"] is None
+        supplier = repo.get_supplier(supplier_id)
+        assert supplier["flagged"] == 0
+
+    def test_raises_on_missing_supplier(self, repo):
+        service = SupplierCorrectionService(
+            repo=repo, website_finder=FakeWebsiteFinder(), collection_service=FakeCollectionService(),
+        )
+        with pytest.raises(ValueError):
+            service.unflag(999999)
+
+
 class TestSetProductKeywords:
     """Backfills a supplier's category tag directly -- no search, no
     re-collection, guarded so it only ever fills an empty value."""

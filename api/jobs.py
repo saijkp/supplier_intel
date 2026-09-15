@@ -463,6 +463,8 @@ def run_supplier_correction_job(job_id: str, supplier_id: int, options: Dict[str
         domain = options.get("domain")
         if flag_reason:
             result = service.flag_duplicate(supplier_id, flag_reason)
+        elif options.get("unflag"):
+            result = service.unflag(supplier_id, reason=options.get("reason"))
         elif domain:
             result = service.set_confirmed_domain(
                 supplier_id, domain, canonical_name=options.get("canonical_name"), reason=options.get("reason"),

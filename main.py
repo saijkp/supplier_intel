@@ -1190,6 +1190,11 @@ def history(supplier_id: int) -> None:
                    "-- for a bad record that turns out to be a duplicate of an already-existing "
                    "real supplier (e.g. --set-domain reported 'domain_conflict'). Pass the reason "
                    "as the value.")
+@click.option("--unflag", is_flag=True,
+              help="Reverses a previous --flag-duplicate exclusion -- for a record flagged for an "
+                   "OPERATIONAL reason (e.g. excluded from a Collection Service sweep while a real "
+                   "hang was diagnosed) once that reason is fixed and confirmed, not for a "
+                   "genuinely bad/duplicate record, which should stay flagged.")
 @click.option("--set-product-keywords", default=None,
               help="Comma-separated category term(s) to backfill onto product_keywords, e.g. "
                    "'injection moulding' -- for a supplier whose category membership is already "
@@ -1209,7 +1214,7 @@ def history(supplier_id: int) -> None:
                    "Defaults to a generic note naming the cleared/old value if omitted.")
 def correct_supplier(
     supplier_id: int, clear_domain: bool, set_domain: Optional[str], set_name: Optional[str],
-    flag_duplicate: Optional[str], set_product_keywords: Optional[str],
+    flag_duplicate: Optional[str], unflag: bool, set_product_keywords: Optional[str],
     set_canonical_name: Optional[str], reason: Optional[str],
 ) -> None:
     """Reusable fix for a bad supplier record -- e.g. a false-match domain a validation
@@ -1223,24 +1228,26 @@ def correct_supplier(
     CollectionService) with a supplier_change_log entry, never a hand-applied database
     patch -- see `python main.py history --supplier-id` to review what changed
     afterward. Specify exactly one of --clear-domain, --set-domain, --flag-duplicate,
-    --set-product-keywords, or --set-canonical-name; add another --clear-<field>/
-    --set-<field> following the same shape here for a future bad-record class, rather
-    than reaching for raw SQL again."""
+    --unflag, --set-product-keywords, or --set-canonical-name; add another
+    --clear-<field>/--set-<field> following the same shape here for a future bad-record
+    class, rather than reaching for raw SQL again."""
     from batch.supplier_correction import SupplierCorrectionService
 
     modes = [
-        bool(clear_domain), bool(set_domain), bool(flag_duplicate),
+        bool(clear_domain), bool(set_domain), bool(flag_duplicate), bool(unflag),
         bool(set_product_keywords), bool(set_canonical_name),
     ]
     if sum(modes) != 1:
         console.print("[red]X[/red] Specify exactly one of --clear-domain, --set-domain, "
-                       "--flag-duplicate, --set-product-keywords, or --set-canonical-name.")
+                       "--flag-duplicate, --unflag, --set-product-keywords, or --set-canonical-name.")
         raise SystemExit(1)
 
     service = SupplierCorrectionService()
     try:
         if flag_duplicate:
             result = service.flag_duplicate(supplier_id, flag_duplicate)
+        elif unflag:
+            result = service.unflag(supplier_id, reason=reason)
         elif set_product_keywords:
             keywords = [k.strip() for k in set_product_keywords.split(",") if k.strip()]
             result = service.set_product_keywords(supplier_id, keywords, reason=reason)
@@ -1260,6 +1267,9 @@ def correct_supplier(
     console.print(f"[bold]Supplier #{supplier_id}[/bold]: {result['canonical_name']!r}")
     if result["status"] == "flagged":
         console.print(f"[green]OK[/green] Flagged excluded: {result['flag_reason']}")
+        return
+    if result["status"] == "unflagged":
+        console.print(f"[green]OK[/green] Unflagged (was: {result['old_flag_reason']!r})")
         return
     if result["status"] == "set" and "product_keywords" in result:
         console.print(f"[green]OK[/green] product_keywords set: {result['product_keywords']}")
