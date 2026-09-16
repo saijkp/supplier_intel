@@ -3200,12 +3200,19 @@ function renderAuditDetail(b, opts = {}) {
   const legalEntityCaveat = chinaLegalEntityCaveatSection(b, opts.category);
   if (legalEntityCaveat) sections.push(legalEntityCaveat);
 
+  // A failed collection attempt (e.g. every URL variant blocked with
+  // HTTP 403) and a genuinely-empty-but-reachable site both render an
+  // empty contact field otherwise -- two different facts that look
+  // identical. When the most recent collection attempt actually
+  // failed, show its real reason instead of the generic fallback --
+  // see batch/tracker_exporter.py's _collection_failure_reason.
+  const contactEmptyText = b.collection_failure_reason || "Not stated on site";
   sections.push(evidenceSection("Contact", [
-    evidenceRow("Address", b.contact.address, b.source_urls.address, "Not stated on site"),
-    evidenceRow("Factory location", b.contact.factory_location, b.source_urls.factory_location, "Not stated on site"),
-    evidenceRow("Phone", b.contact.phone, `tel:${b.contact.phone}`, "Not stated on site"),
+    evidenceRow("Address", b.contact.address, b.source_urls.address, contactEmptyText),
+    evidenceRow("Factory location", b.contact.factory_location, b.source_urls.factory_location, contactEmptyText),
+    evidenceRow("Phone", b.contact.phone, `tel:${b.contact.phone}`, contactEmptyText),
     evidenceRow("Phone source page(s)", b.source_urls.phone_source_pages),
-    evidenceRow("Email", b.contact.email, `mailto:${b.contact.email}`, "Not stated on site"),
+    evidenceRow("Email", b.contact.email, `mailto:${b.contact.email}`, contactEmptyText),
     evidenceRow("Email source page(s)", (b.source_urls.email_source_pages || []).join("; ")),
   ].join("")));
 

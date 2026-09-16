@@ -23,3 +23,19 @@
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
     Permissions-Policy = "geolocation=(), microphone=(), camera=()"
+    # Without an explicit policy, a browser tab that loaded index.html
+    # once can keep reusing that copy via HTTP heuristic caching (no
+    # Cache-Control at all lets it guess a freshness lifetime from
+    # Last-Modified) for hours or days with no user-visible sign it's
+    # stale -- real incident: a tab kept running a pre-rewrite build for
+    # two days straight after a deploy replaced it, with no error and no
+    # visible difference until specific behaviour (deep_collect wiring)
+    # was traced back to code that no longer existed on the server.
+    # no-cache (NOT no-store) forces a conditional GET on every load --
+    # Netlify still answers with a cheap 304 when nothing changed, so
+    # this costs nothing when the deploy hasn't moved, and guarantees a
+    # changed deploy is picked up on the very next load, no hard-refresh
+    # required. There's no bundler/hashed-filename step in this project
+    # to make a long-lived max-age + versioned-URL scheme safe instead
+    # (see module docstring: "no build step, no bundler to run").
+    Cache-Control = "no-cache, must-revalidate"

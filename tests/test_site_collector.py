@@ -968,6 +968,46 @@ class TestBlockedResponseHandling:
         assert result.success is False
         assert "could not load homepage" in result.error
 
+    def test_every_candidate_blocked_reports_the_specific_reason_not_a_generic_failure(self, artifact_store):
+        """All three URL variants blocked (not just one, unlike the
+        test above) is a materially different, more useful fact than a
+        bare 'could not load homepage': the site is definitely
+        reachable and is actively refusing this collector's traffic,
+        not merely unreachable (DNS/timeout/etc). Found live: Ifor
+        Williams Trailers (iwt.co.uk) returned HTTP 403 on every
+        variant. batch/tracker_exporter.py's _collection_failure_reason
+        surfaces this verbatim in the Audit tab in place of the generic
+        'Not stated on site'."""
+        fake = _FakePlaywright(
+            working_urls={"https://www.iwt.co.uk", "https://iwt.co.uk", "http://www.iwt.co.uk"},
+            status_by_url={"https://www.iwt.co.uk": 403, "https://iwt.co.uk": 403, "http://www.iwt.co.uk": 403},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="iwt.co.uk")
+
+        assert result.success is False
+        assert result.error.startswith("Site blocked automated access (HTTP 403) on every URL variant tried")
+        assert "https://www.iwt.co.uk" in result.error
+        assert "https://iwt.co.uk" in result.error
+        assert "http://www.iwt.co.uk" in result.error
+
+    def test_mixed_blocked_status_codes_are_all_reported(self, artifact_store):
+        """Not every candidate has to fail the SAME way to count as
+        'every candidate blocked' -- a real site could WAF-block one
+        URL variant with 403 and rate-limit another with 429. Both
+        codes should show, not just the first one seen."""
+        fake = _FakePlaywright(
+            working_urls={"https://www.example.com", "https://example.com", "http://www.example.com"},
+            status_by_url={"https://www.example.com": 403, "https://example.com": 503, "http://www.example.com": 403},
+        )
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=lambda: fake)
+
+        result = collector.collect(supplier_id=1, domain="example.com")
+
+        assert result.success is False
+        assert "HTTP 403/503" in result.error
+
     def test_blocked_first_candidate_falls_through_to_a_working_one(self, artifact_store):
         """The existing multi-candidate retry (TestCandidateUrlFallback)
         already tries www/bare/http variants on a network-level

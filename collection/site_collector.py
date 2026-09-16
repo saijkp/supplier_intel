@@ -731,16 +731,30 @@ class SiteCollector:
 
             homepage = None
             base_url = None
+            blocked_statuses: List[int] = []
             for candidate in candidates:
-                homepage = self._visit_and_collect(page, candidate, 0, run_dir)
+                homepage = self._visit_and_collect(page, candidate, 0, run_dir, blocked_statuses=blocked_statuses)
                 if homepage is not None:
                     base_url = candidate
                     break
 
             if homepage is None:
+                # Every single candidate came back as a real HTTP
+                # error/block response (never a DNS/timeout/connection
+                # failure, which _visit_and_collect never adds to
+                # blocked_statuses) -- a genuinely different fact from
+                # "unreachable" that's worth saying plainly rather than
+                # folding into the same generic message, since a caller
+                # (batch/tracker_exporter.py's evidence bundle) surfaces
+                # this error verbatim in place of "not stated on site"
+                # for a site that was never actually readable at all.
+                if blocked_statuses and len(blocked_statuses) == len(candidates):
+                    codes = "/".join(str(s) for s in sorted(set(blocked_statuses)))
+                    error = f"Site blocked automated access (HTTP {codes}) on every URL variant tried -- {', '.join(candidates)}"
+                else:
+                    error = f"could not load homepage -- tried {', '.join(candidates)}"
                 return CollectionResult(
-                    domain=domain, success=False,
-                    error=f"could not load homepage -- tried {', '.join(candidates)}",
+                    domain=domain, success=False, error=error,
                     artifacts_dir=relative_dir, proxy_provider=provider_name,
                 )
             if len(candidates) > 1:
@@ -839,6 +853,7 @@ class SiteCollector:
 
     def _visit_and_collect(
         self, page: Any, url: str, index: int, run_dir: Path,
+        blocked_statuses: Optional[List[int]] = None,
     ) -> Optional[Tuple[CollectedPage, str]]:
         try:
             # "domcontentloaded", not the default "load" -- "load" waits
@@ -874,6 +889,8 @@ class SiteCollector:
                 "collection: %s returned HTTP %s (blocked/error response) -- "
                 "treating as a failed load, not real content", url, response.status,
             )
+            if blocked_statuses is not None:
+                blocked_statuses.append(response.status)
             return None
 
         try:

@@ -180,6 +180,26 @@ def _website_note(repo: SupplierRepository, supplier_id: int, stored_domain: str
     return ""
 
 
+def _collection_failure_reason(repo: SupplierRepository, supplier: Dict[str, Any]) -> str:
+    """The real, verbatim reason the most recent collection attempt
+    failed (e.g. "Site blocked automated access (HTTP 403) on every
+    URL variant tried -- ..." from collection/site_collector.py), or
+    "" when collection has never run or its most recent attempt
+    succeeded. Exists so the Contact section can distinguish "checked
+    the real site and it genuinely has nothing" from "never actually
+    readable at all" -- both currently render identically as empty
+    fields otherwise, which are two different facts. Same idea as
+    capability_extraction_status's existing "fetch_failed" distinction
+    for certifications, generalised via the real stored error message
+    rather than a second hand-written special case."""
+    if supplier.get("collection_status") != "failed":
+        return ""
+    runs = repo.get_collection_runs(supplier["id"], limit=1)
+    if not runs:
+        return ""
+    return runs[0].get("error_message") or ""
+
+
 def _phone_source_pages(repo: SupplierRepository, supplier: Dict[str, Any]) -> str:
     # No per-phone source_url match attempted beyond the exact primary_phone
     # string -- supplier_phone_numbers.source_url exists, but
@@ -570,7 +590,8 @@ def build_supplier_evidence_bundle(
     """One supplier's complete evidence picture as structured JSON --
     built for api/app.py's Audit endpoints (GET /audit/suppliers/{id}),
     reusing every one of this module's own evidence helpers verbatim
-    (_website_note, _latest_provenance_source_url, _phone_source_pages,
+    (_website_note, _collection_failure_reason,
+    _latest_provenance_source_url, _phone_source_pages,
     _street_view_link, _satellite_view_link, _linkedin_search_link,
     evidence_score, _discovery_validation_reason) rather than
     re-deriving any of them.
@@ -617,6 +638,7 @@ def build_supplier_evidence_bundle(
             "factory_location": supplier.get("factory_location") or "",
         },
         "website_note": _website_note(repo, supplier_id, supplier.get("domain") or ""),
+        "collection_failure_reason": _collection_failure_reason(repo, supplier),
         "source_urls": {
             "address": _latest_provenance_source_url(repo, supplier_id, "address"),
             "factory_location": _latest_provenance_source_url(repo, supplier_id, "factory_location"),

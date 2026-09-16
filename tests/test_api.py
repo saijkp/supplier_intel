@@ -1607,3 +1607,40 @@ class TestAuditVerdictEndpoint:
         supplier_id = client.repo.create_golden_record({"canonical_name": "Never Sourced Co"})
         response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
         assert response.json()["sourcing_dossier"]["oem_odm_notes"] is None
+
+    def test_get_audit_supplier_bundle_surfaces_a_real_collection_failure_reason(self, client):
+        """A totally-blocked site (e.g. iwt.co.uk returning HTTP 403 on
+        every URL variant tried) and a genuinely-empty-but-reachable
+        site both leave contact fields blank -- two different facts
+        that looked identical before this. See
+        batch.tracker_exporter._collection_failure_reason."""
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Blocked Co", "domain": "blocked.example"})
+        client.repo.record_collection_run(
+            supplier_id=supplier_id, status="failed",
+            error_message="Site blocked automated access (HTTP 403) on every URL variant tried -- "
+                          "https://www.blocked.example, https://blocked.example, http://www.blocked.example",
+        )
+
+        response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
+
+        assert response.json()["collection_failure_reason"] == (
+            "Site blocked automated access (HTTP 403) on every URL variant tried -- "
+            "https://www.blocked.example, https://blocked.example, http://www.blocked.example"
+        )
+
+    def test_collection_failure_reason_is_blank_when_never_run(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Never Collected Co"})
+        response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
+        assert response.json()["collection_failure_reason"] == ""
+
+    def test_collection_failure_reason_is_blank_after_a_successful_collection(self, client):
+        """Not the most recent attempt's status alone -- a supplier
+        collected successfully must never show a stale failure reason
+        from some earlier attempt."""
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Recovered Co", "domain": "recovered.example"})
+        client.repo.record_collection_run(supplier_id=supplier_id, status="failed", error_message="could not load homepage -- tried ...")
+        client.repo.record_collection_run(supplier_id=supplier_id, status="success", pages_visited=3)
+
+        response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
+
+        assert response.json()["collection_failure_reason"] == ""
