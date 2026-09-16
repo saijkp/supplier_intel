@@ -198,6 +198,20 @@ def _street_view_link(address: str) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(address)}"
 
 
+def _satellite_view_link(address: str) -> str:
+    """Same free-link pattern as _street_view_link -- a plain Google
+    Maps URL with the satellite base layer (`t=k`), no geocoding/Static
+    Maps API dependency, no API key, no cost. One click for a human to
+    look at the claimed address from above and judge for themselves
+    whether it looks like an industrial facility, a residential
+    building, or an empty lot -- the system never assesses or scores
+    this itself, same evidence-only discipline as every other check
+    here. Empty when there's no address to link."""
+    if not address:
+        return ""
+    return f"https://www.google.com/maps?q={urllib.parse.quote(address)}&t=k"
+
+
 def _linkedin_search_link(company_name: str) -> str:
     """Same free-search-link pattern as _street_view_link, no LinkedIn
     API/scraping involved -- a site:linkedin.com Google search for the
@@ -557,8 +571,9 @@ def build_supplier_evidence_bundle(
     built for api/app.py's Audit endpoints (GET /audit/suppliers/{id}),
     reusing every one of this module's own evidence helpers verbatim
     (_website_note, _latest_provenance_source_url, _phone_source_pages,
-    _street_view_link, _linkedin_search_link, evidence_score,
-    _discovery_validation_reason) rather than re-deriving any of them.
+    _street_view_link, _satellite_view_link, _linkedin_search_link,
+    evidence_score, _discovery_validation_reason) rather than
+    re-deriving any of them.
     Multi-item evidence (certifications, catalogue-depth signals,
     reputation snippets) is read from the same repository methods
     build_tracker_export itself calls, just returned as structured
@@ -610,6 +625,7 @@ def build_supplier_evidence_bundle(
         },
         "candidate_facility_photo_urls": list(supplier.get("candidate_facility_photo_urls") or []),
         "street_view_link": _street_view_link(address),
+        "satellite_view_link": _satellite_view_link(address),
         "linkedin_search_link": _linkedin_search_link(supplier.get("canonical_name") or ""),
         "alibaba_search_link": _marketplace_search_link(supplier.get("canonical_name") or "", "alibaba.com"),
         "made_in_china_search_link": _marketplace_search_link(supplier.get("canonical_name") or "", "made-in-china.com"),

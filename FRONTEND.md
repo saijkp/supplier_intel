@@ -5,17 +5,21 @@ step, no framework, no dependencies — Netlify serves either as-is and
 they talk directly to your Railway API over HTTPS:
 
 - **`index.html`** (deployed default, live at
-  `https://grand-alfajores-a9d7ee.netlify.app/`) — the "Supplier Intel
-  Console" dashboard UI: a sidebar-nav app (Dashboard, Find suppliers,
-  Pipeline Jobs, Buyer Profiles, Settings) backed by `GET
-  /dashboard/summary` plus the same search/job endpoints below. See
-  "Current default UI" further down. `frontend/dashboard.html` is an
-  identical copy, also served at `/dashboard.html` on the same site —
-  edit both together.
-- **`legacy.html`** — the original four-tab evidence-rich app (Search,
-  Buyer profiles, Pipeline, Compare). No longer the deployed default,
-  kept for reference/rollback. The rest of this file below "Current
+  `https://grand-alfajores-a9d7ee.netlify.app/`) — the original
+  four-tab evidence-rich app (Find Suppliers, Search, Bulk enrichment,
+  Job History, Compare, Audit). The rest of this file below "Current
   default UI" documents *this* app.
+- **`console.html`** — a newer "Supplier Intel Console" dashboard UI: a
+  sidebar-nav app (Dashboard, Find suppliers, Pipeline Jobs, Buyer
+  Profiles, Settings) backed by `GET /dashboard/summary` plus the same
+  search/job endpoints below. Briefly the deployed default
+  (2026-09-14 to 2026-09-16) before being reverted here in favour of
+  the tested four-tab app above; preserved intact at `/console.html`
+  in case that work is picked back up later, not currently linked from
+  anywhere in the deployed `index.html`. `frontend/dashboard.html` is
+  an identical copy of `console.html` (not of `index.html`), also
+  served at `/dashboard.html` on the same site — edit those two
+  together if the console work resumes.
 
 ## Deploy
 
@@ -58,7 +62,7 @@ Storage access is wrapped so that a browser or preview frame that
 blocks local storage falls back to keeping the details in memory for
 the session rather than breaking the page.
 
-## Current default UI (`index.html` / `dashboard.html`)
+## Console UI (`console.html` / `dashboard.html`) — not currently deployed
 
 Sidebar-nav dashboard console, five pages:
 
@@ -95,10 +99,12 @@ Sidebar-nav dashboard console, five pages:
 - **Settings** — the same API-address/access-token connection flow
   described in "First run" above.
 
-## Legacy UI (`frontend/legacy.html`)
+## Current default UI (`frontend/index.html`)
 
-Everything below this point describes `legacy.html`'s four-tab app —
-not the deployed default, kept for reference.
+Everything below this point describes `index.html`'s four-tab app —
+the deployed default. (Note: some of the tab/feature names below may
+have drifted from the actual current file — this section predates a
+later within-app rewrite and hasn't been fully re-verified against it.)
 
 **Search** — product, country, minimum score, and certifications that
 must be evidenced. Requirements combine with AND: every selected term
