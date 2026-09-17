@@ -124,7 +124,12 @@ PIPELINE_JOB_WATCHDOG_INTERVAL_SECONDS: int = int(os.getenv("PIPELINE_JOB_WATCHD
 # IPRoyal are documented extension points, not implemented yet.
 WEBSHARE_PROXY_USERNAME: str | None = os.getenv("WEBSHARE_PROXY_USERNAME")
 WEBSHARE_PROXY_PASSWORD: str | None = os.getenv("WEBSHARE_PROXY_PASSWORD")
-WEBSHARE_PROXY_ENDPOINT: str = os.getenv("WEBSHARE_PROXY_ENDPOINT") or "p.webshare.io:80"
+# Host/port kept as two separate env vars (not one combined "host:port"
+# string) to match exactly what Webshare's own dashboard shows for a
+# Rotating Residential proxy under the Default User auth method --
+# one less manual-formatting step for whoever sets these on Railway.
+WEBSHARE_PROXY_HOST: str = os.getenv("WEBSHARE_PROXY_HOST") or "p.webshare.io"
+WEBSHARE_PROXY_PORT: str = os.getenv("WEBSHARE_PROXY_PORT") or "80"
 COLLECTION_PROXY_PROVIDER: str = os.getenv("COLLECTION_PROXY_PROVIDER") or "none"  # 'webshare' | 'none'
 
 COLLECTION_PAGE_TIMEOUT_MS: int = int(os.getenv("COLLECTION_PAGE_TIMEOUT_MS") or 25_000)

@@ -44,7 +44,7 @@ class TestWebshareProxyProvider:
         assert provider.is_configured() is False
 
     def test_get_proxy_config_shape_matches_playwright_launch_option(self):
-        provider = WebshareProxyProvider(username="user", password="pass", endpoint="p.webshare.io:80")
+        provider = WebshareProxyProvider(username="user", password="pass", host="p.webshare.io", port="80")
         config = provider.get_proxy_config()
         assert config == {"server": "http://p.webshare.io:80", "username": "user", "password": "pass"}
 

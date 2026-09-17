@@ -25,8 +25,9 @@ from typing import Any, Dict, Optional
 
 from config.settings import (
     COLLECTION_PROXY_PROVIDER,
-    WEBSHARE_PROXY_ENDPOINT,
+    WEBSHARE_PROXY_HOST,
     WEBSHARE_PROXY_PASSWORD,
+    WEBSHARE_PROXY_PORT,
     WEBSHARE_PROXY_USERNAME,
 )
 
@@ -67,11 +68,13 @@ class NoProxyProvider(ProxyProvider):
 class WebshareProxyProvider(ProxyProvider):
 
     def __init__(
-        self, username: Optional[str] = None, password: Optional[str] = None, endpoint: Optional[str] = None,
+        self, username: Optional[str] = None, password: Optional[str] = None,
+        host: Optional[str] = None, port: Optional[str] = None,
     ):
         self.username = username if username is not None else WEBSHARE_PROXY_USERNAME
         self.password = password if password is not None else WEBSHARE_PROXY_PASSWORD
-        self.endpoint = endpoint if endpoint is not None else WEBSHARE_PROXY_ENDPOINT
+        self.host = host if host is not None else WEBSHARE_PROXY_HOST
+        self.port = port if port is not None else WEBSHARE_PROXY_PORT
 
     def is_configured(self) -> bool:
         return bool(self.username and self.password)
@@ -80,7 +83,7 @@ class WebshareProxyProvider(ProxyProvider):
         if not self.is_configured():
             return None
         return {
-            "server": f"http://{self.endpoint}",
+            "server": f"http://{self.host}:{self.port}",
             "username": self.username,
             "password": self.password,
         }
