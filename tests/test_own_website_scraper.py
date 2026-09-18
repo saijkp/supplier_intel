@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import httpx
 
-from scrapers.own_website_scraper import OwnWebsiteScraper
+from scrapers.own_website_scraper import OwnWebsiteScraper, html_to_text
 
 
 class FakeResponse:
@@ -378,3 +378,55 @@ class TestFinalUrl:
         result = scraper.fetch("acme.example.com")
         about_page = next(p for p in result.pages if p.url == "https://acme.example.com/about-us")
         assert about_page.final_url == "https://different-site.example/about-us"
+
+
+class TestHtmlToTextMetaDescription:
+    """Real bug found live: arona.ae's own <meta name="description">
+    read "the top distributor of high-quality panels in the UAE" -- a
+    plain trader self-declaration -- while its visible page body said
+    nothing of the kind, so discovery's gate 7 trader checks (which
+    only ever see html_to_text()'s output) never had a chance to catch
+    it. get_text() structurally can't see attribute content like
+    meta[content], so it has to be extracted and included separately."""
+
+    def test_meta_description_is_included_in_extracted_text(self):
+        html = (
+            '<html><head><meta name="description" content="the top distributor of high-quality panels">'
+            '</head><body><p>Welcome to our site</p></body></html>'
+        )
+        text = html_to_text(html)
+        assert "the top distributor of high-quality panels" in text
+        assert "Welcome to our site" in text
+
+    def test_og_description_is_also_included(self):
+        html = (
+            '<html><head><meta property="og:description" content="leading panel distributor">'
+            '</head><body><p>Home</p></body></html>'
+        )
+        text = html_to_text(html)
+        assert "leading panel distributor" in text
+
+    def test_no_meta_description_is_unaffected(self):
+        """Regression guard: a page with no meta description at all
+        must behave exactly as before this change."""
+        html = "<html><head></head><body><p>Just a normal page</p></body></html>"
+        text = html_to_text(html)
+        assert text == "Just a normal page"
+
+    def test_empty_meta_content_is_not_included_as_a_blank_line(self):
+        html = '<html><head><meta name="description" content=""></head><body><p>Body text</p></body></html>'
+        text = html_to_text(html)
+        assert text == "Body text"
+
+    def test_duplicate_description_and_og_description_both_included(self):
+        """Real, common pattern: the same text set in both tags for SEO
+        -- both should still surface (harmless duplication for a
+        substring/regex check, and doesn't hide either source)."""
+        html = (
+            '<html><head>'
+            '<meta name="description" content="same text twice">'
+            '<meta property="og:description" content="same text twice">'
+            '</head><body><p>Body</p></body></html>'
+        )
+        text = html_to_text(html)
+        assert text.count("same text twice") == 2

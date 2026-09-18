@@ -126,6 +126,29 @@ class OwnWebsiteFetchResult:
     error: Optional[str] = None
 
 
+def _extract_meta_descriptions(soup: BeautifulSoup) -> List[str]:
+    """<meta name="description"> / <meta property="og:description">
+    content -- real self-description text a site's own SEO metadata
+    carries that never appears as a visible text node, so soup.get_text()
+    structurally cannot see it. Found live: arona.ae's own meta
+    description read "the top distributor of high-quality panels in
+    the UAE" -- a plain, real trader self-declaration -- while the
+    visible page body said nothing of the kind, letting a genuine
+    distributor pass discovery's gate 7 trader checks untouched since
+    they only ever see get_text()'s output. Order doesn't matter for
+    the substring/regex checks this feeds (gate 6/7, catalogue-depth
+    signals) -- listed first here only for readability if a human
+    inspects the resulting text."""
+    values = []
+    for tag in soup.find_all("meta"):
+        key = (tag.get("name") or tag.get("property") or "").strip().lower()
+        if key in ("description", "og:description"):
+            content = (tag.get("content") or "").strip()
+            if content:
+                values.append(content)
+    return values
+
+
 def html_to_text(html: str) -> str:
     """Strip markup to plain readable text. Deliberately dependency-free
     beyond BeautifulSoup, which this codebase already depends on for
@@ -133,11 +156,19 @@ def html_to_text(html: str) -> str:
     reused by verification/catalogue_depth_service.py to convert
     already-saved collection HTML artifacts to text without a second
     live fetch -- the same conversion this module already does for its
-    own freshly-fetched pages."""
+    own freshly-fetched pages.
+
+    Includes meta description content (see _extract_meta_descriptions)
+    alongside the visible body text -- a site's own SEO self-description
+    is real, meaningful content a genuine manufacturer vs. trader
+    signal check should see, not something to discard just because it
+    lives in an attribute rather than a text node."""
     soup = BeautifulSoup(_SCRIPT_STYLE_RE.sub(" ", html), "html.parser")
+    meta_lines = _extract_meta_descriptions(soup)
     text = soup.get_text(separator="\n")
     lines = [line.strip() for line in text.splitlines()]
-    return "\n".join(line for line in lines if line)
+    body_lines = [line for line in lines if line]
+    return "\n".join(meta_lines + body_lines)
 
 
 class OwnWebsiteScraper:
