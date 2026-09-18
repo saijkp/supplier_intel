@@ -74,9 +74,10 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 from bs4 import BeautifulSoup
 
@@ -155,6 +156,18 @@ _SOCIAL_DOMAINS: Tuple[str, ...] = (
 _DOWNLOAD_EXTENSIONS: Tuple[str, ...] = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx")
 
 _MAX_PAGES_DEFAULT = 6
+
+# Real, distinct failure mode from an ordinary site-side rejection (dead
+# domain, blocked response, etc.) -- Playwright's own message when the
+# underlying browser process itself crashes creating a new page/context,
+# raised from context.new_page() in _collect_with. Documented incident:
+# see _BROWSER_SEMAPHORE's own comment -- browser-process resource
+# exhaustion under sustained concurrent Chromium load. Retried with
+# backoff in collect() rather than counted as a permanent failure on
+# first occurrence, since a fresh attempt after a short wait for
+# resources to free up often succeeds.
+_TARGET_CRASHED_MARKER = "Target crashed"
+_CRASH_RETRY_DELAYS_SECONDS: Tuple[int, ...] = (5, 15)
 
 # How long to wait for <body> after "domcontentloaded" -- see
 # _visit_and_collect's own comment for why "load" (waiting for every
@@ -660,6 +673,7 @@ class SiteCollector:
         max_pages: int = _MAX_PAGES_DEFAULT,
         page_timeout_ms: int = COLLECTION_PAGE_TIMEOUT_MS,
         playwright_factory: Optional[Any] = None,
+        sleep_fn: Optional[Callable[[float], None]] = None,
     ):
         self.proxy_provider = proxy_provider or NoProxyProvider()
         self.artifact_store = artifact_store or ArtifactStore()
@@ -671,6 +685,13 @@ class SiteCollector:
         # browser launch just to exercise extraction logic. Production
         # code leaves this None and uses the real sync_playwright().
         self._playwright_factory = playwright_factory
+        # Injectable for tests -- collect()'s crash-retry backoff calls
+        # this instead of a bare time.sleep(), so a test can verify the
+        # retry actually happens (and how many times, with what delays)
+        # without a real test run sitting through _CRASH_RETRY_DELAYS_
+        # SECONDS' worth of real waiting. Production code leaves this
+        # None and sleeps for real.
+        self._sleep_fn = sleep_fn or time.sleep
 
     def _launch(self, playwright: Any) -> Tuple[Any, Any]:
         proxy_config = self.proxy_provider.get_proxy_config()
@@ -692,7 +713,18 @@ class SiteCollector:
         candidates -- see _build_candidate_urls. Optional: callers that
         only have a bare `domain` on file (collect_pending(), a direct
         `main.py collect <id>`) simply omit it and fall back to the
-        generated www/scheme permutations."""
+        generated www/scheme permutations.
+
+        Retries with backoff (_CRASH_RETRY_DELAYS_SECONDS) specifically
+        when the browser process itself crashes (_TARGET_CRASHED_MARKER,
+        raised from context.new_page() in _collect_with) -- a real,
+        transient resource-exhaustion failure, never an ordinary
+        site-side rejection (dead domain, blocked response, etc.),
+        which _collect_with already returns as a normal CollectionResult
+        rather than raising, so it's never retried here. Sequential, not
+        concurrent -- a crashed attempt's retry waits its turn rather
+        than firing a second attempt while the crashed one's resources
+        may still be getting reclaimed."""
         if not domain:
             return CollectionResult(domain=domain, success=False, error="no domain provided")
 
@@ -707,19 +739,32 @@ class SiteCollector:
         relative_dir = self.artifact_store.relative_path(run_dir)
         provider_name = type(self.proxy_provider).__name__
 
-        try:
-            if self._playwright_factory is not None:
-                return self._collect_with(self._playwright_factory(), candidates, domain, run_dir, relative_dir, provider_name)
-            from playwright.sync_api import sync_playwright
+        attempt_delays = (0,) + _CRASH_RETRY_DELAYS_SECONDS
+        for attempt, delay in enumerate(attempt_delays):
+            is_last_attempt = attempt == len(attempt_delays) - 1
+            if delay:
+                logger.warning(
+                    "collection: retrying %s after a browser crash (attempt %d/%d), waiting %ss",
+                    domain, attempt + 1, len(attempt_delays) - 1, delay,
+                )
+                self._sleep_fn(delay)
+            try:
+                if self._playwright_factory is not None:
+                    return self._collect_with(self._playwright_factory(), candidates, domain, run_dir, relative_dir, provider_name)
+                from playwright.sync_api import sync_playwright
 
-            with sync_playwright() as p:
-                return self._collect_with(p, candidates, domain, run_dir, relative_dir, provider_name)
-        except Exception as e:  # noqa: BLE001 -- one supplier's collection must never abort a batch
-            logger.error("collection: unexpected error collecting %s: %s", domain, e)
-            return CollectionResult(
-                domain=domain, success=False, error=str(e),
-                artifacts_dir=relative_dir, proxy_provider=provider_name,
-            )
+                with sync_playwright() as p:
+                    return self._collect_with(p, candidates, domain, run_dir, relative_dir, provider_name)
+            except Exception as e:  # noqa: BLE001 -- one supplier's collection must never abort a batch
+                error = str(e)
+                if _TARGET_CRASHED_MARKER in error and not is_last_attempt:
+                    logger.warning("collection: browser crashed collecting %s: %s", domain, error)
+                    continue
+                logger.error("collection: unexpected error collecting %s: %s", domain, error)
+                return CollectionResult(
+                    domain=domain, success=False, error=error,
+                    artifacts_dir=relative_dir, proxy_provider=provider_name,
+                )
 
     def _collect_with(
         self, playwright: Any, candidates: List[str], domain: str, run_dir: Path, relative_dir: str, provider_name: str,

@@ -1057,6 +1057,107 @@ class TestBlockedResponseHandling:
         assert len(result.pages) == 1
 
 
+class _CrashNTimesThenPlaywright:
+    """playwright_factory callable (not a fixed object) -- collect()
+    calls self._playwright_factory() fresh on every retry attempt, so
+    this needs to hand back a DIFFERENT fake each call to simulate a
+    crash on the first N attempts and a real, working browser after
+    that. crash_count=0 means every call raises (permanent crash)."""
+
+    def __init__(self, crash_count, working_fake):
+        self.crash_count = crash_count
+        self.working_fake = working_fake
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+        if self.calls <= self.crash_count:
+            return _CrashingPlaywright()
+        return self.working_fake
+
+
+class _CrashingPlaywright:
+    """Mirrors _FakePlaywright's shape just enough for _launch() to
+    reach context.new_page(), which raises Playwright's own crash
+    message (the exact string site_collector.py's _TARGET_CRASHED_
+    MARKER matches on) instead of returning a page."""
+
+    class _Chromium:
+        def launch(self, **kwargs):
+            return _CrashingPlaywright._Browser()
+
+    class _Browser:
+        def new_context(self):
+            return _CrashingPlaywright._Context()
+
+        def close(self):
+            pass
+
+    class _Context:
+        def new_page(self):
+            raise Exception("BrowserContext.new_page: Target crashed ")
+
+        def set_default_timeout(self, ms):
+            pass
+
+    def __init__(self):
+        self.chromium = self._Chromium()
+
+
+class TestBrowserCrashRetry:
+    """A crashed browser process (Playwright's "Target crashed", raised
+    from context.new_page() -- see _BROWSER_SEMAPHORE's own comment for
+    the documented resource-exhaustion incident this is retrying
+    around) is a transient infrastructure failure, not a real site-side
+    rejection -- collect() retries it with backoff instead of counting
+    it as permanent on first occurrence."""
+
+    def test_crash_then_success_retries_and_recovers(self, artifact_store):
+        working = _FakePlaywright(working_urls={"https://www.daroaxle.com"})
+        factory = _CrashNTimesThenPlaywright(crash_count=1, working_fake=working)
+        sleeps = []
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=factory, sleep_fn=sleeps.append)
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.success is True
+        assert factory.calls == 2
+        assert sleeps == [5]  # one retry, first backoff delay only
+
+    def test_crash_on_every_attempt_eventually_gives_up(self, artifact_store):
+        working = _FakePlaywright(working_urls={"https://www.daroaxle.com"})
+        factory = _CrashNTimesThenPlaywright(crash_count=99, working_fake=working)
+        sleeps = []
+        collector = SiteCollector(artifact_store=artifact_store, playwright_factory=factory, sleep_fn=sleeps.append)
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.success is False
+        assert "Target crashed" in result.error
+        assert factory.calls == 3  # initial attempt + 2 retries, matching _CRASH_RETRY_DELAYS_SECONDS
+        assert sleeps == [5, 15]
+
+    def test_a_non_crash_exception_is_not_retried(self, artifact_store):
+        """Only the specific 'Target crashed' failure gets a second
+        chance -- any other unexpected exception fails immediately,
+        exactly as before this retry logic existed."""
+
+        class _AlwaysRaisesSomethingElse:
+            def __call__(self):
+                raise RuntimeError("some other unrelated failure")
+
+        sleeps = []
+        collector = SiteCollector(
+            artifact_store=artifact_store, playwright_factory=_AlwaysRaisesSomethingElse(), sleep_fn=sleeps.append,
+        )
+
+        result = collector.collect(supplier_id=1, domain="daroaxle.com")
+
+        assert result.success is False
+        assert "some other unrelated failure" in result.error
+        assert sleeps == []  # never retried, so never slept
+
+
 class TestIframeContentExtraction:
     """Real gap found live: nVent's real "Contact Us" page was
     correctly discovered and visited (481 relevant links found, this
