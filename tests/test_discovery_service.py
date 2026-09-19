@@ -219,6 +219,63 @@ class TestDiscoverCreatesNewSuppliers:
         assert rows[0]["golden_record_id"] is not None
 
 
+class TestDiscoverCleansRawProductQuery:
+    """Real bug: main.py discover's PRODUCT argument and POST
+    /discovery/jobs's `product` both take free-text with no upstream
+    LLM parsing step (unlike sourcing.brief_parser.BriefParser's own
+    already-clean `product`) -- a raw "find me X manufacturers in the
+    UK" sentence was passed straight through to build_queries() and to
+    candidate_validator's gate 6 unparsed. discover() must clean it
+    before either happens, and (a later, separately-found bug) must
+    also feed a detected trailing region qualifier into `country` when
+    the caller didn't already supply one -- otherwise the search loses
+    its only region-scoping signal entirely."""
+
+    def test_raw_query_is_cleaned_before_building_search_queries(self, repo):
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        google_scraper = FakeGoogleScraper(results=results)
+        service = _service(repo, results, "acmetrailer.com", google_scraper=google_scraper)
+
+        service.discover("find me trailer axle manufacturers")
+
+        assert all("find me" not in q.lower() for q in google_scraper.queries)
+        assert any('"trailer axle manufacturers"' in q for q in google_scraper.queries)
+
+    def test_raw_query_is_cleaned_before_reaching_the_validator(self, repo):
+        from discovery.candidate_extractor import Candidate
+
+        candidate = Candidate(title="Acme Trailer Co", link="https://acmetrailer.com/", snippet="trailer axle manufacturer", domain="acmetrailer.com")
+        validator = FakeCandidateValidator(outcomes={
+            "acmetrailer.com": ValidationResult(candidate, True, "Acme Trailer Co", "China", 95.0, "validated"),
+        })
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        service = _service(repo, results, "acmetrailer.com", candidate_validator=validator)
+
+        service.discover("find me trailer axle manufacturers")
+
+        assert validator.calls == [("acmetrailer.com", "trailer axle manufacturers")]
+
+    def test_trailing_region_qualifier_is_inferred_as_country_when_not_given(self, repo):
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        google_scraper = FakeGoogleScraper(results=results)
+        service = _service(repo, results, "acmetrailer.com", google_scraper=google_scraper)
+
+        outcome = service.discover("find me trailer axle manufacturers in the UK")
+
+        assert all(q.endswith("United Kingdom") for q in google_scraper.queries)
+        supplier = repo.get_supplier(outcome.new_supplier_ids[0])
+        assert supplier["product_keywords"] == ["trailer axle manufacturers"]
+
+    def test_an_explicit_country_argument_is_never_overridden_by_inference(self, repo):
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        google_scraper = FakeGoogleScraper(results=results)
+        service = _service(repo, results, "acmetrailer.com", google_scraper=google_scraper)
+
+        service.discover("find me trailer axle manufacturers in the UK", country="China")
+
+        assert all(q.endswith("China") for q in google_scraper.queries)
+
+
 class TestDiscoverRejectsAndRecordsEvidence:
 
     def test_rejected_candidate_is_not_created_but_is_recorded(self, repo):

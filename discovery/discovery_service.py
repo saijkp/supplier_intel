@@ -65,7 +65,7 @@ from discovery.candidate_validator import (
 )
 from discovery.companies_house_sic_source import CompaniesHouseSicSource
 from discovery.llm_candidate_source import LLMCandidateSource
-from discovery.query_builder import build_queries, clean_product_query
+from discovery.query_builder import build_queries, clean_product_query, infer_country_from_query
 from discovery.trade_source_finder import find_candidate_trade_source
 from storage.repository import SupplierRepository
 
@@ -347,6 +347,22 @@ class DiscoveryService:
         # `product`) -- see clean_product_query()'s own docstring for
         # the real "find me agricultural equipment manufacturers in
         # the UK" run this closes. A no-op for an already-clean term.
+        #
+        # If the caller didn't already supply `country` some other way,
+        # infer it from the SAME raw string before cleaning strips it --
+        # a real live re-run found that stripping "in the UK" without
+        # also feeding it into `country` lost the only signal narrowing
+        # the search to UK-domiciled companies, diluting the results
+        # with unrelated global manufacturers and never surfacing the
+        # real UK companies the query was actually asking about. Never
+        # overrides an explicit `country` (see infer_country_from_query's
+        # own docstring).
+        if country is None:
+            inferred_country = infer_country_from_query(product)
+            if inferred_country:
+                logger.info("discovery: inferred country %r from product query %r", inferred_country, product)
+                country = inferred_country
+
         cleaned_product = clean_product_query(product)
         if cleaned_product != product:
             logger.info("discovery: cleaned product query %r -> %r", product, cleaned_product)
@@ -527,14 +543,21 @@ class DiscoveryService:
         Each round's progress events are stamped with their round number
         before being forwarded to `progress_callback`, so a live UI can
         show which round a given candidate came from."""
-        # Cleaned here too (not just inside discover()) so Phase 0's
-        # database search and the opt-in trade-source check below --
-        # neither of which ever reaches discover() itself -- also see
-        # the cleaned term, not raw conversational wrapper phrasing.
-        # See discover()'s own comment and clean_product_query()'s
-        # docstring for the real run this closes; a no-op for an
-        # already-clean term, so discover()'s own cleaning of the same
-        # (already-clean) value on each round below costs nothing.
+        # Cleaned (and country-inferred) here too, not just inside
+        # discover() -- Phase 0's database search and the opt-in
+        # trade-source check below both use `product`/`country`
+        # directly and neither ever reaches discover() itself. See
+        # discover()'s own comment and clean_product_query()'s/
+        # infer_country_from_query()'s own docstrings for the real run
+        # this closes; both are no-ops on an already-clean term/an
+        # already-given country, so discover()'s own cleaning of the
+        # same values on each round below costs nothing.
+        if country is None:
+            inferred_country = infer_country_from_query(product)
+            if inferred_country:
+                logger.info("discovery: inferred country %r from product query %r", inferred_country, product)
+                country = inferred_country
+
         cleaned_product = clean_product_query(product)
         if cleaned_product != product:
             logger.info("discovery: cleaned product query %r -> %r", product, cleaned_product)

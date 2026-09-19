@@ -54,12 +54,49 @@ _FILLER_PREFIX_PATTERNS: tuple = tuple(
 # match only" discipline discovery.candidate_validator's own
 # _UK_COUNTRY_SYNONYMS already uses), never a general geography strip,
 # since "in <region>" could in principle be part of a product's own
-# name for a category not seen yet.
+# name for a category not seen yet. Keyed by the exact synonym text to
+# the canonical country name discover()/discover_to_target()'s own
+# `country` parameter expects -- see infer_country_from_query()'s own
+# docstring for why this needs to be more than a bare strip: a real
+# live run found that stripping "in the UK" without ALSO feeding it
+# into `country` silently lost the only signal narrowing the search to
+# UK-domiciled companies at all, diluting the result set with unrelated
+# global manufacturers and never surfacing the real UK companies
+# (Spearhead Machinery, Kverneland, GRIMME, JCB) the query was actually
+# asking for.
+_REGION_SYNONYM_TO_COUNTRY: dict = {
+    "uk": "United Kingdom", "united kingdom": "United Kingdom",
+    "great britain": "United Kingdom", "england": "United Kingdom",
+    "scotland": "United Kingdom", "wales": "United Kingdom",
+    "northern ireland": "United Kingdom",
+    "us": "United States", "usa": "United States", "united states": "United States",
+    "eu": "Europe", "europe": "Europe",
+    "china": "China", "india": "India",
+}
+
 _TRAILING_REGION_PATTERN = re.compile(
-    r"\s+in\s+(the\s+)?(uk|united kingdom|great britain|england|scotland|wales|"
-    r"northern ireland|us|usa|united states|eu|europe|china|india)\s*$",
+    r"\s+in\s+(?:the\s+)?(" + "|".join(_REGION_SYNONYM_TO_COUNTRY) + r")\s*$",
     re.I,
 )
+
+
+def infer_country_from_query(raw_product: str) -> Optional[str]:
+    """Detects the SAME trailing "in <region>" clause clean_product_query()
+    strips, and maps it to the canonical country name discover()/
+    discover_to_target()'s own `country` parameter expects (e.g. "in the
+    UK" -> "United Kingdom") -- or None if no recognised region clause
+    is present. Called on the RAW, uncleaned string (before
+    clean_product_query() has stripped the clause it's looking for).
+
+    Callers must only use this to fill in a `country` the buyer never
+    explicitly supplied any other way -- an explicit --country/`country`
+    argument always wins outright (same trusted-value-guard discipline
+    as everywhere else in this codebase: never let an inferred value
+    overwrite one already given)."""
+    match = _TRAILING_REGION_PATTERN.search((raw_product or "").strip())
+    if not match:
+        return None
+    return _REGION_SYNONYM_TO_COUNTRY.get(match.group(1).lower())
 
 
 def clean_product_query(raw_product: str) -> str:

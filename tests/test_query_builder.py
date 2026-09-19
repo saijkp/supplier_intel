@@ -7,7 +7,7 @@ no network.
 
 from __future__ import annotations
 
-from discovery.query_builder import build_queries, clean_product_query
+from discovery.query_builder import build_queries, clean_product_query, infer_country_from_query
 
 
 class TestBuildQueries:
@@ -86,6 +86,31 @@ class TestCleanProductQuery:
         string -- a product whose own name happens to contain a filler
         word mid-string must be left alone."""
         assert clean_product_query("pathfinder winch") == "pathfinder winch"
+
+
+class TestInferCountryFromQuery:
+    """Real bug this guards against: a live re-run of "find me
+    AGRICULTURAL EQUIPMENT MANUFACTURERS in the UK" with only
+    clean_product_query() applied (no country inference) diluted the
+    search with unrelated global manufacturers and never surfaced the
+    real UK companies (Spearhead Machinery, Kverneland, GRIMME, JCB)
+    the query was actually asking about -- stripping "in the UK" must
+    feed it into `country`, not just discard it."""
+
+    def test_uk_qualifier_infers_united_kingdom(self):
+        assert infer_country_from_query("winch manufacturers in the UK") == "United Kingdom"
+        assert infer_country_from_query("winch manufacturers in England") == "United Kingdom"
+
+    def test_other_region_synonyms_infer_their_canonical_country(self):
+        assert infer_country_from_query("winch manufacturers in China") == "China"
+        assert infer_country_from_query("winch manufacturers in the US") == "United States"
+
+    def test_no_region_qualifier_infers_nothing(self):
+        assert infer_country_from_query("winch manufacturers") is None
+
+    def test_empty_input_infers_nothing(self):
+        assert infer_country_from_query("") is None
+        assert infer_country_from_query(None) is None
 
     def test_category_does_not_break_query_building(self):
         """category is accepted for the CLI/API surface and
