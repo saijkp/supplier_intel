@@ -15,6 +15,27 @@ from __future__ import annotations
 import pytest
 
 from discovery.llm_candidate_source import LLMCandidateSource
+from scrapers.company_website_finder import WebsiteFindingResult
+
+
+class FakeWebsiteFinder:
+    """`results_by_name` maps a company name to the WebsiteFindingResult
+    find_website() should return for it -- a name with no entry gets an
+    unvalidated "not found" result, matching a real lookup that turns up
+    nothing trustworthy."""
+
+    def __init__(self, results_by_name=None):
+        self._results_by_name = results_by_name or {}
+        self.calls = []
+
+    def find_website(self, company_name, country=None):
+        self.calls.append((company_name, country))
+        if company_name in self._results_by_name:
+            return self._results_by_name[company_name]
+        return WebsiteFindingResult(
+            company_name=company_name, domain=None, validated=False,
+            candidate_url=None, name_match_score=None, reason="no non-platform, non-directory result found",
+        )
 
 
 class FakeLLMClient:
@@ -94,14 +115,71 @@ class TestFindCandidatesFiltering:
         assert candidates == []
         assert stats.dropped_incomplete == 2
 
-    def test_missing_website_is_dropped(self):
+    def test_missing_website_triggers_a_lookup_not_an_immediate_drop(self):
+        """Real bug this guards against: the model can be confident a
+        real, well-known company exists without knowing its exact
+        domain -- dropping it outright lost real recall (Spearhead
+        Machinery, Kverneland on a real "agricultural equipment
+        manufacturers UK" run). A missing website must trigger
+        CompanyWebsiteFinder.find_website(), not an immediate drop."""
         llm = FakeLLMClient(responses=[[_item(website=None), _item(website="")]])
-        source = LLMCandidateSource(llm_client=llm)
+        finder = FakeWebsiteFinder()  # neither name resolves -- both should still fail, just via the lookup path
+        source = LLMCandidateSource(llm_client=llm, website_finder=finder)
 
         candidates, stats = source.find_candidates("trailer axle")
 
         assert candidates == []
-        assert stats.dropped_incomplete == 2
+        assert stats.dropped_incomplete == 0
+        assert stats.website_lookup_attempted == 2
+        assert stats.dropped_website_not_found == 2
+        assert len(finder.calls) == 2
+
+    def test_missing_website_resolved_via_lookup_produces_a_candidate(self):
+        llm = FakeLLMClient(responses=[[_item(company_name="Spearhead Machinery", website=None)]])
+        finder = FakeWebsiteFinder(results_by_name={
+            "Spearhead Machinery": WebsiteFindingResult(
+                company_name="Spearhead Machinery", domain="spearheadmachinery.com", validated=True,
+                candidate_url="https://spearheadmachinery.com/", name_match_score=95.0, reason="validated",
+            ),
+        })
+        source = LLMCandidateSource(llm_client=llm, website_finder=finder)
+
+        candidates, stats = source.find_candidates("agricultural equipment manufacturers", country="UK")
+
+        assert len(candidates) == 1
+        assert candidates[0].domain == "spearheadmachinery.com"
+        assert candidates[0].title == "Spearhead Machinery"
+        assert stats.website_lookup_attempted == 1
+        assert stats.website_lookup_resolved == 1
+        assert finder.calls == [("Spearhead Machinery", "UK")]
+
+    def test_lookup_failure_does_not_abort_generation(self):
+        llm = FakeLLMClient(responses=[[_item(company_name="Ghost Co", website=None)]])
+
+        class ExplodingWebsiteFinder:
+            def find_website(self, company_name, country=None):
+                raise RuntimeError("search blew up")
+
+        source = LLMCandidateSource(llm_client=llm, website_finder=ExplodingWebsiteFinder())
+
+        candidates, stats = source.find_candidates("trailer axle")  # must not raise
+
+        assert candidates == []
+        assert stats.dropped_website_not_found == 1
+
+    def test_missing_company_name_is_still_dropped_immediately(self):
+        """Unlike a missing website, a missing name has nothing to look
+        up -- this must still be an immediate drop, never a lookup
+        attempt."""
+        llm = FakeLLMClient(responses=[[_item(company_name=None, website=None)]])
+        finder = FakeWebsiteFinder()
+        source = LLMCandidateSource(llm_client=llm, website_finder=finder)
+
+        candidates, stats = source.find_candidates("trailer axle")
+
+        assert candidates == []
+        assert stats.dropped_incomplete == 1
+        assert finder.calls == []
 
     def test_non_dict_items_are_skipped_silently(self):
         llm = FakeLLMClient(responses=[["not a dict", 42, None, _item()]])

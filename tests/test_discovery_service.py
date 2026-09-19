@@ -276,6 +276,157 @@ class TestDiscoverCleansRawProductQuery:
         assert all(q.endswith("China") for q in google_scraper.queries)
 
 
+class TestDiscoverAugmentWithLLM:
+    """augment_with_llm=True runs discovery.llm_candidate_source.
+    LLMCandidateSource FIRST -- ahead of, not instead of, the real
+    SerpAPI search -- feeding its proposals into the exact same
+    CandidateValidator gate every SerpAPI-sourced candidate already
+    goes through. Real gap this closes: found live that GRIMME, JCB,
+    Kverneland, and Spearhead Machinery never appeared among a real
+    "agricultural equipment manufacturers in the UK" SerpAPI-only run's
+    own candidates at all, even after the query-cleaning/country-
+    inference fixes -- the model's own knowledge recalls them, a
+    generic search phrase doesn't surface them near the top of results."""
+
+    def _augmented_service(self, repo, *, llm_candidates, serpapi_results, outcomes, google_scraper=None):
+        from discovery.candidate_extractor import Candidate  # noqa: F401 -- imported for callers building fixtures inline
+
+        llm_source = FakeLLMCandidateSource(candidates=llm_candidates)
+        validator = FakeCandidateValidator(outcomes=outcomes)
+        gs = google_scraper if google_scraper is not None else FakeGoogleScraper(results=serpapi_results)
+        service = DiscoveryService(
+            repo=repo, google_scraper=gs, website_fetcher=SimpleNamespace(),
+            candidate_validator=validator, matcher=SupplierMatcher(repo),
+            llm_candidate_source=llm_source,
+        )
+        return service, llm_source, gs
+
+    def test_off_by_default(self, repo):
+        from discovery.candidate_extractor import Candidate
+
+        candidate = Candidate(title="Spearhead Machinery", link="https://spearheadmachinery.com", snippet="", domain="spearheadmachinery.com")
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        service, llm_source, _ = self._augmented_service(
+            repo, llm_candidates=[candidate], serpapi_results=results,
+            outcomes={"acmetrailer.com": ValidationResult(
+                candidate, True, "Acme Trailer Co", None, 95.0, "validated",
+            )},
+        )
+
+        service.discover("trailer axle")
+
+        assert llm_source.calls == []
+
+    def test_llm_candidates_run_ahead_of_the_serpapi_search(self, repo):
+        from discovery.candidate_extractor import Candidate
+
+        llm_candidate = Candidate(title="Spearhead Machinery", link="https://spearheadmachinery.com", snippet="", domain="spearheadmachinery.com")
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        service, llm_source, google_scraper = self._augmented_service(
+            repo, llm_candidates=[llm_candidate], serpapi_results=results,
+            outcomes={
+                "spearheadmachinery.com": ValidationResult(
+                    llm_candidate, True, "Spearhead Machinery", "UK", 95.0, "validated",
+                ),
+                "acmetrailer.com": ValidationResult(
+                    llm_candidate, True, "Acme Trailer Co", None, 95.0, "validated",
+                ),
+            },
+        )
+
+        outcome = service.discover("trailer axle", augment_with_llm=True)
+
+        assert llm_source.calls == [("trailer axle", None, 20)]
+        assert outcome.candidates_found == 2
+        assert outcome.candidates_validated == 2
+        assert len(google_scraper.queries) > 0  # the real search path still ran too
+
+    def test_llm_candidate_is_tagged_llm_discovery_provenance(self, repo):
+        from discovery.candidate_extractor import Candidate
+
+        llm_candidate = Candidate(title="Spearhead Machinery", link="https://spearheadmachinery.com", snippet="", domain="spearheadmachinery.com")
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        service, _, _ = self._augmented_service(
+            repo, llm_candidates=[llm_candidate], serpapi_results=results,
+            outcomes={
+                "spearheadmachinery.com": ValidationResult(
+                    llm_candidate, True, "Spearhead Machinery", "UK", 95.0, "validated",
+                ),
+                "acmetrailer.com": ValidationResult(
+                    llm_candidate, True, "Acme Trailer Co", None, 95.0, "validated",
+                ),
+            },
+        )
+
+        service.discover("trailer axle", augment_with_llm=True)
+
+        from storage.database import connection_scope
+        with connection_scope(repo.db_path) as conn:
+            llm_rows = conn.execute("SELECT * FROM raw_source_data WHERE source = 'llm-discovery'").fetchall()
+            serp_rows = conn.execute("SELECT * FROM raw_source_data WHERE source = 'discovery'").fetchall()
+        assert len(llm_rows) == 1
+        assert len(serp_rows) == 1
+
+    def test_llm_candidates_fill_the_budget_before_serpapi_tops_up(self, repo):
+        from discovery.candidate_extractor import Candidate
+
+        llm_candidate = Candidate(title="Spearhead Machinery", link="https://spearheadmachinery.com", snippet="", domain="spearheadmachinery.com")
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        service, llm_source, google_scraper = self._augmented_service(
+            repo, llm_candidates=[llm_candidate], serpapi_results=results,
+            outcomes={
+                "spearheadmachinery.com": ValidationResult(
+                    llm_candidate, True, "Spearhead Machinery", "UK", 95.0, "validated",
+                ),
+            },
+        )
+
+        outcome = service.discover("trailer axle", augment_with_llm=True, max_candidates=1)
+
+        # The single budget slot went to the LLM-sourced candidate --
+        # the SerpAPI search never had room to contribute one.
+        assert outcome.candidates_found == 1
+
+    def test_same_domain_from_both_sources_is_deduplicated(self, repo):
+        from discovery.candidate_extractor import Candidate
+
+        llm_candidate = Candidate(title="Acme Trailer Co", link="https://acmetrailer.com", snippet="", domain="acmetrailer.com")
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        service, _, _ = self._augmented_service(
+            repo, llm_candidates=[llm_candidate], serpapi_results=results,
+            outcomes={"acmetrailer.com": ValidationResult(
+                llm_candidate, True, "Acme Trailer Co", None, 95.0, "validated",
+            )},
+        )
+
+        outcome = service.discover("trailer axle", augment_with_llm=True)
+
+        assert outcome.candidates_found == 1
+
+    def test_llm_augmentation_failure_does_not_block_the_serpapi_path(self, repo):
+        from discovery.candidate_extractor import Candidate
+
+        results = [_search_result("https://acmetrailer.com/", title="Acme Trailer Co", snippet="trailer axle manufacturer")]
+        candidate = Candidate(title="Acme Trailer Co", link="https://acmetrailer.com/", snippet="trailer axle manufacturer", domain="acmetrailer.com")
+
+        class ExplodingLLMSource:
+            def find_candidates(self, product, country=None, max_candidates=20):
+                raise RuntimeError("llm blew up")
+
+        validator = FakeCandidateValidator(outcomes={"acmetrailer.com": ValidationResult(
+            candidate, True, "Acme Trailer Co", None, 95.0, "validated",
+        )})
+        service = DiscoveryService(
+            repo=repo, google_scraper=FakeGoogleScraper(results=results), website_fetcher=SimpleNamespace(),
+            candidate_validator=validator, matcher=SupplierMatcher(repo),
+            llm_candidate_source=ExplodingLLMSource(),
+        )
+
+        outcome = service.discover("trailer axle", augment_with_llm=True)  # must not raise
+
+        assert outcome.candidates_found == 1
+
+
 class TestDiscoverRejectsAndRecordsEvidence:
 
     def test_rejected_candidate_is_not_created_but_is_recorded(self, repo):

@@ -271,11 +271,45 @@ class DiscoveryService:
         sic_codes: Optional[List[str]] = None,
         sic_name_keywords: Optional[List[str]] = None,
         deep_collect: bool = False,
+        augment_with_llm: bool = False,
     ) -> DiscoveryOutcome:
         """`target_count`, `progress_callback`, `recover_dead_domains`,
-        and `sic_codes` are all additive, default-None/False/unset --
-        every existing caller (main.py discover, sourcing.sourcing_agent.
-        SourcingAgentService, every existing test) is unaffected.
+        `sic_codes`, and `augment_with_llm` are all additive, default-
+        None/False/unset -- every existing caller (main.py discover,
+        sourcing.sourcing_agent.SourcingAgentService, every existing
+        test) is unaffected.
+
+        `augment_with_llm`, only meaningful with `source="serpapi"` (the
+        default), runs discovery.llm_candidate_source.LLMCandidateSource
+        FIRST -- ahead of, not instead of, the real-search path -- and
+        feeds its resulting candidates into the exact same
+        CandidateValidator.validate() gate every SerpAPI-sourced
+        candidate already goes through (real fetch, grounded name
+        corroboration, product-term match, trader exclusion); nothing
+        it proposes is ever trusted on its own. Real gap this closes:
+        `source="llm"` already existed as a SEPARATE, whole-run source,
+        but discover_to_target()'s own round order only ever reached it
+        as Round 3's last resort, after two full SerpAPI rounds already
+        ran -- for a category where the model's own knowledge recalls
+        real companies a generic "<product> manufacturer" search phrase
+        doesn't surface near the top of results (found live: GRIMME,
+        JCB, Kverneland, and Spearhead Machinery never appeared among a
+        real "agricultural equipment manufacturers in the UK" SerpAPI
+        run's own top candidates at all), that recall was only ever
+        reached after paying for two exhausted real-search rounds
+        first. LLM-sourced candidates here fill the SAME `max_candidates`
+        budget FIRST (same "don't let the base templates starve out a
+        prioritised source" precedent query_builder.py's own
+        `extra_role_words` already established), tagged
+        raw_source="llm-discovery" same as `source="llm"` already uses
+        (so verification.scorer.SOURCE_QUALITY_WEIGHTS still treats this
+        provenance as weaker than an independently-corroborated SerpAPI
+        hit); the SerpAPI templates then top up whatever budget remains.
+        A real extra cost per call: LLMCandidateSource's own several
+        prompt variations, one real SerpAPI search each for a
+        name-only proposal (see LLMCandidateSource's own
+        website_finder), on top of whatever the SerpAPI templates below
+        already cost.
 
         `sic_codes`, required when `source="companies_house_sic"` (see
         discovery/companies_house_sic_source.py's own docstring), is a
@@ -419,14 +453,31 @@ class DiscoveryService:
         if source == "1688":
             return self._discover_1688(product, category, max_candidates, outcome)
 
+        all_candidates = []
+        seen_domains: set = set()
+        llm_domains: set = set()
+
+        if augment_with_llm:
+            try:
+                llm_candidates, llm_stats = self.llm_candidate_source.find_candidates(
+                    product, country=country, max_candidates=max_candidates,
+                )
+            except Exception as e:  # noqa: BLE001 -- an LLM-augmentation failure must never block the real-search path below
+                logger.error("discovery: LLM augmentation failed for product=%r: %s", product, e)
+                llm_candidates = []
+            for candidate in llm_candidates:
+                if candidate.domain in seen_domains:
+                    continue
+                seen_domains.add(candidate.domain)
+                llm_domains.add(candidate.domain)
+                all_candidates.append(candidate)
+
         queries = build_queries(
             product, category=category, country=country,
             application=application, key_specifications=key_specifications,
             domain_tld_bias=domain_tld_bias, extra_role_words=extra_role_words,
         )
 
-        all_candidates = []
-        seen_domains: set = set()
         for query in queries:
             if len(all_candidates) >= max_candidates:
                 break
@@ -447,7 +498,8 @@ class DiscoveryService:
 
         for candidate in all_candidates:
             self._process_candidate(
-                candidate, product, country, outcome, raw_source="discovery",
+                candidate, product, country, outcome,
+                raw_source="llm-discovery" if candidate.domain in llm_domains else "discovery",
                 progress_callback=progress_callback, recover_dead_domains=recover_dead_domains,
                 deep_collect=deep_collect,
             )
@@ -471,12 +523,17 @@ class DiscoveryService:
         recover_dead_domains: bool = False,
         check_trade_source: bool = False,
         deep_collect: bool = False,
+        augment_with_llm: bool = False,
     ) -> DiscoveryToTargetOutcome:
         """Round-based "keep going until N validated suppliers are
         found, but stop well before unbounded spend" orchestrator built
         entirely on top of the existing discover() -- no new
         candidate-finding or validation logic, just a cost-bounded loop
-        over it. `max_multiplier=5` matches
+        over it. `augment_with_llm`, threaded unchanged into Round 1 and
+        Round 2's own discover() calls (see that method's own docstring
+        for the full behaviour) -- Round 3 is already source="llm" on
+        its own, so this has no additional effect there. `max_multiplier=5`
+        matches
         sourcing.sourcing_agent.SourcingAgentService's own
         DEFAULT_MAX_MULTIPLIER, so the two mechanisms share the same
         cost-governance philosophy even though they're separate code
@@ -671,6 +728,7 @@ class DiscoveryService:
             domain_tld_bias=domain_tld_bias, source="serpapi",
             target_count=remaining_target, progress_callback=_stamped_callback(1),
             recover_dead_domains=recover_dead_domains, deep_collect=deep_collect,
+            augment_with_llm=augment_with_llm,
         )
         result.rounds_run = 1
         _merge(outcome1)
@@ -694,6 +752,7 @@ class DiscoveryService:
             domain_tld_bias=domain_tld_bias, source="serpapi", extra_role_words=role_words,
             target_count=remaining_target - result.candidates_validated, progress_callback=_stamped_callback(2),
             recover_dead_domains=recover_dead_domains, deep_collect=deep_collect,
+            augment_with_llm=augment_with_llm,
         )
         result.rounds_run = 2
         _merge(outcome2)

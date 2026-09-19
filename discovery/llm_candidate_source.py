@@ -35,6 +35,27 @@ this codebase's own supplier data), and a Mandarin-phrased prompt
 genuinely surfaces different recall from the same underlying model than
 an English one does, not a translation of it.
 
+Website lookup for a name-only proposal: rule 3 originally required the
+model to state a website for every company, dropping any company it
+couldn't also name a URL for -- a real recall loss found live on an
+"agricultural equipment manufacturers UK" run, where the model could
+confidently name real, well-known companies (e.g. Spearhead Machinery,
+Kverneland) it had genuine knowledge of, without being equally
+confident of their exact domain string. Rule 3 now allows `website:
+null` for a company the model is still specifically confident exists;
+find_candidates() then calls the SAME real search-and-validate lookup
+(`scrapers.company_website_finder.CompanyWebsiteFinder.find_website`)
+batch/static-list-import already uses for the analogous "we have a
+name but no URL" problem, rather than reimplementing it. This is a
+REAL extra SerpAPI search + HTTP fetch per name-only proposal, on top
+of whatever this module already cost -- and per the module's own
+opening paragraph, whatever domain this step finds is still just
+another Candidate handed to CandidateValidator.validate(), the exact
+same real fetch + grounded-extraction + product-term + trader gate
+every other candidate (SerpAPI-sourced or LLM-sourced-with-a-known-
+website) already goes through. GPT proposing a name -- with or without
+a website -- is never trusted on its own either way.
+
 SYSTEM_PROMPT's rule 5 was rewritten after a real, reproducible finding:
 the original wording ("It is completely fine to return an empty list
 ... an empty list is far better than a guess") caused gpt-4o-mini at
@@ -65,7 +86,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from deduplication.domain_utils import extract_domain
 from discovery.candidate_extractor import Candidate
@@ -79,7 +100,7 @@ SYSTEM_PROMPT = """You are a sourcing research assistant helping a procurement t
 Rules, strictly enforced:
 1. Only name a company if you have real, specific confidence it exists and actually manufactures the given product. If you are not sure, or you are only guessing based on the industry in general, OMIT that company entirely -- do not include it "just in case."
 2. Never invent a company name, website, or location. Every field must be something you actually know, not a plausible-sounding guess.
-3. A website is required for every company. If you don't know a company's real website, omit that company.
+3. Include the company's real website if you know it. If you don't know its exact website but are still specifically confident the company exists and makes this product, include it anyway with "website" set to null -- do not omit a real, known company just because you're unsure of its exact URL; the website will be looked up separately.
 4. Do not repeat the same company more than once in your answer.
 5. Do not pad the list with uncertain or pattern-guessed companies just to have entries -- name only companies you are specifically, individually confident about. If a genuinely thin-knowledge product category leaves you with very few or zero such companies, that is an accurate answer; but always report every company you DO have real confidence in first.
 
@@ -103,8 +124,11 @@ class GenerationStats:
     validation onward; this covers what happens before that."""
     variations_run: int = 0
     raw_generated: int = 0             # every (name, website) pair the LLM returned, across all variations, before any filtering
-    dropped_incomplete: int = 0        # missing company_name or website
+    dropped_incomplete: int = 0        # missing/blank company_name (website is no longer required here -- see website_lookup_* below)
     dropped_unusable_domain: int = 0   # platform/social/directory domain, or a Cloudflare-internal path
+    website_lookup_attempted: int = 0  # name-only proposals (no website given) that triggered a real CompanyWebsiteFinder search+fetch
+    website_lookup_resolved: int = 0   # of those, how many found a validated real website
+    dropped_website_not_found: int = 0  # name-only proposals where the lookup found nothing trustworthy
     deduplicated: int = 0              # unique candidates remaining after cross-variation domain dedup
 
 
@@ -112,8 +136,41 @@ class LLMCandidateSource:
     """Mirrors CandidateValidator's own injectable-LLMClient convention
     exactly (`llm_client: Optional[LLMClient] = None`)."""
 
-    def __init__(self, llm_client: Optional[LLMClient] = None):
+    def __init__(self, llm_client: Optional[LLMClient] = None, website_finder: Optional[Any] = None):
         self.llm_client = llm_client or LLMClient()
+        # Only needed for a name-only proposal (see SYSTEM_PROMPT's rule
+        # 3 and this module's own docstring) -- lazily constructed like
+        # every other collaborator in this codebase, safe to build
+        # without credentials, never touched otherwise. Real cost:
+        # scrapers.company_website_finder.CompanyWebsiteFinder.find_website
+        # is one real SerpAPI search + one real HTTP fetch, only spent
+        # when the model itself couldn't already name a website.
+        #
+        # Deferred to the `website_finder` property below, NOT built
+        # here -- GoogleSearchScraper()/OwnWebsiteScraper() each carry a
+        # real ~0.2-0.4s construction cost of their own (an httpx client
+        # setup, not a network call), and DiscoveryService.__init__
+        # unconditionally builds one LLMCandidateSource() by default.
+        # Building it eagerly here was a real, confirmed regression:
+        # every DiscoveryService construction that doesn't override
+        # llm_candidate_source (the vast majority of this codebase's own
+        # discovery_service tests) paid that cost even when source="llm"
+        # is never used, adding ~35s to tests/test_discovery_service.py
+        # alone. Lazy construction on first actual use keeps every
+        # existing caller's cost unchanged.
+        self._website_finder = website_finder
+
+    @property
+    def website_finder(self) -> Any:
+        if self._website_finder is None:
+            from scrapers.company_website_finder import CompanyWebsiteFinder
+            from scrapers.google_search_scraper import GoogleSearchScraper
+            from scrapers.own_website_scraper import OwnWebsiteScraper
+
+            self._website_finder = CompanyWebsiteFinder(
+                google_scraper=GoogleSearchScraper(), own_website_scraper=OwnWebsiteScraper(),
+            )
+        return self._website_finder
 
     def _build_prompt_variations(self, product: str, country: Optional[str]) -> List[str]:
         """Mechanical string building, no LLM call here -- mirrors
@@ -174,21 +231,48 @@ class LLMCandidateSource:
                 stats.raw_generated += 1
 
                 company_name = item.get("company_name")
-                website = item.get("website")
-                if (
-                    not isinstance(company_name, str) or not company_name.strip()
-                    or not isinstance(website, str) or not website.strip()
-                ):
+                if not isinstance(company_name, str) or not company_name.strip():
                     stats.dropped_incomplete += 1
                     continue
+                company_name = company_name.strip()
 
-                if _is_cloudflare_internal_path(website):
-                    stats.dropped_unusable_domain += 1
-                    continue
-                domain = extract_domain(website)
-                if not _is_usable_candidate_domain(domain):
-                    stats.dropped_unusable_domain += 1
-                    continue
+                website = item.get("website")
+                link = website.strip() if isinstance(website, str) and website.strip() else None
+
+                if link is None:
+                    # Name-only proposal (SYSTEM_PROMPT's rule 3) --
+                    # look up a real website the same way batch/static-
+                    # list-import already does for a name with no URL,
+                    # rather than dropping a company the model is
+                    # otherwise specifically confident about. Never
+                    # trusted on its own either: find_website() already
+                    # does its own real fetch + fuzzy name-match
+                    # validation, and whatever it finds still goes
+                    # through the exact same CandidateValidator.validate()
+                    # gate every other candidate does, below.
+                    stats.website_lookup_attempted += 1
+                    try:
+                        finding = self.website_finder.find_website(company_name, country=country)
+                    except Exception as e:  # noqa: BLE001 -- one bad lookup must never abort the whole generation pass
+                        logger.warning(
+                            "llm_candidate_source: website lookup failed for %r: %s", company_name, e,
+                        )
+                        stats.dropped_website_not_found += 1
+                        continue
+                    if not finding.validated or not finding.domain:
+                        stats.dropped_website_not_found += 1
+                        continue
+                    stats.website_lookup_resolved += 1
+                    link = finding.candidate_url or finding.domain
+                    domain = finding.domain
+                else:
+                    if _is_cloudflare_internal_path(link):
+                        stats.dropped_unusable_domain += 1
+                        continue
+                    domain = extract_domain(link)
+                    if not _is_usable_candidate_domain(domain):
+                        stats.dropped_unusable_domain += 1
+                        continue
 
                 if domain in seen_domains:
                     continue
@@ -196,8 +280,8 @@ class LLMCandidateSource:
 
                 why_relevant = item.get("why_relevant")
                 candidates.append(Candidate(
-                    title=company_name.strip(),
-                    link=website.strip(),
+                    title=company_name,
+                    link=link,
                     snippet=why_relevant.strip() if isinstance(why_relevant, str) else "",
                     domain=domain,
                 ))

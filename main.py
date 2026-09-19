@@ -500,11 +500,20 @@ def verify_facilities(force: bool, limit: int) -> None:
                    "those stay as-is), search the company name once more and validate the top "
                    "result through the SAME real gate -- zero special trust for a recovered "
                    "candidate. Real extra SerpAPI+fetch+OpenAI cost per dead candidate.")
+@click.option("--augment-with-llm", is_flag=True, default=False,
+              help="Only meaningful with --source serpapi (the default): runs "
+                   "discovery.llm_candidate_source.LLMCandidateSource FIRST, ahead of the real "
+                   "SerpAPI search, feeding its proposals into the exact same validation gate "
+                   "every other candidate goes through -- never trusted on its own. Fills "
+                   "--limit's budget first; the SerpAPI templates top up whatever remains. "
+                   "Real extra cost: several LLM prompt variations, plus one real SerpAPI "
+                   "search+fetch per name the model doesn't already know a website for. See "
+                   "DiscoveryService.discover()'s own docstring for the real run this closes.")
 def discover(
     product_arg: Optional[str], product_opt: Optional[str], category: Optional[str],
     country: Optional[str], source: str, sic_codes: Optional[str], sic_name_keywords: Optional[str],
     max_candidates: int, domain_bias: Optional[str], require_uk_registration: bool,
-    role_words: Optional[str], recover_dead_domains: bool,
+    role_words: Optional[str], recover_dead_domains: bool, augment_with_llm: bool,
 ) -> None:
     """AI-assisted supplier discovery. Every accepted supplier traces to a
     real fetched website and that website's own text corroborating the
@@ -542,7 +551,7 @@ def discover(
         product, category=category, country=country, max_candidates=max_candidates, source=source,
         domain_tld_bias=domain_bias, extra_role_words=role_words_list,
         recover_dead_domains=recover_dead_domains, sic_codes=sic_codes_list,
-        sic_name_keywords=sic_name_keywords_list,
+        sic_name_keywords=sic_name_keywords_list, augment_with_llm=augment_with_llm,
     )
 
     if source == "1688":
