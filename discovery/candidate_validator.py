@@ -356,6 +356,31 @@ _TRADER_SOFT_SIGNAL_PATTERNS: tuple = (
         r"trade\s+accounts?.{0,80}(retailer|wholesaler)|(retailer|wholesaler).{0,80}trade\s+accounts?",
         re.I | re.DOTALL,
     ),
+    # "Shop by Brand" -- a navigation/category pattern specific to a
+    # multi-brand retail catalogue (browsing by WHICH third-party brand
+    # you want), never a single manufacturer's own site (a manufacturer
+    # has no "brands" to shop by other than itself). Added proactively
+    # per a design review, not yet confirmed against a real collision
+    # the way the patterns above were -- same curated, extend-as-needed
+    # discipline either way; watch for a false positive on a genuine
+    # multi-brand manufacturer conglomerate's own site if one surfaces.
+    re.compile(r"\bshop\s+by\s+brands?\b", re.I),
+    # "Dealer of Knott, AL-KO, and Erde"; "Distributors for X, Y, Z" --
+    # an explicit enumeration of two or more capitalised third-party
+    # brand names right after a reseller-role noun. Requires the
+    # brand-list shape (>=2 comma/and-separated capitalised tokens), not
+    # just the bare word "dealer"/"distributors" alone, to stay
+    # precision-over-recall like every other pattern in this set -- a
+    # genuine manufacturer's own page has no reason to enumerate several
+    # OTHER capitalised brand names right after that noun. Also added
+    # proactively (see "Shop by Brand" above); a real "multiple
+    # third-party manufacturer LOGOS" signal is a visual cue this
+    # text-only, single-cheap-fetch stage has no way to check -- would
+    # need an image-based pass, out of scope here.
+    re.compile(
+        r"\b(dealers?|distributors?|stockists?)\s+(of|for)\s+"
+        r"[A-Z][\w&'-]*(?:\s*,\s*[A-Z][\w&'-]*)+(?:\s*,?\s*and\s+[A-Z][\w&'-]*)?",
+    ),
 )
 
 

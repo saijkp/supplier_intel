@@ -953,6 +953,55 @@ class TestSoftTraderSignalExclusion:
 
         assert result.validated is True
 
+    def test_shop_by_brand_navigation_is_rejected(self):
+        """Proactively added (not yet confirmed against a real live
+        collision the way the patterns above were) -- a "Shop by Brand"
+        page/nav item is a multi-brand retail catalogue pattern no
+        single manufacturer's own site would ever need."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Trailer axle parts online. Shop by Brand: Knott, AL-KO, BPW and more.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is False
+        assert "matched soft signal" in result.reason
+
+    def test_dealer_of_enumerated_brands_is_rejected(self):
+        """Proactively added, same discipline as "Shop by Brand" above
+        -- an explicit "dealer of X, Y, Z" enumeration of third-party
+        brand names is a strong reseller signal, distinct from the bare
+        "distributors"/"dealer" mentions this file's other patterns
+        already have to stay narrow around."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co is a proud dealer of Knott, AL-KO, and BPW trailer axle components.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is False
+        assert "matched soft signal" in result.reason
+
+    def test_bare_mention_of_dealer_without_a_brand_list_is_not_rejected(self):
+        """The dealer-of-brands pattern requires the actual brand-list
+        shape (>=2 comma/and-separated capitalised tokens) -- a bare
+        mention of "dealer" with no enumerated third-party brands must
+        not trip it."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co manufactures trailer axle assemblies in-house. "
+                 "Interested in becoming a dealer of our products? Contact us today.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is True
+
 
 class TestMultiCategoryRetailerSignal:
     """Real bug this guards against: ECD Germany (ecdgermany.de) was

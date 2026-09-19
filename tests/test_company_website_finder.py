@@ -234,7 +234,7 @@ class TestExcludesNonCompanyDomains:
         for domain in ("factmr.com", "imarcgroup.com", "marketsandmarkets.com",
                         "freedoniagroup.com", "techsciresearch.com",
                         "coherentmarketinsights.com", "fortunebusinessinsights.com",
-                        "sciencedirect.com"):
+                        "sciencedirect.com", "kenresearch.com"):
             finder = _finder([FakeSearchResult(f"https://{domain}/report/agricultural-equipment")])
             result = finder.find_website("Acme Trailer Parts")
             assert result.domain is None, f"{domain} should have been excluded"

@@ -151,6 +151,14 @@ _NON_COMPANY_DOMAINS = {
     "factmr.com", "imarcgroup.com", "marketsandmarkets.com",
     "freedoniagroup.com", "techsciresearch.com", "coherentmarketinsights.com",
     "fortunebusinessinsights.com", "sciencedirect.com",
+    # kenresearch.com confirmed live on a LATER "agricultural equipment
+    # manufacturers United Kingdom" discovery run (with LLM augmentation
+    # enabled) -- same class, a real report titled "uk-agri-equipment-
+    # market" was created as a golden record ("Ken Research Pvt. Ltd.")
+    # before this addition, via the exact same gate-6-deeper-page-
+    # recovery mechanism the first batch of these domains was found
+    # through.
+    "kenresearch.com",
     # Farm/agricultural trade media and news publishers -- same
     # "saturated with the category's own vocabulary, never a
     # manufacturer's own site" reasoning as the market-research
