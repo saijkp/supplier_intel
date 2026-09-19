@@ -222,6 +222,37 @@ class TestExcludesNonCompanyDomains:
             result = finder.find_website("Acme Trailer Parts")
             assert result.domain is None, f"{domain} should have been excluded"
 
+    def test_market_research_publisher_domains_are_skipped(self):
+        """Real bug this guards against: on a real "agricultural
+        equipment manufacturers in the UK" discovery run, factmr.com,
+        imarcgroup.com, and marketsandmarkets.com all burned a
+        candidate slot and went all the way through to a created golden
+        record -- gate 6's own deeper-page fallback happily recovers on
+        one of these publishers' own report pages, which genuinely
+        mentions the searched product term, so no content-level gate
+        alone catches this; only excluding the domain up front does."""
+        for domain in ("factmr.com", "imarcgroup.com", "marketsandmarkets.com",
+                        "freedoniagroup.com", "techsciresearch.com",
+                        "coherentmarketinsights.com", "fortunebusinessinsights.com",
+                        "sciencedirect.com"):
+            finder = _finder([FakeSearchResult(f"https://{domain}/report/agricultural-equipment")])
+            result = finder.find_website("Acme Trailer Parts")
+            assert result.domain is None, f"{domain} should have been excluded"
+
+    def test_farm_trade_media_domains_are_skipped(self):
+        """Real bug this guards against: fwi.co.uk (Farmers Weekly) was
+        validated as "MA Agriculture Ltd" on a real discovery run -- the
+        grounded LLM extraction correctly quoted a company name that
+        genuinely appears in one of Farmers Weekly's own articles, but
+        that's a company the ARTICLE mentions, not the owner of the
+        fwi.co.uk domain. A content-level gate can't catch this (the
+        extracted name is real and grounded, just attributed to the
+        wrong domain) -- only excluding the domain itself does."""
+        for domain in ("fwi.co.uk", "farmprogress.com", "farm-equipment.com"):
+            finder = _finder([FakeSearchResult(f"https://{domain}/machinery/tractors/some-article")])
+            result = finder.find_website("Acme Trailer Parts")
+            assert result.domain is None, f"{domain} should have been excluded"
+
     def test_all_results_excluded_reports_no_candidate_found(self):
         finder = _finder([
             FakeSearchResult("https://facebook.com/acme"),

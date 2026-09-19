@@ -132,6 +132,38 @@ _NON_COMPANY_DOMAINS = {
     # domain="service", suffix="gov.uk"), so this one entry covers
     # every *.service.gov.uk subdomain.
     "service.gov.uk",
+    # Market-research/industry-report publishers -- rank highly for
+    # exactly the "<product> manufacturer/supplier" queries this
+    # codebase's own search discipline generates (their whole business
+    # is publishing reports ABOUT a category, so their pages are
+    # saturated with the category's own vocabulary), and a report/
+    # about-us page fetched from one is never a manufacturer's own
+    # site. Confirmed live on a real "agricultural equipment
+    # manufacturers in the UK" discovery run: factmr.com, imarcgroup.com,
+    # marketsandmarkets.com, and freedoniagroup.com all burned a
+    # candidate slot each, three of them ("Fact.MR", "IMARC Group",
+    # "MarketsandMarkets") going all the way through to a created golden
+    # record before this fix -- gate 6's own deeper-page fallback
+    # (see discovery/candidate_validator.py) happily recovers on one of
+    # these sites' own report pages, which genuinely does mention the
+    # searched product term, so content-level gates alone can't catch
+    # this class; only excluding the domain up front does.
+    "factmr.com", "imarcgroup.com", "marketsandmarkets.com",
+    "freedoniagroup.com", "techsciresearch.com", "coherentmarketinsights.com",
+    "fortunebusinessinsights.com", "sciencedirect.com",
+    # Farm/agricultural trade media and news publishers -- same
+    # "saturated with the category's own vocabulary, never a
+    # manufacturer's own site" reasoning as the market-research
+    # publishers just above, confirmed live on the same run: fwi.co.uk
+    # (Farmers Weekly) was validated as "MA Agriculture Ltd" -- the
+    # grounded LLM extraction correctly quoted a company name that
+    # genuinely appears in one of Farmers Weekly's own articles, but
+    # that is a company MENTIONED BY the article, not the owner of the
+    # fwi.co.uk domain -- a content-level gate can never catch this
+    # specific failure mode (the extracted name is real and grounded,
+    # just attributed to the wrong domain), so excluding the domain
+    # itself is the only fix that closes it.
+    "fwi.co.uk", "farmprogress.com", "farm-equipment.com",
 }
 
 # Stock-photo/media platforms -- never a company's own site, same
