@@ -1312,7 +1312,7 @@ function supplierCard(s, i, opts) {
   opts = opts || {};
   const evidenceOnly = !!opts.evidenceOnly;
   return `
-    <article class="card" style="animation-delay:${Math.min(i * 35, 280)}ms">
+    <article class="card" data-supplier-id="${s.id}" style="animation-delay:${Math.min(i * 35, 280)}ms">
       <div class="card-head">
         <div>
           <h3 class="card-name">${esc(s.canonical_name)}</h3>
@@ -1707,6 +1707,33 @@ function sourcingDossierSection(dossier) {
   return evidenceSection("Procurement fit for this brief", rows.join(""));
 }
 
+// Named (not inline in findRenderResultsScreen's own .map()) so
+// refreshFindResultCard can rebuild exactly one card in place after a
+// per-supplier job completes, without re-rendering the whole results
+// screen -- see that function's own docstring for the real "Done, but
+// nothing changed on screen" bug this closes.
+function findResultCard(b, isNew, category) {
+  // data-is-new/data-category persist the two bits of context that
+  // aren't part of the supplier record itself, so refreshFindResultCard
+  // can rebuild an identical card later from a fresh GET
+  // /audit/suppliers/{id} bundle alone, without needing to re-run the
+  // whole discovery job's own new/duplicate bookkeeping.
+  return `<div class="find-result-card" data-supplier-id="${b.supplier_id}" data-is-new="${isNew ? "1" : "0"}" data-category="${esc(category || "")}" style="border:1px solid var(--rule);border-radius:8px;padding:14px;margin-bottom:12px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap">
+      <div>
+        <div class="card-name">${esc(b.canonical_name || "")}</div>
+        <div class="card-meta">${b.domain ? `<a href="https://${esc(b.domain)}" target="_blank" rel="noopener">${esc(b.domain)}</a>` : ""}${b.country ? " · " + esc(b.country) : ""}</div>
+      </div>
+      <span class="badge ${isNew ? "mfr" : "warn"}">${isNew ? "new" : "already in your database"}</span>
+    </div>
+    ${sourcingDossierSection(b.sourcing_dossier)}
+    ${renderAuditDetail(b, {includeVerdict: false, category})}
+    <div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">
+      ${coreEnrichButtonsHtml(b.supplier_id)}
+    </div>
+  </div>`;
+}
+
 async function findRenderResultsScreen(host, jobId, newIds, duplicateIds, category) {
   // Real bug found live: a supplier id can repeat WITHIN
   // duplicateIds itself (two different candidates in the same run
@@ -1764,23 +1791,7 @@ async function findRenderResultsScreen(host, jobId, newIds, duplicateIds, catego
       <tbody>${summaryRows}</tbody>
     </table>`;
 
-    const cards = bundles.map(b => {
-      const isNew = newSet.has(b.supplier_id);
-      return `<div class="find-result-card" style="border:1px solid var(--rule);border-radius:8px;padding:14px;margin-bottom:12px">
-        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap">
-          <div>
-            <div class="card-name">${esc(b.canonical_name || "")}</div>
-            <div class="card-meta">${b.domain ? `<a href="https://${esc(b.domain)}" target="_blank" rel="noopener">${esc(b.domain)}</a>` : ""}${b.country ? " · " + esc(b.country) : ""}</div>
-          </div>
-          <span class="badge ${isNew ? "mfr" : "warn"}">${isNew ? "new" : "already in your database"}</span>
-        </div>
-        ${sourcingDossierSection(b.sourcing_dossier)}
-        ${renderAuditDetail(b, {includeVerdict: false, category})}
-        <div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">
-          ${coreEnrichButtonsHtml(b.supplier_id)}
-        </div>
-      </div>`;
-    }).join("");
+    const cards = bundles.map(b => findResultCard(b, newSet.has(b.supplier_id), category)).join("");
     host.innerHTML = `
       <div style="display:flex;gap:8px;margin-bottom:12px">
         <button class="btn btn-ghost" data-download-job="${esc(jobId)}" data-format="csv">Download CSV</button>
@@ -2325,6 +2336,47 @@ async function triggerSupplierJob(btn, path, body, alertHost) {
   pollSupplierJobButton(btn, original, job.id, alertHost);
 }
 
+// After a per-supplier job (reverify/contacts/factory-facts) completes
+// successfully, the card on screen was still built from data fetched
+// BEFORE the job ran -- the job wrote real new fields server-side
+// (factory facts, address, contact details, ...), but nothing ever
+// re-fetched them. Real bug found live: "Extract factory facts" showed
+// "Done" with no visible change, because the stale pre-job snapshot
+// stayed on screen regardless. Re-fetches and replaces the enclosing
+// card in place; returns true if it found and replaced one, false if
+// there was nothing recognisable to refresh (caller falls back to the
+// plain "Done ✓" button reset in that case, same as before this
+// existed). Handles both card shapes this button appears in:
+// supplierCard() (Search tab, keyed by GET /suppliers/{id}) and
+// findResultCard() (Find Suppliers results screen, keyed by GET
+// /audit/suppliers/{id}) -- distinguished by which wrapper class
+// data-supplier-id is found on.
+async function refreshSupplierCard(btn) {
+  const cardEl = btn.closest("[data-supplier-id]");
+  if (!cardEl) return false;
+  const supplierId = cardEl.dataset.supplierId;
+  try {
+    let html;
+    if (cardEl.classList.contains("find-result-card")) {
+      const bundle = await api(`/audit/suppliers/${supplierId}`);
+      html = findResultCard(bundle, cardEl.dataset.isNew === "1", cardEl.dataset.category || undefined);
+    } else if (cardEl.tagName === "ARTICLE" && cardEl.classList.contains("card")) {
+      const fresh = await api(`/suppliers/${supplierId}`);
+      html = supplierCard(fresh, 0, {});
+    } else {
+      return false;
+    }
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = html;
+    cardEl.replaceWith(wrapper.firstElementChild);
+    return true;
+  } catch (e) {
+    // A refresh failure must never be worse than the pre-existing
+    // behaviour -- fall through to the caller's plain "Done ✓" reset.
+    return false;
+  }
+}
+
 async function pollSupplierJobButton(btn, original, jobId, alertHost) {
   let job;
   try {
@@ -2344,6 +2396,8 @@ async function pollSupplierJobButton(btn, original, jobId, alertHost) {
     alertBox(alertHost || $("searchAlert"), 1, "Job failed", esc(job.error || "Unknown error"));
     return;
   }
+  const refreshed = await refreshSupplierCard(btn);
+  if (refreshed) return;
   btn.textContent = "Done ✓";
   setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
 }
@@ -3298,6 +3352,29 @@ function renderAuditDetail(b, opts = {}) {
       evidenceRow("Registered office", ch.registered_office),
       evidenceRow("Incorporated", ch.incorporated_at),
       evidenceRow("Checked at", ch.checked_at),
+    ].join("")));
+  }
+
+  // verification/factory_facts_extractor.py's production-line/
+  // machinery/factory-ownership facts, plus collection/site_collector.py's
+  // certificate document downloads -- only present for a supplier a
+  // "Extract factory facts" job (or, for certificates, a Collect job)
+  // has processed. Real gap this closes: this section didn't exist
+  // here at all before, so a completed factory-facts job was invisible
+  // in both the Find Suppliers results screen and the Audit tab.
+  const ff = b.factory_facts || {};
+  const certDocs = b.certificate_document_urls || [];
+  if (ff.production_lines_notes || ff.machinery_notes || ff.factory_ownership || certDocs.length) {
+    const certHtml = certDocs.length
+      ? `<div class="evidence-row"><span class="evidence-label">Certificate documents</span>${
+          certDocs.map(doc => `<a href="${esc(doc.url)}" target="_blank" rel="noopener">${esc(doc.filename || doc.url)}</a>`).join(", ")
+        }</div>`
+      : "";
+    sections.push(evidenceSection("Factory facts", [
+      evidenceRow("Production lines", ff.production_lines_notes),
+      evidenceRow("Machinery", ff.machinery_notes),
+      evidenceRow("Factory ownership", ff.factory_ownership),
+      certHtml,
     ].join("")));
   }
 

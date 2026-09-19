@@ -706,4 +706,22 @@ def build_supplier_evidence_bundle(
             "payment_terms_notes": supplier.get("sourcing_payment_terms_notes"),
             "verification_status": supplier.get("sourcing_verification_status"),
         },
+        # Only ever populated by verification/factory_facts_extractor.py
+        # (POST /factory-facts/jobs) -- production-line/machinery/
+        # factory-ownership facts extracted from the supplier's own
+        # website, plus collection/site_collector.py's certificate
+        # document downloads. None/empty on every field for a supplier
+        # never run through either. Real gap this closes: GET
+        # /audit/suppliers/{id} (backing the Find Suppliers results
+        # screen and the Audit tab) never returned these fields at all
+        # before now -- only GET /suppliers/{id}'s SupplierSearchResult
+        # shape did, so a factory-facts job completing was invisible in
+        # either of those two views regardless of whether the page
+        # re-rendered afterward.
+        "factory_facts": {
+            "production_lines_notes": supplier.get("production_lines_notes"),
+            "machinery_notes": supplier.get("machinery_notes"),
+            "factory_ownership": supplier.get("factory_ownership"),
+        },
+        "certificate_document_urls": list(supplier.get("certificate_document_urls") or []),
     }

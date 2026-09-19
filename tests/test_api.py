@@ -1624,6 +1624,38 @@ class TestAuditVerdictEndpoint:
         response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
         assert response.json()["sourcing_dossier"]["oem_odm_notes"] is None
 
+    def test_get_audit_supplier_bundle_includes_factory_facts(self, client):
+        """Real bug this guards against: a completed POST /factory-facts/jobs
+        run (verification/factory_facts_extractor.py) never showed up
+        anywhere in the Find Suppliers results screen or the Audit tab
+        -- this bundle never returned production_lines_notes/
+        machinery_notes/factory_ownership/certificate_document_urls at
+        all, only GET /suppliers/{id}'s separate SupplierSearchResult
+        shape did."""
+        supplier_id = client.repo.create_golden_record({
+            "canonical_name": "Acme Winch Co",
+            "production_lines_notes": "Two CNC production lines for winch drums.",
+            "machinery_notes": "5-axis CNC machining centres, in-house.",
+            "factory_ownership": "owned",
+            "certificate_document_urls": [{"url": "https://acme.example/iso9001.pdf", "filename": "iso9001.pdf"}],
+        })
+
+        response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["factory_facts"]["production_lines_notes"] == "Two CNC production lines for winch drums."
+        assert body["factory_facts"]["machinery_notes"] == "5-axis CNC machining centres, in-house."
+        assert body["factory_facts"]["factory_ownership"] == "owned"
+        assert body["certificate_document_urls"] == [{"url": "https://acme.example/iso9001.pdf", "filename": "iso9001.pdf"}]
+
+    def test_factory_facts_fields_are_none_when_never_run(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Never Extracted Co"})
+        response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
+        body = response.json()
+        assert body["factory_facts"]["production_lines_notes"] is None
+        assert body["certificate_document_urls"] == []
+
     def test_get_audit_supplier_bundle_surfaces_a_real_collection_failure_reason(self, client):
         """A totally-blocked site (e.g. iwt.co.uk returning HTTP 403 on
         every URL variant tried) and a genuinely-empty-but-reachable
