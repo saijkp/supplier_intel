@@ -2282,15 +2282,58 @@ $("fCountry").addEventListener("keydown", e => { if (e.key === "Enter") runSearc
 async function triggerSupplierJob(btn, path, body, alertHost) {
   const original = btn.textContent;
   btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Queuing`;
+  let job;
   try {
-    await api(path, { method: "POST", body: JSON.stringify(body) });
-    btn.textContent = "Queued ✓";
+    job = await api(path, { method: "POST", body: JSON.stringify(body) });
   } catch (err) {
-    btn.textContent = original;
+    btn.disabled = false; btn.textContent = original;
     explain(err, alertHost || $("searchAlert"));
-  } finally {
-    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
+    return;
   }
+  // Real bug: this used to stop right here -- the POST fires (a real
+  // /reverify, /contacts/jobs, or /factory-facts/jobs 202) and the
+  // button resets to "Queued ✓" on a bare timer regardless of whether
+  // the job actually succeeded, failed, or is still running seconds
+  // later. Confirmed via Railway logs on a real factory-facts run: the
+  // POST fired and no follow-up call to the job ever happened, so a
+  // failure was silently invisible in the UI. Poll the SAME
+  // /pipeline/jobs/{id} endpoint pollSingleCompanyJob/
+  // pollFindDiscoveryJob already use, same shape, just driving this
+  // shared per-supplier button instead of the Find Suppliers screen.
+  if (!job || !job.id) {
+    // Defensive only -- every job-creating endpoint this function is
+    // used for (reverify/contacts/factory-facts) returns a
+    // PipelineJobResponse with an `id`. Degrade to the old
+    // fire-and-forget behaviour rather than poll forever on an
+    // unexpected response shape.
+    btn.textContent = "Queued ✓";
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
+    return;
+  }
+  pollSupplierJobButton(btn, original, job.id, alertHost);
+}
+
+async function pollSupplierJobButton(btn, original, jobId, alertHost) {
+  let job;
+  try {
+    job = await api(`/pipeline/jobs/${jobId}`);
+  } catch (err) {
+    btn.disabled = false; btn.textContent = original;
+    explain(err, alertHost || $("searchAlert"));
+    return;
+  }
+  if (job.status === "queued" || job.status === "running") {
+    btn.innerHTML = `<span class="spin"></span> Working`;
+    setTimeout(() => pollSupplierJobButton(btn, original, jobId, alertHost), 3000);
+    return;
+  }
+  if (job.status === "failed") {
+    btn.disabled = false; btn.textContent = original;
+    alertBox(alertHost || $("searchAlert"), 1, "Job failed", esc(job.error || "Unknown error"));
+    return;
+  }
+  btn.textContent = "Done ✓";
+  setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
 }
 
 // "Enrich" (data-reverify-id) + "Extract factory facts" (data-factory-
