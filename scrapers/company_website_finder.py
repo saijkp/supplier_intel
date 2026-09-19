@@ -159,6 +159,13 @@ _NON_COMPANY_DOMAINS = {
     # recovery mechanism the first batch of these domains was found
     # through.
     "kenresearch.com",
+    # researchandmarkets.com and marketdataforecast.com confirmed live
+    # on a real production run of the deployed app itself (not a local
+    # test) -- both created as golden records ("Research and Markets",
+    # "Market Data Forecast") for the same "agricultural equipment
+    # manufacturers" category, same class as every other entry in this
+    # group.
+    "researchandmarkets.com", "marketdataforecast.com",
     # Farm/agricultural trade media and news publishers -- same
     # "saturated with the category's own vocabulary, never a
     # manufacturer's own site" reasoning as the market-research
