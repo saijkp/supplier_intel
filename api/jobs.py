@@ -360,6 +360,7 @@ def run_discovery_job(job_id: str, options: Dict[str, Any]) -> None:
                 recover_dead_domains=options.get("recover_dead_domains", False),
                 check_trade_source=options.get("check_trade_source", False),
                 deep_collect=options.get("deep_collect", False),
+                augment_with_llm=options.get("augment_with_llm", False),
             )
         else:
             outcome = service.discover(
@@ -368,6 +369,7 @@ def run_discovery_job(job_id: str, options: Dict[str, Any]) -> None:
                 progress_callback=on_progress,
                 recover_dead_domains=options.get("recover_dead_domains", False),
                 deep_collect=options.get("deep_collect", False),
+                augment_with_llm=options.get("augment_with_llm", False),
             )
         repo.mark_pipeline_job_completed(job_id, stats=dataclasses.asdict(outcome))
     except Exception as e:

@@ -683,6 +683,12 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
               <option value="llm">AI's own knowledge -- no search cost, less current/complete</option>
             </select>
           </div>
+          <div class="field" id="findAugmentWithLLMField">
+            <label class="check">
+              <input type="checkbox" id="findAugmentWithLLM">
+              <span>Also ask AI for known companies first, ahead of the real search (only with "Real search results" above) -- a real company the AI already knows about but the search phrasing doesn't surface still goes through the same full verification as every other candidate. Adds real search+AI cost per company named.</span>
+            </label>
+          </div>
         </div>
         <button class="btn btn-ghost btn-sm hidden" id="btnFindBriefToggle" style="margin:8px 0">Paste a detailed brief instead &rarr;</button>
         <div class="field hidden" id="findBriefBlock">
@@ -1494,6 +1500,7 @@ $("findInput").addEventListener("input", findRenderMode);
 $("findTargetCount").addEventListener("input", findRenderMode);
 $("findRecoverDeadDomains").addEventListener("change", findRenderMode);
 $("findDeepCollect").addEventListener("change", findRenderMode);
+$("findAugmentWithLLM").addEventListener("change", findRenderMode);
 
 function findRenderCostNote(c) {
   const host = $("findCostNote");
@@ -1505,6 +1512,9 @@ function findRenderCostNote(c) {
     : $("findDeepCollect").checked
       ? " Deep collect is on: adds a real headless-browser visit (roughly 5-30s) per new supplier found."
       : "";
+  const augmentNote = $("findAugmentWithLLM").checked
+    ? " AI-first candidates is on: several extra AI calls, plus a real search+fetch for each named company the AI doesn't already know a website for."
+    : "";
   if (c.kind === "url") {
     host.textContent = "Cost: near-zero — one website visit, no paid search call.";
   } else if (c.kind === "company") {
@@ -1512,9 +1522,9 @@ function findRenderCostNote(c) {
   } else if (c.kind === "product" && c.targetCount) {
     const ceiling = c.targetCount * 5;
     host.textContent = `Cost: up to ${ceiling} candidates examined (target ${c.targetCount} × 5) — each costs at most a free website visit and ` +
-      `(only if it passes the free marketplace/name checks) one small AI call. Up to ~8 search queries across up to 2 rounds before a last-resort AI-knowledge fallback.${recoverNote}${deepCollectNote}`;
+      `(only if it passes the free marketplace/name checks) one small AI call. Up to ~8 search queries across up to 2 rounds before a last-resort AI-knowledge fallback.${recoverNote}${deepCollectNote}${augmentNote}`;
   } else if (c.kind === "product") {
-    host.textContent = `Cost: a real search plus a small AI check per candidate found — start small, or give a target count for a bounded run.${recoverNote}${deepCollectNote}`;
+    host.textContent = `Cost: a real search plus a small AI check per candidate found — start small, or give a target count for a bounded run.${recoverNote}${deepCollectNote}${augmentNote}`;
   } else {
     host.textContent = "";
   }
@@ -1941,6 +1951,8 @@ $("btnFindGo").addEventListener("click", async () => {
       if (country) { body.country = country; }
       if (maxCandidates) { body.max_candidates = Number(maxCandidates); }  // ignored by the backend when target_count is set -- see DiscoveryJobRequest's own doc
       if (source && source !== "serpapi") { body.source = source; }
+      // Only meaningful with source="serpapi" -- see DiscoveryJobRequest's own doc.
+      if ((!source || source === "serpapi") && $("findAugmentWithLLM").checked) { body.augment_with_llm = true; }
       const job = await api("/discovery/jobs", { method: "POST", body: JSON.stringify(body) });
       pollFindDiscoveryJob(job.id, category);
     }

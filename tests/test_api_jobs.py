@@ -438,13 +438,15 @@ class FakeDiscoveryService:
         FakeDiscoveryService.last_instance = self
 
     def discover(self, product, category=None, country=None, max_candidates=20, source="serpapi",
-                 progress_callback=None, recover_dead_domains=False, deep_collect=False):
+                 progress_callback=None, recover_dead_domains=False, deep_collect=False,
+                 augment_with_llm=False):
         from discovery.discovery_service import DiscoveryOutcome
 
         self.last_discover_call = {
             "product": product, "category": category, "country": country,
             "max_candidates": max_candidates, "source": source,
             "recover_dead_domains": recover_dead_domains, "deep_collect": deep_collect,
+            "augment_with_llm": augment_with_llm,
         }
         if progress_callback:
             from discovery.discovery_service import DiscoveryProgressEvent
@@ -458,14 +460,14 @@ class FakeDiscoveryService:
 
     def discover_to_target(self, product, target_count, category=None, country=None, max_multiplier=5,
                             progress_callback=None, recover_dead_domains=False, check_trade_source=False,
-                            deep_collect=False):
+                            deep_collect=False, augment_with_llm=False):
         from discovery.discovery_service import DiscoveryToTargetOutcome
 
         self.last_discover_to_target_call = {
             "product": product, "target_count": target_count, "category": category,
             "country": country, "max_multiplier": max_multiplier,
             "recover_dead_domains": recover_dead_domains, "check_trade_source": check_trade_source,
-            "deep_collect": deep_collect,
+            "deep_collect": deep_collect, "augment_with_llm": augment_with_llm,
         }
         return DiscoveryToTargetOutcome(
             product=product, target_count=target_count, ceiling=target_count * max_multiplier,
@@ -476,7 +478,8 @@ class FakeDiscoveryService:
 
 class FailingFakeDiscoveryService(FakeDiscoveryService):
     def discover(self, product, category=None, country=None, max_candidates=20, source="serpapi",
-                 progress_callback=None, recover_dead_domains=False, deep_collect=False):
+                 progress_callback=None, recover_dead_domains=False, deep_collect=False,
+                 augment_with_llm=False):
         raise RuntimeError("search API down")
 
 
@@ -495,7 +498,7 @@ class TestRunDiscoveryJob:
         assert call == {
             "product": "trailer axle", "category": "Axles", "country": "China",
             "max_candidates": 15, "source": "serpapi", "recover_dead_domains": False,
-            "deep_collect": False,
+            "deep_collect": False, "augment_with_llm": False,
         }
         job = repo.get_pipeline_job("job50")
         assert job["status"] == "completed"
@@ -511,7 +514,7 @@ class TestRunDiscoveryJob:
         assert FakeDiscoveryService.last_instance.last_discover_call == {
             "product": "trailer axle", "category": None, "country": None,
             "max_candidates": 20, "source": "serpapi", "recover_dead_domains": False,
-            "deep_collect": False,
+            "deep_collect": False, "augment_with_llm": False,
         }
 
     def test_source_llm_is_passed_through(self, repo, monkeypatch):
@@ -544,7 +547,8 @@ class TestRunDiscoveryJob:
 
         class DuplicateFiringDiscoveryService(FakeDiscoveryService):
             def discover(self, product, category=None, country=None, max_candidates=20, source="serpapi",
-                         progress_callback=None, recover_dead_domains=False, deep_collect=False):
+                         progress_callback=None, recover_dead_domains=False, deep_collect=False,
+                         augment_with_llm=False):
                 if progress_callback:
                     progress_callback(DiscoveryProgressEvent(
                         domain="acmetrailer.com", candidate_title="Acme Trailer Co", extracted_name="Acme Trailer Co",
@@ -584,7 +588,7 @@ class TestRunDiscoveryJob:
         class ExistingMatchFiringDiscoveryService(FakeDiscoveryService):
             def discover_to_target(self, product, target_count, category=None, country=None, max_multiplier=5,
                                     progress_callback=None, recover_dead_domains=False, check_trade_source=False,
-                                    deep_collect=False):
+                                    deep_collect=False, augment_with_llm=False):
                 if progress_callback:
                     progress_callback(DiscoveryProgressEvent(
                         domain="already-in-db.com", candidate_title="Known Co", extracted_name="Known Co",
@@ -646,7 +650,7 @@ class TestRunDiscoveryJob:
         assert instance.last_discover_to_target_call == {
             "product": "forklift", "target_count": 10, "category": None,
             "country": None, "max_multiplier": 4, "recover_dead_domains": False,
-            "check_trade_source": False, "deep_collect": False,
+            "check_trade_source": False, "deep_collect": False, "augment_with_llm": False,
         }
         job = repo.get_pipeline_job("job55")
         assert job["status"] == "completed"
@@ -711,6 +715,24 @@ class TestRunDiscoveryJob:
         jobs_module.run_discovery_job("job60", {"product": "forklift", "target_count": 10, "deep_collect": True})
 
         assert FakeDiscoveryService.last_instance.last_discover_to_target_call["deep_collect"] is True
+
+    def test_augment_with_llm_passed_through_to_plain_discover(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "DiscoveryService", FakeDiscoveryService)
+
+        repo.create_pipeline_job(job_id="job61", query="[discovery] agricultural equipment manufacturers",
+                                  options={"product": "agricultural equipment manufacturers", "augment_with_llm": True})
+        jobs_module.run_discovery_job("job61", {"product": "agricultural equipment manufacturers", "augment_with_llm": True})
+
+        assert FakeDiscoveryService.last_instance.last_discover_call["augment_with_llm"] is True
+
+    def test_augment_with_llm_passed_through_to_discover_to_target(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "DiscoveryService", FakeDiscoveryService)
+
+        repo.create_pipeline_job(job_id="job62", query="[discovery] forklift",
+                                  options={"product": "forklift", "target_count": 10, "augment_with_llm": True})
+        jobs_module.run_discovery_job("job62", {"product": "forklift", "target_count": 10, "augment_with_llm": True})
+
+        assert FakeDiscoveryService.last_instance.last_discover_to_target_call["augment_with_llm"] is True
 
 
 class FakeCompanyWebsiteFinder:

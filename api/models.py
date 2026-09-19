@@ -341,6 +341,18 @@ class DiscoveryJobRequest(BaseModel):
                      "(roughly 5-30s) per validated candidate, naturally bounded by target_count -- "
                      "for a target of N, up to ~N x 30s of extra time on top of the search itself.",
     )
+    augment_with_llm: bool = Field(
+        default=False,
+        description="Opt-in, only meaningful with source='serpapi' (the default): runs "
+                     "discovery.llm_candidate_source.LLMCandidateSource FIRST, ahead of the real "
+                     "SerpAPI search, feeding its proposals into the exact same validation gate "
+                     "every other candidate goes through -- never trusted on its own. Fills "
+                     "max_candidates' budget first (or, with target_count set, Round 1/2's own "
+                     "budget); the SerpAPI templates top up whatever remains. Real extra cost: "
+                     "several LLM prompt variations, plus one real SerpAPI search+fetch per name "
+                     "the model doesn't already know a website for. See "
+                     "DiscoveryService.discover()'s own docstring for the real run this closes.",
+    )
 
 
 class SingleCompanyEnrichRequest(BaseModel):

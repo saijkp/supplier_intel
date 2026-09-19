@@ -897,6 +897,22 @@ class TestDiscoveryJobEndpoints:
         job = client.repo.get_pipeline_job(job_id)
         assert job["options"]["deep_collect"] is True
 
+    def test_augment_with_llm_defaults_to_false(self, client):
+        response = client.post("/discovery/jobs", json={"product": "trailer axle"}, headers=auth_headers())
+        job_id = response.json()["id"]
+        job = client.repo.get_pipeline_job(job_id)
+        assert job["options"]["augment_with_llm"] is False
+
+    def test_augment_with_llm_accepted_and_stored(self, client):
+        response = client.post(
+            "/discovery/jobs", json={"product": "agricultural equipment manufacturers", "augment_with_llm": True},
+            headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        job_id = response.json()["id"]
+        job = client.repo.get_pipeline_job(job_id)
+        assert job["options"]["augment_with_llm"] is True
+
 
 class TestSingleCompanyEnrichEndpoint:
 
