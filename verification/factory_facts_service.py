@@ -119,6 +119,7 @@ class FactoryFactsService:
                 "production_lines_notes": result.production_lines_notes,
                 "machinery_notes": result.machinery_notes,
                 "factory_ownership": result.factory_ownership,
+                "factory_facts_verdict": result.verdict,
                 "factory_facts_extracted_at": now,
             },
             changed_by="factory_facts_service",
@@ -129,6 +130,7 @@ class FactoryFactsService:
             "supplier_id": supplier_id,
             "status": "extracted",
             "factory_ownership": result.factory_ownership,
+            "verdict": result.verdict,
         }
 
     def find_facts_pending(self, limit: int = 20, force: bool = False) -> Dict[str, Any]:

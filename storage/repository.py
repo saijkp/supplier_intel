@@ -105,7 +105,7 @@ SUPPLIER_WRITABLE_FIELDS: Sequence[str] = (
     "sourcing_verification_status", "key_contacts", "contacts_found_at",
     "ai_confidence_breakdown", "procurement_recommendation", "procurement_recommendation_reason",
     "certificate_document_urls", "production_lines_notes", "machinery_notes",
-    "factory_ownership", "factory_facts_extracted_at",
+    "factory_ownership", "factory_facts_verdict", "factory_facts_extracted_at",
     "companies_house_number", "companies_house_status", "companies_house_registered_office",
     "companies_house_incorporated_at", "companies_house_sic_codes",
     "companies_house_match_status", "companies_house_match_confidence", "companies_house_checked_at",

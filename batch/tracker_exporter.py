@@ -722,6 +722,7 @@ def build_supplier_evidence_bundle(
             "production_lines_notes": supplier.get("production_lines_notes"),
             "machinery_notes": supplier.get("machinery_notes"),
             "factory_ownership": supplier.get("factory_ownership"),
+            "verdict": supplier.get("factory_facts_verdict"),
         },
         "certificate_document_urls": list(supplier.get("certificate_document_urls") or []),
     }

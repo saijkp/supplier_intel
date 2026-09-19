@@ -240,6 +240,7 @@ def _to_search_result(row: Dict[str, Any]) -> SupplierSearchResult:
         production_lines_notes=row.get("production_lines_notes"),
         machinery_notes=row.get("machinery_notes"),
         factory_ownership=row.get("factory_ownership"),
+        factory_facts_verdict=row.get("factory_facts_verdict"),
         confirmed_shipments_uk=row.get("confirmed_shipments_uk") or 0,
         confirmed_shipments_eu=row.get("confirmed_shipments_eu") or 0,
         confirmed_shipments_us=row.get("confirmed_shipments_us") or 0,

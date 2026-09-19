@@ -1234,10 +1234,11 @@ function factoryFactsBlock(s) {
     ["Factory ownership", s.factory_ownership],
   ].filter(([, v]) => v);
   const certificates = s.certificate_document_urls || [];
-  if (!rows.length && !certificates.length) return "";
+  if (!rows.length && !certificates.length && !s.factory_facts_verdict) return "";
   return `
     <div class="ai-block" style="border-color:var(--steel-500);background:var(--paper)">
       <div class="section-rule" style="margin-top:0">Factory facts</div>
+      ${s.factory_facts_verdict ? `<p class="ai-summary" style="margin-top:6px"><strong>Verdict:</strong> ${esc(s.factory_facts_verdict)}</p>` : ""}
       ${rows.map(([label, val]) => `<p class="ai-summary" style="margin-top:6px"><strong>${esc(label)}:</strong> ${esc(val)}</p>`).join("")}
       ${certificates.length ? `
         <span class="ai-sublabel">Certificate documents</span>
@@ -3372,13 +3373,20 @@ function renderAuditDetail(b, opts = {}) {
   // in both the Find Suppliers results screen and the Audit tab.
   const ff = b.factory_facts || {};
   const certDocs = b.certificate_document_urls || [];
-  if (ff.production_lines_notes || ff.machinery_notes || ff.factory_ownership || certDocs.length) {
+  if (ff.production_lines_notes || ff.machinery_notes || ff.factory_ownership || ff.verdict || certDocs.length) {
     const certHtml = certDocs.length
       ? `<div class="evidence-row"><span class="evidence-label">Certificate documents</span>${
           certDocs.map(doc => `<a href="${esc(doc.url)}" target="_blank" rel="noopener">${esc(doc.filename || doc.url)}</a>`).join(", ")
         }</div>`
       : "";
-    sections.push(evidenceSection("Factory facts", [
+    // Verdict rendered as an ai-summary callout, not a plain evidence
+    // row -- same visual treatment aiBlock() already gives s.ai_summary,
+    // since this is a synthesized opinion (verification/
+    // factory_facts_extractor.py), not a raw extracted fact like the
+    // rows below it.
+    const verdictHtml = ff.verdict
+      ? `<p class="ai-summary" style="margin:0 0 8px"><strong>Verdict:</strong> ${esc(ff.verdict)}</p>` : "";
+    sections.push(evidenceSection("Factory facts", verdictHtml + [
       evidenceRow("Production lines", ff.production_lines_notes),
       evidenceRow("Machinery", ff.machinery_notes),
       evidenceRow("Factory ownership", ff.factory_ownership),

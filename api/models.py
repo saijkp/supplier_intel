@@ -81,6 +81,11 @@ class SupplierSearchResult(BaseModel):
     production_lines_notes: Optional[str] = None
     machinery_notes: Optional[str] = None
     factory_ownership: Optional[str] = None
+    # v32 -- short synthesized opinion generated in the SAME LLM call as
+    # the three raw fields above, see verification/factory_facts_extractor.py's
+    # own module docstring for why this exists (a buyer asked for a real
+    # assessment, not just raw fields to interpret themselves).
+    factory_facts_verdict: Optional[str] = None
     # Export/capacity evidence -- already-computed DB columns that were
     # never wired into the API response until the Compare/rank UI
     # needed them (see storage/database.py's TRADE INTELLIGENCE and

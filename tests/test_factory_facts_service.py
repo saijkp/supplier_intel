@@ -47,6 +47,7 @@ class FakeFactoryFactsExtractor:
                 production_lines_notes="Three production lines described.",
                 machinery_notes="Named CNC machines.",
                 factory_ownership="owned",
+                verdict="Real in-house production capability, owned premises.",
                 model_used="gpt-4o-mini",
             ) if result == "default" else result
         )
@@ -87,11 +88,13 @@ class TestFindFactsSingleSupplier:
 
         assert outcome["status"] == "extracted"
         assert outcome["factory_ownership"] == "owned"
+        assert outcome["verdict"] == "Real in-house production capability, owned premises."
         supplier = repo.get_supplier(supplier_id)
         assert supplier["factory_facts_extracted_at"] is not None
         assert supplier["production_lines_notes"] == "Three production lines described."
         assert supplier["machinery_notes"] == "Named CNC machines."
         assert supplier["factory_ownership"] == "owned"
+        assert supplier["factory_facts_verdict"] == "Real in-house production capability, owned premises."
 
     def test_raises_for_unknown_supplier(self, repo):
         service = FactoryFactsService(repo=repo, extractor=FakeFactoryFactsExtractor(), own_website_scraper=FakeOwnWebsiteScraper())

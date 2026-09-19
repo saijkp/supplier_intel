@@ -9,6 +9,19 @@ shared vs unclear). `employee_count`/`factory_size_sqm`/
 `year_established` already exist on the suppliers table (v1-v2); this
 is the next tier of factory evidence, not a replacement for those.
 
+Also produces `verdict` (suppliers.factory_facts_verdict, v32) -- a
+short, plain-English opinion synthesizing the three fields above into
+a real answer to "does this look like a genuine manufacturer," not
+just raw fields a buyer has to interpret themselves. Generated in the
+SAME LLM call as the raw facts (one more key in the same JSON schema),
+not a second one -- zero extra cost. Same grounding discipline as
+everything else here: the verdict may only draw on the production-
+lines/machinery/ownership evidence already given, never on outside
+knowledge of the company, and must say so explicitly when that
+evidence is too thin to support a real opinion (e.g. "Limited evidence
+available -- treat as inconclusive") rather than manufacturing false
+confidence.
+
 Uses the shared `llm.client.LLMClient` -- same grounded-only-JSON-
 prompt discipline `verification_ai/narrative_generator.py` and
 `sourcing/dossier_generator.py` already establish (positive
@@ -50,12 +63,14 @@ Rules, strictly enforced:
 1. Base every statement ONLY on the page content given below. Never invent production line counts, machinery names, or ownership details not present in the text.
 2. If there is no evidence for a field, say so explicitly (e.g. "No evidence of production line count found on the supplier's own website") rather than guessing or padding with generic language.
 3. For factory_ownership, use ONLY one of these four exact values: "owned" (the page states the company owns its factory/premises/land), "leased" (the page states the factory is rented/leased), "shared" (a shared facility, co-manufacturing arrangement, or shared workshop), "unclear" (no clear statement either way).
+4. For verdict, give a short (1-2 sentence) plain-English opinion on how credible this looks as a genuine manufacturing operation, based ONLY on production_lines_notes/machinery_notes/factory_ownership above -- never on any outside knowledge of this company. If that evidence is too thin to support a real opinion, say so explicitly (e.g. "Limited evidence available on production lines or machinery -- treat as inconclusive") rather than manufacturing confidence you don't have.
 
 Return ONLY a JSON object with exactly these keys, no other text:
 {
   "production_lines_notes": "1-3 sentence plain-English note on production line count/type, or an explicit statement that no evidence was found",
   "machinery_notes": "1-3 sentence plain-English note on named machinery/equipment, or an explicit statement that no evidence was found",
-  "factory_ownership": "owned" | "leased" | "shared" | "unclear"
+  "factory_ownership": "owned" | "leased" | "shared" | "unclear",
+  "verdict": "1-2 sentence plain-English opinion synthesizing the above, or an explicit statement that evidence is too thin for one"
 }"""
 
 
@@ -85,6 +100,7 @@ class FactoryFactsResult:
     production_lines_notes: str
     machinery_notes: str
     factory_ownership: str  # always one of VALID_OWNERSHIP_VALUES
+    verdict: str
     model_used: str = ""
 
 
@@ -118,9 +134,11 @@ class FactoryFactsExtractor:
             ownership = "unclear"  # soft-corrected -- see module docstring
 
         fallback = "No evidence available to assess this."
+        verdict = _clean_text(raw.get("verdict")) or "Limited evidence available -- treat as inconclusive."
         return FactoryFactsResult(
             production_lines_notes=production_lines_notes or fallback,
             machinery_notes=machinery_notes or fallback,
             factory_ownership=ownership,
+            verdict=verdict,
             model_used=self.llm_client.text_model,
         )

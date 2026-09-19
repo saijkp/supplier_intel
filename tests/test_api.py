@@ -1667,6 +1667,7 @@ class TestAuditVerdictEndpoint:
             "production_lines_notes": "Two CNC production lines for winch drums.",
             "machinery_notes": "5-axis CNC machining centres, in-house.",
             "factory_ownership": "owned",
+            "factory_facts_verdict": "Real, in-house production capability -- consistent with a genuine manufacturer.",
             "certificate_document_urls": [{"url": "https://acme.example/iso9001.pdf", "filename": "iso9001.pdf"}],
         })
 
@@ -1677,6 +1678,7 @@ class TestAuditVerdictEndpoint:
         assert body["factory_facts"]["production_lines_notes"] == "Two CNC production lines for winch drums."
         assert body["factory_facts"]["machinery_notes"] == "5-axis CNC machining centres, in-house."
         assert body["factory_facts"]["factory_ownership"] == "owned"
+        assert body["factory_facts"]["verdict"] == "Real, in-house production capability -- consistent with a genuine manufacturer."
         assert body["certificate_document_urls"] == [{"url": "https://acme.example/iso9001.pdf", "filename": "iso9001.pdf"}]
 
     def test_factory_facts_fields_are_none_when_never_run(self, client):
@@ -1684,6 +1686,7 @@ class TestAuditVerdictEndpoint:
         response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
         body = response.json()
         assert body["factory_facts"]["production_lines_notes"] is None
+        assert body["factory_facts"]["verdict"] is None
         assert body["certificate_document_urls"] == []
 
     def test_get_audit_supplier_bundle_surfaces_a_real_collection_failure_reason(self, client):

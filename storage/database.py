@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 
 
 # ═══════════════════════════════════════════════════════════
@@ -255,6 +255,7 @@ CREATE TABLE IF NOT EXISTS suppliers (
     production_lines_notes         TEXT,
     machinery_notes                TEXT,
     factory_ownership               TEXT,        -- no DB CHECK -- see MIGRATIONS[15]'s own comment for why
+    factory_facts_verdict          TEXT,         -- v32 -- short synthesized opinion, see MIGRATIONS[32]'s own comment
     factory_facts_extracted_at     TIMESTAMP,    -- set on every attempt, matched or not -- same discipline as capability_extracted_at/contacts_found_at
 
     -- Catalogue-depth evidence (v24) -- see verification/catalogue_depth_service.py.
@@ -1706,6 +1707,23 @@ MIGRATIONS: dict[int, dict] = {
         ),
         "columns": [
             ("pipeline_jobs", "updated_at", "TIMESTAMP"),
+        ],
+    },
+    32: {
+        "description": (
+            "suppliers.factory_facts_verdict -- a short (1-2 sentence) plain-"
+            "English opinion synthesizing production_lines_notes/machinery_notes/"
+            "factory_ownership into a real answer to \"does this look like a "
+            "genuine manufacturer\" (verification/factory_facts_extractor.py), "
+            "not just raw structured fields a buyer has to interpret themselves. "
+            "Same single-LLM-call cost as before -- generated from the exact "
+            "same already-paid-for factory-facts extraction call, not a second "
+            "one. Real gap this closes: a buyer asked for exactly this after "
+            "the raw factory-facts fields shipped -- a plain \"Owned, one CNC "
+            "line\" reads as data, not as an assessment."
+        ),
+        "columns": [
+            ("suppliers", "factory_facts_verdict", "TEXT"),
         ],
     },
 }

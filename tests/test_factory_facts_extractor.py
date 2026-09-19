@@ -40,6 +40,7 @@ class TestFactoryFactsExtractor:
             "production_lines_notes": "Three injection-moulding production lines described.",
             "machinery_notes": "Named CNC machining centres and a robotic welding cell.",
             "factory_ownership": "owned",
+            "verdict": "Real, in-house injection-moulding capability with owned premises -- consistent with a genuine manufacturer.",
         })
         extractor = FactoryFactsExtractor(llm_client=client)
 
@@ -48,7 +49,20 @@ class TestFactoryFactsExtractor:
         assert result.production_lines_notes == "Three injection-moulding production lines described."
         assert result.machinery_notes == "Named CNC machining centres and a robotic welding cell."
         assert result.factory_ownership == "owned"
+        assert result.verdict == "Real, in-house injection-moulding capability with owned premises -- consistent with a genuine manufacturer."
         assert result.model_used == "gpt-4o-mini"
+
+    def test_missing_verdict_falls_back_to_an_inconclusive_message(self):
+        """The verdict must never be silently blank -- a caller reading
+        result.verdict always gets a real sentence, either the model's
+        own synthesis or an honest "not enough evidence" fallback."""
+        client = FakeLLMClient(response={
+            "production_lines_notes": "Some notes.", "machinery_notes": "Some notes.",
+            "factory_ownership": "owned",
+        })
+        extractor = FactoryFactsExtractor(llm_client=client)
+        result = extractor.extract_from_pages([_page()])
+        assert result.verdict == "Limited evidence available -- treat as inconclusive."
 
     def test_invalid_ownership_value_is_soft_corrected_to_unclear(self):
         client = FakeLLMClient(response={
