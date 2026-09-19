@@ -178,6 +178,64 @@ class TestCandidateValidator:
         result = validator.validate(_candidate(), "trailer axle")
         assert result.validated is False
 
+    def test_formal_legal_name_diverging_from_brand_name_still_validates(self):
+        """Real bug: gate 5's fuzz.partial_ratio alone rejected GRIMME
+        (a genuine agricultural equipment manufacturer) because its own
+        page states its full legal name, "GRIMME Landmaschinenfabrik SE
+        & Co. KG", while the search result only ever shows the brand
+        "GRIMME" -- the extracted name shares no useful substring
+        alignment with the short brand form. The short brand name IS
+        literally the long legal name's own first word, so the
+        lead-word fallback should catch this."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="GRIMME Landmaschinenfabrik SE & Co. KG is a leading agricultural equipment manufacturer.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "GRIMME Landmaschinenfabrik SE & Co. KG", "country": "Germany"})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(
+            _candidate(title="GRIMME", snippet="Agricultural equipment manufacturer"),
+            "agricultural equipment",
+        )
+
+        assert result.validated is True
+        assert result.extracted_name == "GRIMME Landmaschinenfabrik SE & Co. KG"
+
+    def test_brand_initialism_of_a_formal_legal_name_still_validates(self):
+        """Real bug: same pattern as GRIMME above, but the short brand
+        ("JCB") is an INITIALISM of the long legal name ("JC Bamford
+        Excavators Ltd."), not a literal substring of it -- exercises
+        the acronym fallback, not the lead-word one."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="JC Bamford Excavators Ltd. manufactures agricultural equipment worldwide.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "JC Bamford Excavators Ltd.", "country": "United Kingdom"})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(
+            _candidate(title="JCB", snippet="Agricultural equipment manufacturer"),
+            "agricultural equipment",
+        )
+
+        assert result.validated is True
+        assert result.extracted_name == "JC Bamford Excavators Ltd."
+
+    def test_brand_name_fallback_does_not_rescue_a_genuinely_unrelated_company(self):
+        """The brand-name fallback must stay additive-only -- it must
+        not turn a correct rejection into a false accept just because
+        an unrelated extracted name happens to share a short, generic
+        acronym-shaped prefix with something in the haystack."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(text="Welcome to Totally Different Corp.")])
+        llm = FakeLLMClient(response={"company_name": "Totally Different Corp", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(
+            _candidate(title="Acme Trailer Co", snippet="trailer axle manufacturer"), "trailer axle",
+        )
+
+        assert result.validated is False
+        assert "does not match the original search result" in result.reason
+
 
 class TestGate6DeeperPageFallback:
     """Real incident: Trailer Engineering's homepage (bowsers/tankers/

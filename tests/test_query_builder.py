@@ -7,7 +7,7 @@ no network.
 
 from __future__ import annotations
 
-from discovery.query_builder import build_queries
+from discovery.query_builder import build_queries, clean_product_query
 
 
 class TestBuildQueries:
@@ -42,6 +42,50 @@ class TestBuildQueries:
         queries = build_queries("trailer axle")
         for query in queries:
             assert "China" not in query
+
+
+class TestCleanProductQuery:
+    """Real bug this guards against: a raw natural-language query typed
+    straight into main.py discover's PRODUCT argument or POST
+    /discovery/jobs's `product` (neither runs through sourcing.
+    brief_parser.BriefParser's LLM-based cleanup) was passed unparsed
+    all the way to build_queries() and discovery.candidate_validator's
+    gate 6, on a real "find me AGRICULTURAL EQUIPMENT MANUFACTURERS in
+    the UK" run -- rejecting every genuine manufacturer on wording
+    alone."""
+
+    def test_real_world_query_reduces_to_the_core_phrase(self):
+        cleaned = clean_product_query("find me AGRICULTURAL EQUIPMENT MANUFACTURERS in the UK")
+        assert cleaned.lower() == "agricultural equipment manufacturers"
+
+    def test_already_clean_term_is_returned_unchanged(self):
+        assert clean_product_query("trailer axle") == "trailer axle"
+
+    def test_find_me_prefix_is_stripped(self):
+        assert clean_product_query("find me winch manufacturers") == "winch manufacturers"
+
+    def test_i_need_prefix_is_stripped(self):
+        assert clean_product_query("I need LED marker lights") == "LED marker lights"
+
+    def test_suppliers_of_prefix_is_stripped(self):
+        assert clean_product_query("find me suppliers of trailer axles") == "trailer axles"
+
+    def test_looking_for_prefix_is_stripped(self):
+        assert clean_product_query("I'm looking for winch manufacturers") == "winch manufacturers"
+
+    def test_trailing_region_qualifier_is_stripped(self):
+        assert clean_product_query("winch manufacturers in the UK") == "winch manufacturers"
+        assert clean_product_query("winch manufacturers in China") == "winch manufacturers"
+
+    def test_empty_input_is_returned_unchanged(self):
+        assert clean_product_query("") == ""
+        assert clean_product_query(None) == ""
+
+    def test_a_product_name_that_merely_contains_find_is_not_mangled(self):
+        """The filler-prefix patterns are anchored to the START of the
+        string -- a product whose own name happens to contain a filler
+        word mid-string must be left alone."""
+        assert clean_product_query("pathfinder winch") == "pathfinder winch"
 
     def test_category_does_not_break_query_building(self):
         """category is accepted for the CLI/API surface and

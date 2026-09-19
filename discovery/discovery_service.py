@@ -65,7 +65,7 @@ from discovery.candidate_validator import (
 )
 from discovery.companies_house_sic_source import CompaniesHouseSicSource
 from discovery.llm_candidate_source import LLMCandidateSource
-from discovery.query_builder import build_queries
+from discovery.query_builder import build_queries, clean_product_query
 from discovery.trade_source_finder import find_candidate_trade_source
 from storage.repository import SupplierRepository
 
@@ -339,6 +339,19 @@ class DiscoveryService:
         if source not in _VALID_SOURCES:
             raise ValueError(f"unknown discovery source {source!r} -- expected one of {_VALID_SOURCES}")
 
+        # Strips conversational wrapper phrasing a caller may have
+        # passed straight through raw (main.py discover's PRODUCT
+        # argument and POST /discovery/jobs's `product` both take
+        # free-text with no upstream LLM parsing step, unlike
+        # sourcing.brief_parser.BriefParser's own already-clean
+        # `product`) -- see clean_product_query()'s own docstring for
+        # the real "find me agricultural equipment manufacturers in
+        # the UK" run this closes. A no-op for an already-clean term.
+        cleaned_product = clean_product_query(product)
+        if cleaned_product != product:
+            logger.info("discovery: cleaned product query %r -> %r", product, cleaned_product)
+        product = cleaned_product
+
         outcome = DiscoveryOutcome()
 
         if source == "llm":
@@ -514,6 +527,19 @@ class DiscoveryService:
         Each round's progress events are stamped with their round number
         before being forwarded to `progress_callback`, so a live UI can
         show which round a given candidate came from."""
+        # Cleaned here too (not just inside discover()) so Phase 0's
+        # database search and the opt-in trade-source check below --
+        # neither of which ever reaches discover() itself -- also see
+        # the cleaned term, not raw conversational wrapper phrasing.
+        # See discover()'s own comment and clean_product_query()'s
+        # docstring for the real run this closes; a no-op for an
+        # already-clean term, so discover()'s own cleaning of the same
+        # (already-clean) value on each round below costs nothing.
+        cleaned_product = clean_product_query(product)
+        if cleaned_product != product:
+            logger.info("discovery: cleaned product query %r -> %r", product, cleaned_product)
+        product = cleaned_product
+
         role_words = extra_role_words if extra_role_words is not None else list(_DEFAULT_TARGET_COUNT_ROLE_WORDS)
         ceiling = target_count * max_multiplier
         result = DiscoveryToTargetOutcome(product=product, target_count=target_count, ceiling=ceiling)

@@ -35,8 +35,27 @@ A candidate is "validated" only if every gate passes:
 5. That extracted name fuzzy-matches the original search result
    (proves the fetched page is genuinely about the company the search
    surfaced, not an unrelated site that happens to share the domain).
+   fuzz.partial_ratio alone was found live to reject a real company
+   whose own page states its formal legal name while the search result
+   only ever shows its common brand name (GRIMME Landmaschinenfabrik
+   SE & Co. KG vs "GRIMME"; JC Bamford Excavators Ltd. vs "JCB") -- see
+   _brand_name_corroborates_haystack's own docstring for the additive
+   fallback (a literal lead-word match, or an initialism/acronym match)
+   this gate now also tries before rejecting.
 6. The fetched page text actually mentions the searched product term
-   -- a second, DETERMINISTIC keyword check, not another LLM call.
+   -- a second, DETERMINISTIC keyword check, not another LLM call. The
+   `product_term` this gate matches against is expected to already be
+   a clean product/category phrase, never raw conversational input --
+   discovery_service.discover()/discover_to_target() both run every
+   `product` string through discovery.query_builder.clean_product_query()
+   before it ever reaches this module (see that function's own
+   docstring for the real "find me agricultural equipment manufacturers
+   in the UK" run that motivated it: without cleaning, this gate was
+   checking whether a candidate's own page mentioned that literal
+   sentence, which no real manufacturer's page ever does). This module
+   itself does no cleaning -- callers bypassing discover()/
+   discover_to_target() (a test, a script) are responsible for passing
+   an already-clean term.
    Checks the CORE term only (a trailing "manufacturer"/"supplier"/
    "factory" qualifier -- query_builder.py's own templates always add
    one -- is stripped first, see _core_product_term), and is spelling-
@@ -133,6 +152,7 @@ from deduplication.domain_utils import (
     is_platform_subdomain,
 )
 from deduplication.name_utils import (
+    _GENERIC_NAME_WORDS,
     _distinctive_tokens,
     _shares_distinctive_token,
     normalise_company_name,
@@ -150,6 +170,88 @@ logger = logging.getLogger(__name__)
 # _DEFAULT_MIN_NAME_SIMILARITY uses for the analogous "is this really
 # the same company" question.
 _NAME_MATCH_THRESHOLD = 55.0
+
+
+def _brand_acronym(name: str) -> str:
+    """Lowercase acronym built from `name`'s significant words -- e.g.
+    "JC Bamford Excavators Ltd." -> "jcbe". A word that is itself short
+    (<=3 chars) and fully uppercase in the ORIGINAL text (e.g. "JC") is
+    treated as an existing multi-letter initialism and every one of its
+    own letters is kept, rather than collapsing it to a single initial
+    -- otherwise "JC Bamford Excavators" would only ever acronym to
+    "jbe", never anything starting "jcb", the actual brand JCB trades
+    under. Every other word contributes just its first letter.
+    Generic/legal words (see deduplication.name_utils._GENERIC_NAME_WORDS)
+    contribute nothing, same discipline _distinctive_tokens already
+    applies to whole-word name comparisons elsewhere in this file."""
+    letters = []
+    for word in re.findall(r"[A-Za-z0-9]+", name or ""):
+        lowered = word.lower()
+        if lowered in _GENERIC_NAME_WORDS:
+            continue
+        if len(word) <= 3 and word.isupper():
+            letters.extend(lowered)
+        else:
+            letters.append(lowered[0])
+    return "".join(letters)
+
+
+def _brand_name_corroborates_haystack(extracted_name: str, haystack: str) -> bool:
+    """Gate 5's fallback for when fuzz.partial_ratio alone rejects a
+    candidate whose formal legal name genuinely diverges from the
+    common brand name the original search result surfaced it under --
+    found live on a real "agricultural equipment manufacturers in the
+    UK" run: GRIMME's own page states its full legal name ("GRIMME
+    Landmaschinenfabrik SE & Co. KG"), but the search result only ever
+    shows the brand "GRIMME"; JC Bamford Excavators Ltd.'s own page
+    states that formal name, but the search result only ever shows
+    "JCB". Neither pair scores above _NAME_MATCH_THRESHOLD on
+    partial_ratio alone -- the extracted name is materially longer
+    than, and shares no useful substring alignment with, the short
+    brand form the haystack actually contains.
+
+    Two independent checks, either sufficient:
+    1. The extracted name's own leading distinctive word (its first
+       word, after stripping legal suffixes/punctuation via
+       normalise_company_name) appears verbatim as a whole word in the
+       haystack -- covers GRIMME, where the short brand name IS
+       literally the long legal name's first word.
+    2. The extracted name's computed acronym (see _brand_acronym)
+       starts with some whole word already present in the haystack --
+       covers JCB, an initialism of "JC Bamford", never a literal
+       substring of the long legal name at all.
+
+    Deliberately additive only, same discipline as gate 6's own
+    word-level fallback (_significant_words_all_match): tried ONLY
+    after fuzz.partial_ratio has already failed, so this can only ever
+    rescue a real candidate that check would have wrongly rejected --
+    never loosen the reject for one it correctly caught, since an
+    unrelated company's own haystack text has no structural reason to
+    contain either this extracted name's lead word or a matching
+    acronym prefix. recover()'s own separate corroboration-against-the-
+    ORIGINAL-name check (_shares_distinctive_token, see that method's
+    own docstring for the Apadrecoplastics/Adreco Plastics false match
+    this guards against) is untouched by this change -- this fallback
+    only ever affects gate 5's self-consistency check, never that
+    second, independent one."""
+    normalised = normalise_company_name(extracted_name)
+    words = normalised.split()
+    if not words:
+        return False
+
+    haystack_words = set(re.findall(r"[a-z0-9]+", (haystack or "").lower()))
+
+    lead_word = words[0]
+    if len(lead_word) >= 4 and lead_word not in _GENERIC_NAME_WORDS and lead_word in haystack_words:
+        return True
+
+    acronym = _brand_acronym(extracted_name)
+    if len(acronym) >= 2:
+        for word in haystack_words:
+            if len(word) >= 2 and acronym.startswith(word):
+                return True
+
+    return False
 
 # Mechanical, country-agnostic trader exclusion -- the codebase's only
 # other trader signal (verification.manufacturer_verifier, via Qichacha
@@ -1004,7 +1106,7 @@ class CandidateValidator:
         haystack = f"{candidate.title} {candidate.snippet}".lower()
         normalised_extracted = normalise_company_name(extracted_name)
         score = fuzz.partial_ratio(normalised_extracted, haystack)
-        if score < _NAME_MATCH_THRESHOLD:
+        if score < _NAME_MATCH_THRESHOLD and not _brand_name_corroborates_haystack(extracted_name, haystack):
             return ValidationResult(
                 candidate, False, extracted_name, extracted_country, score,
                 f"extracted name '{extracted_name}' does not match the original search result (score={score:.0f})",

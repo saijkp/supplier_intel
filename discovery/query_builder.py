@@ -11,7 +11,93 @@ anywhere in this module.
 
 from __future__ import annotations
 
+import re
 from typing import List, Optional
+
+# Conversational wrapper phrasing a buyer might type verbatim into a
+# product/category field instead of a bare product term -- found live
+# on a real "find me AGRICULTURAL EQUIPMENT MANUFACTURERS in the UK"
+# discovery run: before clean_product_query() existed, that whole
+# sentence was passed straight through to build_queries() (producing a
+# useless literal-phrase SerpAPI search for the entire sentence) AND to
+# discovery.candidate_validator's gate 6 (checking whether a
+# candidate's own page mentioned that exact sentence -- which no real
+# manufacturer's page ever does), rejecting every genuine candidate
+# (Spearhead Machinery, Kverneland, GRIMME, JCB) on wording alone, not
+# a real signal they weren't manufacturers. Curated, not a general NLP
+# parser -- same discipline as _SPELLING_VARIANTS/
+# _TRADER_SELF_DECLARATION_PHRASES in candidate_validator.py: extended
+# as a real query shape is found tripping this, not guessed
+# exhaustively in advance. Order matters -- a longer, more specific
+# prefix (e.g. "help me find") must be tried before a shorter one it
+# contains ("find") would otherwise match first and leave a dangling
+# "me " behind; clean_product_query() re-applies every pattern to a
+# fixpoint, so precise ordering only matters within a single pass.
+_FILLER_PREFIX_PATTERNS: tuple = tuple(
+    re.compile(pattern, re.I) for pattern in (
+        r"^\s*(please\s+)?(can you\s+)?help\s+me\s+find\s+",
+        r"^\s*(please\s+)?(can you\s+)?find\s+me\s+",
+        r"^\s*(i'?m|i\s+am|we'?re|we\s+are)\s+looking\s+for\s+",
+        r"^\s*looking\s+for\s+",
+        r"^\s*(please\s+)?search\s+for\s+",
+        r"^\s*(please\s+)?show\s+me\s+",
+        r"^\s*(i|we)\s+need\s+",
+        r"^\s*get\s+me\s+",
+        r"^\s*(please\s+)?find\s+",
+        r"^\s*(a\s+list\s+of|list\s+of)\s+",
+        r"^\s*(suppliers|manufacturers|producers|makers|sources|distributors)\s+of\s+",
+    )
+)
+
+# A trailing "in <region>" clause -- stripped only for a curated,
+# closed set of region names/synonyms (same "small closed set, exact
+# match only" discipline discovery.candidate_validator's own
+# _UK_COUNTRY_SYNONYMS already uses), never a general geography strip,
+# since "in <region>" could in principle be part of a product's own
+# name for a category not seen yet.
+_TRAILING_REGION_PATTERN = re.compile(
+    r"\s+in\s+(the\s+)?(uk|united kingdom|great britain|england|scotland|wales|"
+    r"northern ireland|us|usa|united states|eu|europe|china|india)\s*$",
+    re.I,
+)
+
+
+def clean_product_query(raw_product: str) -> str:
+    """Strips conversational wrapper phrasing from a raw, possibly
+    natural-language product/category string (e.g. "find me
+    agricultural equipment manufacturers in the UK") down to the core
+    phrase build_queries() and candidate_validator's gate 6 actually
+    need to match against ("agricultural equipment manufacturers").
+
+    A string with no recognised filler is returned byte-for-byte
+    unchanged -- this is a strip, never a rewrite or a re-casing, so a
+    caller that already passes a clean term (sourcing.brief_parser.
+    BriefParser's own LLM-extracted `product`, or a plain CLI
+    --product value) sees no change at all; re-cleaning an
+    already-clean term is a guaranteed no-op, so this is safe to call
+    unconditionally at every discovery entry point rather than only
+    the ones known to receive raw free text.
+
+    Deliberately NOT an LLM call -- this needs to run for free, on
+    every query, not gated behind a paid extra round-trip the way
+    sourcing.brief_parser.BriefParser's fuller brief parsing already is
+    for the sourcing-agent path specifically."""
+    text = (raw_product or "").strip()
+    if not text:
+        return text
+
+    stripped_any = True
+    while stripped_any:
+        stripped_any = False
+        for pattern in _FILLER_PREFIX_PATTERNS:
+            new_text = pattern.sub("", text).strip()
+            if new_text != text and new_text:
+                text = new_text
+                stripped_any = True
+
+    text = _TRAILING_REGION_PATTERN.sub("", text).strip()
+    return text or raw_product.strip()
+
 
 _QUERY_TEMPLATES: tuple = (
     '"{product}" manufacturer',
