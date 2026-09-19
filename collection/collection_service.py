@@ -55,6 +55,27 @@ meaning "Collect site"/"Verify (AI)" alone would never surface an
 email or phone for a freshly-discovered company, no matter how many
 times either ran.
 
+Address extraction: a successful collection also runs
+verification.address_extractor.attempt_address_extraction() over the
+same on-domain pages -- the exact same tiered-candidate/grounded-LLM
+extraction batch/batch_service.py and sourcing/sourcing_agent.py
+already use, reused here rather than reimplemented. This was a real
+gap: only those two callers ever populated suppliers.address, so any
+supplier enriched via the "Enrich" button (POST /suppliers/{id}/reverify)
+or a bulk POST /collection/jobs run -- the two most common paths to
+a collected supplier -- never got an address at all, no matter how
+many times either ran, even when the fetched contact/footer/impressum
+page plainly stated one. Confirmed live: every supplier a real
+Discovery Service run creates has collection_status=None and
+address=None until collected, and collecting them via this path alone
+left address empty regardless. One real extra OpenAI call per
+collection run (at most, tiered -- see attempt_address_extraction's
+own docstring), same cost class as the free contact-extraction pass
+right above it, not a new opt-in flag: CollectionService already
+constructs an LLMClient lazily (no key needed until actually called),
+matching every other collaborator's "safe to construct without
+credentials" contract in this codebase.
+
 Every typed phone number found (landline/mobile via
 phonenumbers.number_type(), whatsapp/wechat/fax via nearby-text
 context -- see website_contact_extractor.py) is saved to
@@ -98,7 +119,9 @@ from config.settings import (
 )
 from deduplication.domain_utils import domains_match, extract_domain
 from deduplication.name_utils import names_plausibly_corroborate
+from llm.client import LLMClient
 from storage.repository import SupplierRepository
+from verification.address_extractor import attempt_address_extraction
 from verification.website_contact_extractor import (
     best_contact_method,
     country_name_to_region_code,
@@ -139,12 +162,18 @@ class CollectionService:
         job_max_seconds: int = COLLECTION_JOB_MAX_SECONDS,
         parallel_workers: int = COLLECTION_PARALLEL_WORKERS,
         default_region_fallback: Optional[str] = None,
+        llm_client: Optional[LLMClient] = None,
     ):
         self.repo = repo or SupplierRepository()
         self.proxy_provider = proxy_provider or select_proxy_provider()
         self.site_collector = site_collector or SiteCollector(proxy_provider=self.proxy_provider)
         self.job_max_seconds = job_max_seconds
         self.parallel_workers = parallel_workers
+        # Backs the address-extraction pass in _extract_and_save_address
+        # -- lazily constructs a real OpenAI client on first use, not at
+        # construction time, same "safe to build without credentials"
+        # contract every other collaborator in this codebase follows.
+        self.llm_client = llm_client or LLMClient()
         # ISO 3166-1 alpha-2 fallback (e.g. "GB") used for phone parsing
         # ONLY when the supplier's own `country` isn't set yet -- always
         # true for a freshly-created supplier, since collect() runs
@@ -320,6 +349,7 @@ class CollectionService:
         contact_stats = {"contact_emails_added": 0, "contact_phones_added": 0, "contact_forms_recorded": 0}
         if success and on_domain_pages:
             contact_stats = self._extract_and_save_contact_details(supplier_id, supplier.get("country"), on_domain_pages)
+            self._extract_and_save_address(supplier_id, on_domain_pages)
 
         certificates_saved = 0
         if success and result.certificate_documents:
@@ -433,6 +463,23 @@ class CollectionService:
         except Exception as e:
             logger.error("collection: contact extraction failed for supplier #%s: %s", supplier_id, e)
         return stats
+
+    def _extract_and_save_address(self, supplier_id: int, pages: Any) -> None:
+        """Delegates to verification.address_extractor.attempt_address_extraction
+        -- the exact same tiered-candidate/grounded-LLM/trusted-value-guard
+        logic batch/batch_service.py and sourcing/sourcing_agent.py
+        already use, reused here rather than reimplemented (see this
+        module's own docstring for why this call was missing entirely
+        until now). Own try/except, same discipline as
+        _extract_and_save_contact_details immediately above -- an
+        extraction failure must never fail an otherwise-successful
+        collection."""
+        try:
+            attempt_address_extraction(
+                self.repo, self.llm_client, supplier_id, pages, changed_by="collection_service",
+            )
+        except Exception as e:
+            logger.error("collection: address extraction failed for supplier #%s: %s", supplier_id, e)
 
     def _record_placeholder_emails(self, supplier_id: int, pages: Any) -> None:
         """Records any abc@xyz.com/test@test.com-style template default

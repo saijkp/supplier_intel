@@ -72,6 +72,21 @@ class FakeSiteCollector:
                 self.active -= 1
 
 
+class FakeLLMClient:
+    """Same shape as tests/test_address_extractor.py's own fake --
+    reused here (not reimplemented) so TestAddressExtraction exercises
+    CollectionService's wiring to attempt_address_extraction without
+    ever making a real OpenAI call."""
+
+    def __init__(self, response=None):
+        self._response = response
+        self.calls = []
+
+    def complete_json(self, system_prompt, user_prompt, **kwargs):
+        self.calls.append((system_prompt, user_prompt))
+        return self._response
+
+
 @pytest.fixture()
 def repo(tmp_path):
     db_path = tmp_path / "test.db"
@@ -352,6 +367,111 @@ class TestContactExtraction:
         service.collect(supplier_id)
 
         assert repo.get_supplier(supplier_id)["primary_email"] == "info@acme.example.com"
+
+
+class TestAddressExtraction:
+    """A successful collection must also populate suppliers.address --
+    this was a real gap (see collection_service.py's module docstring):
+    only batch/batch_service.py and sourcing/sourcing_agent.py ever
+    called verification.address_extractor.attempt_address_extraction,
+    so a supplier collected via the "Enrich" button (POST
+    /suppliers/{id}/reverify) or a bulk POST /collection/jobs run --
+    the two most common paths -- never got an address at all, no
+    matter how many times either ran."""
+
+    def test_successful_collection_populates_address(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(
+                    url="https://acme.example.com/contact",
+                    text="Get in touch with our sales team. Our office address is 1 Main Street, Springfield, IL 62701.",
+                    has_contact_form=False,
+                ),
+            ]),
+        })
+        llm = FakeLLMClient(response={"address": "1 Main Street, Springfield, IL 62701"})
+        service = CollectionService(repo=repo, site_collector=fake, llm_client=llm)
+
+        service.collect(supplier_id)
+
+        assert repo.get_supplier(supplier_id)["address"] == "1 Main Street, Springfield, IL 62701"
+        assert len(llm.calls) == 1
+
+    def test_existing_address_is_not_overwritten(self, repo):
+        """Same trusted-value-guard discipline as contact extraction --
+        a supplier that already has an address on file (from another
+        source) must keep it, recording any disagreement via
+        field_provenance instead of applying it (see
+        verification/address_extractor.py's own docstring)."""
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Acme", "domain": "acme.example.com",
+            "address": "Existing HQ Address, Chicago, IL",
+        })
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(
+                    url="https://acme.example.com/contact",
+                    text="Get in touch with our sales team. Our office address is 1 Main Street, Springfield, IL 62701.",
+                    has_contact_form=False,
+                ),
+            ]),
+        })
+        llm = FakeLLMClient(response={"address": "1 Main Street, Springfield, IL 62701"})
+        service = CollectionService(repo=repo, site_collector=fake, llm_client=llm)
+
+        service.collect(supplier_id)
+
+        assert repo.get_supplier(supplier_id)["address"] == "Existing HQ Address, Chicago, IL"
+
+    def test_page_with_no_stated_address_adds_nothing(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://acme.example.com", text="Welcome to Acme.", has_contact_form=False),
+            ]),
+        })
+        llm = FakeLLMClient(response={"address": None})
+        service = CollectionService(repo=repo, site_collector=fake, llm_client=llm)
+
+        service.collect(supplier_id)
+
+        assert repo.get_supplier(supplier_id)["address"] is None
+
+    def test_failed_collection_does_not_attempt_address_extraction(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=False, error="timeout"),
+        })
+        llm = FakeLLMClient(response={"address": "1 Main Street, Springfield, IL 62701"})
+        service = CollectionService(repo=repo, site_collector=fake, llm_client=llm)
+
+        service.collect(supplier_id)
+
+        assert llm.calls == []
+
+    def test_address_extraction_failure_does_not_fail_collection(self, repo):
+        """attempt_address_extraction already never raises on its own
+        (an LLM failure is caught per-tier), but CollectionService adds
+        defence-in-depth anyway, matching every other extraction step
+        in this file -- a broken address extraction must never fail an
+        otherwise-successful collection."""
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        fake = FakeSiteCollector(results_by_domain={
+            "acme.example.com": CollectionResult(domain="acme.example.com", success=True, artifacts_dir="1/run1", pages=[
+                CollectedPage(url="https://acme.example.com/contact", text="Get in touch with our sales team. Our office address is 1 Main St.", has_contact_form=False),
+            ]),
+        })
+
+        class ExplodingLLMClient:
+            def complete_json(self, *a, **kw):
+                raise RuntimeError("boom")
+
+        service = CollectionService(repo=repo, site_collector=fake, llm_client=ExplodingLLMClient())
+
+        outcome = service.collect(supplier_id)  # must not raise
+
+        assert outcome["status"] == "success"
 
 
 class TestDefaultRegionFallback:

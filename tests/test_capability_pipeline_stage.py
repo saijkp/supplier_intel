@@ -286,6 +286,71 @@ class TestContactExtractionReusesTheSameFetchedPages:
         assert supplier["contact_form_url"] is None
 
 
+class FakeAddressLLMClient:
+    """Same shape as tests/test_address_extractor.py's own fake."""
+
+    def __init__(self, response=None):
+        self._response = response
+        self.calls = []
+
+    def complete_json(self, system_prompt, user_prompt, **kwargs):
+        self.calls.append((system_prompt, user_prompt))
+        return self._response
+
+
+class TestAddressExtractionReusesTheSameFetchedPages:
+    """Real gap found live: this stage fetched a supplier's own pages
+    and already extracted capabilities + contact details from them, but
+    never attempted address extraction at all -- the same class of gap
+    collection/collection_service.py had, in a third, independent code
+    path. Reuses the exact same verification.address_extractor.
+    attempt_address_extraction() every other caller uses."""
+
+    def _pipeline_with_page(self, repo, *, page_text, llm_response, domain="acme.example.com"):
+        own_site = FakeOwnWebsiteScraper(
+            default_result=OwnWebsiteFetchResult(
+                domain=domain, pages=[OwnWebsitePage(url=f"https://{domain}/contact", text=page_text)],
+            )
+        )
+        return SupplierIntelligencePipeline(
+            repo=repo, scrapers={}, normalizers={},
+            own_website_scraper=own_site, capability_extractor=FakeCapabilityExtractor(),
+            llm_client=FakeAddressLLMClient(response=llm_response),
+        )
+
+    def test_address_found_on_page_is_recorded(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        pipeline = self._pipeline_with_page(
+            repo,
+            page_text="Get in touch with our sales team. Our office is at 1 Main Street, Springfield, IL 62701.",
+            llm_response={"address": "1 Main Street, Springfield, IL 62701"},
+        )
+        pipeline.run_capability_extraction_only()
+        assert repo.get_supplier(supplier_id)["address"] == "1 Main Street, Springfield, IL 62701"
+
+    def test_existing_address_is_never_overwritten(self, repo):
+        supplier_id = repo.create_golden_record({
+            "canonical_name": "Acme", "domain": "acme.example.com",
+            "address": "Existing HQ Address, Chicago, IL",
+        })
+        pipeline = self._pipeline_with_page(
+            repo,
+            page_text="Get in touch with our sales team. Our office is at 1 Main Street, Springfield, IL 62701.",
+            llm_response={"address": "1 Main Street, Springfield, IL 62701"},
+        )
+        pipeline.run_capability_extraction_only()
+        assert repo.get_supplier(supplier_id)["address"] == "Existing HQ Address, Chicago, IL"
+
+    def test_page_with_no_stated_address_adds_nothing(self, repo):
+        supplier_id = repo.create_golden_record({"canonical_name": "Acme", "domain": "acme.example.com"})
+        pipeline = self._pipeline_with_page(
+            repo, page_text="We are a leading manufacturer of trailer components since 1995.",
+            llm_response={"address": None},
+        )
+        pipeline.run_capability_extraction_only()
+        assert repo.get_supplier(supplier_id)["address"] is None
+
+
 class FakeWebsiteFinder:
     def __init__(self, result_by_name=None, default_result=None):
         self._by_name = result_by_name or {}

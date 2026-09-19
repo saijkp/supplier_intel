@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from config.settings import TRAILER_COMPONENT_SEARCH_TERMS
 from deduplication.matcher import SupplierMatcher
+from llm.client import LLMClient
 from normalizers.alibaba_normalizer import AlibabaNormalizer
 from normalizers.base_normalizer import BaseNormalizer
 from normalizers.china_1688_normalizer import China1688Normalizer
@@ -51,6 +52,7 @@ from scrapers.photo_downloader import PhotoDownloader
 from scrapers.scraper_1688 import China1688Scraper
 from scrapers.shanghai_expo_scraper import EXHIBITION_SOURCES, ShanghaiExpoScraper
 from storage.repository import SupplierRepository
+from verification.address_extractor import attempt_address_extraction
 from verification.capability_extractor import CapabilityExtractor
 from verification.cert_checker import CertChecker
 from verification.facility_address_verifier import (
@@ -143,6 +145,7 @@ class SupplierIntelligencePipeline:
         google_places_verifier: Optional[GooglePlacesAddressVerifier] = None,
         amap_verifier: Optional[AmapAddressVerifier] = None,
         linkedin_checker: Optional[LinkedInPresenceChecker] = None,
+        llm_client: Optional[LLMClient] = None,
     ):
         self.repo = repo or SupplierRepository(db_path=db_path)
         self.matcher = matcher or SupplierMatcher(self.repo)
@@ -151,6 +154,12 @@ class SupplierIntelligencePipeline:
         self.manufacturer_verifier = ManufacturerVerifier()
         self.own_website_scraper = own_website_scraper or OwnWebsiteScraper()
         self.capability_extractor = capability_extractor or CapabilityExtractor()
+        # Backs _capability_extraction_stage's address-extraction pass
+        # (attempt_address_extraction) -- lazily constructs a real
+        # OpenAI client on first use, not at construction time, same
+        # "safe to build without credentials" contract every other
+        # collaborator here follows.
+        self.llm_client = llm_client or LLMClient()
         self.photo_downloader = photo_downloader or PhotoDownloader()
         self.factory_photo_verifier = factory_photo_verifier or FactoryPhotoVerifier()
         self.google_places_verifier = google_places_verifier or GooglePlacesAddressVerifier()
@@ -697,6 +706,26 @@ class SupplierIntelligencePipeline:
                         stats["contact_phones_added"] += 1
                     if enrichment["contact_form_url_set"]:
                         stats["contact_forms_recorded"] += 1
+
+                # Address extraction reuses the exact same fetched pages
+                # a third time -- the same tiered-candidate/grounded-LLM
+                # extraction batch/batch_service.py, sourcing/
+                # sourcing_agent.py, and collection/collection_service.py
+                # all already use, reused here rather than reimplemented.
+                # Real gap found live: this stage (main.py
+                # extract-capabilities / run_capability_extraction_only)
+                # fetches a supplier's own contact/footer/about pages and
+                # already extracts capabilities + contact details from
+                # them, but never attempted address extraction at all --
+                # the same class of gap CollectionService had, just in a
+                # third, independent code path. attempt_address_extraction
+                # never raises on its own; this stage's own outer
+                # try/except is defence in depth, same as everywhere else
+                # it's called from.
+                attempt_address_extraction(
+                    self.repo, self.llm_client, supplier["id"], fetch_result.pages,
+                    changed_by="capability_extraction",
+                )
 
                 # Photo verification reuses the same fetched pages a
                 # third time -- own_website_scraper collected
