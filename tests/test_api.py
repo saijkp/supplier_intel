@@ -788,6 +788,36 @@ class TestFactoryFactsJobEndpoints:
         assert response.status_code == 401
 
 
+class TestCompaniesHouseJobEndpoint:
+    """POST /companies-house/jobs -- was CLI-only (main.py
+    verify-uk-company) until now; see api/models.py's
+    CompaniesHouseJobRequest own docstring for why this endpoint has no
+    pending/batch mode like /factory-facts/jobs's."""
+
+    def test_creating_a_job_returns_202_with_a_job_id(self, client):
+        response = client.post("/companies-house/jobs", json={"supplier_id": 5}, headers=auth_headers())
+        assert response.status_code == 202
+        body = response.json()
+        assert body["status"] == "queued"
+        assert body["query"] == "[companies-house] supplier #5"
+        assert body["id"]
+
+    def test_created_job_is_retrievable_by_id(self, client):
+        create_response = client.post("/companies-house/jobs", json={"supplier_id": 5}, headers=auth_headers())
+        job_id = create_response.json()["id"]
+        get_response = client.get(f"/pipeline/jobs/{job_id}", headers=auth_headers())
+        assert get_response.status_code == 200
+        assert get_response.json()["query"] == "[companies-house] supplier #5"
+
+    def test_missing_supplier_id_is_a_validation_error(self, client):
+        response = client.post("/companies-house/jobs", json={}, headers=auth_headers())
+        assert response.status_code == 422
+
+    def test_requires_auth(self, client):
+        response = client.post("/companies-house/jobs", json={"supplier_id": 5})
+        assert response.status_code == 401
+
+
 class TestVerificationJobEndpoints:
 
     def test_creating_a_supplier_id_job_returns_202_with_a_job_id(self, client):

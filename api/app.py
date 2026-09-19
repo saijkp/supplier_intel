@@ -47,6 +47,7 @@ from api.auth import require_api_token
 from api.jobs import (
     run_batch_job,
     run_collection_job,
+    run_companies_house_job,
     run_contacts_job,
     run_discovery_job,
     run_enrichment_job,
@@ -65,6 +66,7 @@ from api.models import (
     BuyerProfileResponse,
     CollectionJobRequest,
     CommercialSearchResult,
+    CompaniesHouseJobRequest,
     ContactsJobRequest,
     DiscoveryJobRequest,
     EnrichmentJobRequest,
@@ -759,6 +761,29 @@ def create_factory_facts_job(
     )
     repo.create_pipeline_job(job_id=job_id, query=label, options=options)
     background_tasks.add_task(run_factory_facts_job, job_id, options)
+    job = repo.get_pipeline_job(job_id)
+    return _to_job_response(job)
+
+
+@app.post(
+    "/companies-house/jobs",
+    response_model=PipelineJobResponse,
+    status_code=202,
+    dependencies=[Depends(require_api_token)],
+)
+def create_companies_house_job(
+    request: CompaniesHouseJobRequest,
+    background_tasks: BackgroundTasks,
+    repo: SupplierRepository = Depends(get_repo),
+) -> PipelineJobResponse:
+    """The HTTP equivalent of `main.py verify-uk-company` -- was
+    CLI-only until now (see api/models.py's CompaniesHouseJobRequest
+    own docstring for why). Single-supplier only, same async job/poll
+    pattern as POST /factory-facts/jobs."""
+    job_id = str(uuid.uuid4())
+    options = request.model_dump()
+    repo.create_pipeline_job(job_id=job_id, query=f"[companies-house] supplier #{request.supplier_id}", options=options)
+    background_tasks.add_task(run_companies_house_job, job_id, request.supplier_id)
     job = repo.get_pipeline_job(job_id)
     return _to_job_response(job)
 

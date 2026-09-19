@@ -27,6 +27,7 @@ from pipeline.orchestrator import SupplierIntelligencePipeline, build_limit_scra
 from storage.repository import SupplierRepository
 from verification.contact_finder_service import ContactFinderService
 from verification.factory_facts_service import FactoryFactsService
+from verification.uk_company_verification_service import UKCompanyVerificationService
 from verification_ai.verification_service import VerificationService
 
 logger = logging.getLogger(__name__)
@@ -258,6 +259,25 @@ def run_factory_facts_job(job_id: str, options: Dict[str, Any]) -> None:
         repo.mark_pipeline_job_completed(job_id, stats=stats)
     except Exception as e:
         logger.error("Factory facts job %s failed: %s", job_id, e)
+        repo.mark_pipeline_job_failed(job_id, error=str(e))
+
+
+def run_companies_house_job(job_id: str, supplier_id: int) -> None:
+    """The HTTP equivalent of `main.py verify-uk-company` -- always
+    single-supplier (see api/models.py's CompaniesHouseJobRequest own
+    docstring for why there's no batch/pending mode here yet). A real
+    free-tier Companies House API call; never raises on a genuine
+    no_clear_match (that's a real, valid outcome recorded on the
+    supplier, not a failure) -- only an unexpected exception marks this
+    job failed."""
+    repo = SupplierRepository()
+    repo.mark_pipeline_job_running(job_id)
+    try:
+        service = UKCompanyVerificationService(repo=repo)
+        stats = service.verify_uk_company(supplier_id)
+        repo.mark_pipeline_job_completed(job_id, stats=stats)
+    except Exception as e:
+        logger.error("Companies House job %s (supplier #%s) failed: %s", job_id, supplier_id, e)
         repo.mark_pipeline_job_failed(job_id, error=str(e))
 
 

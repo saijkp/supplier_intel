@@ -2403,14 +2403,19 @@ async function pollSupplierJobButton(btn, original, jobId, alertHost) {
 }
 
 // "Enrich" (data-reverify-id) + "Extract factory facts" (data-factory-
-// facts-id) are the shared per-supplier action buttons -- same markup,
-// same data-attributes, used by both supplierCard() (Search tab) and
+// facts-id) + "Verify UK company" (data-companies-house-id) are the
+// shared per-supplier action buttons -- same markup, same
+// data-attributes, used by both supplierCard() (Search tab) and
 // findRenderResultsScreen's cards (Find Suppliers), picked up by the
 // one delegated click handler below regardless of which screen
-// rendered them.
+// rendered them. "Verify UK company" (POST /companies-house/jobs) was
+// CLI-only until now (main.py verify-uk-company) -- real bug found
+// live: a buyer clicking "Enrich" expected to see Companies House data
+// populate, but nothing anywhere ever triggered that check over HTTP.
 function coreEnrichButtonsHtml(id) {
   return `<button class="btn btn-ghost btn-sm" data-reverify-id="${id}">Enrich</button>
-    <button class="btn btn-ghost btn-sm" data-factory-facts-id="${id}">Extract factory facts</button>`;
+    <button class="btn btn-ghost btn-sm" data-factory-facts-id="${id}">Extract factory facts</button>
+    <button class="btn btn-ghost btn-sm" data-companies-house-id="${id}">Verify UK company</button>`;
 }
 
 document.addEventListener("click", (e) => {
@@ -2421,8 +2426,9 @@ document.addEventListener("click", (e) => {
   const reverifyBtn = e.target.closest("[data-reverify-id]");
   const contactsBtn = e.target.closest("[data-contacts-id]");
   const factoryFactsBtn = e.target.closest("[data-factory-facts-id]");
+  const companiesHouseBtn = e.target.closest("[data-companies-house-id]");
   const viewAuditBtn = e.target.closest("[data-view-audit-id]");
-  const actionBtn = reverifyBtn || contactsBtn || factoryFactsBtn;
+  const actionBtn = reverifyBtn || contactsBtn || factoryFactsBtn || companiesHouseBtn;
   // These buttons now render on both the Search tab and Find Suppliers'
   // results screen -- route a failure's alert to whichever tab's own
   // alert box is actually visible, not always the Search tab's (a job
@@ -2435,6 +2441,8 @@ document.addEventListener("click", (e) => {
     triggerSupplierJob(contactsBtn, "/contacts/jobs", { supplier_id: Number(contactsBtn.dataset.contactsId) }, alertHost);
   } else if (factoryFactsBtn) {
     triggerSupplierJob(factoryFactsBtn, "/factory-facts/jobs", { supplier_id: Number(factoryFactsBtn.dataset.factoryFactsId) }, alertHost);
+  } else if (companiesHouseBtn) {
+    triggerSupplierJob(companiesHouseBtn, "/companies-house/jobs", { supplier_id: Number(companiesHouseBtn.dataset.companiesHouseId) }, alertHost);
   } else if (viewAuditBtn) {
     // Same target dialog auditSupplierCard()'s own cards open
     // (openAuditDetail -> GET /audit/suppliers/{id}) -- that endpoint

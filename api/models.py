@@ -276,6 +276,23 @@ class FactoryFactsJobRequest(BaseModel):
     )
 
 
+class CompaniesHouseJobRequest(BaseModel):
+    """Triggers verification.uk_company_verification_service.
+    UKCompanyVerificationService against one named supplier -- the HTTP
+    equivalent of `main.py verify-uk-company`, which was CLI-only until
+    now (that module's own docstring: "no async job, no POST
+    /uk-verification/jobs endpoint, no frontend button ... add that
+    apparatus later if it's ever wanted"). Single-supplier only,
+    deliberately no `pending` batch mode like FactoryFactsJobRequest's
+    -- this service has no category awareness of its own and no
+    "suppliers needing checking" query to drive one (see that module's
+    own docstring); a batch run still only ever takes an EXPLICIT id
+    list (verify_uk_company_batch), which has no natural HTTP shape
+    yet. A real free-tier Companies House API call either way."""
+
+    supplier_id: int = Field(description="Check this supplier's canonical_name against Companies House.")
+
+
 class DiscoveryJobRequest(BaseModel):
     """Triggers discovery.discovery_service.DiscoveryService -- the HTTP
     equivalent of `main.py discover`. AI-assisted supplier discovery,

@@ -428,6 +428,48 @@ class TestRunReverifyJob:
         assert "browser crashed" in job["error"]
 
 
+class FakeUKCompanyVerificationService:
+    last_instance = None
+
+    def __init__(self, repo=None):
+        self.repo = repo
+        self.last_verify_call = None
+        FakeUKCompanyVerificationService.last_instance = self
+
+    def verify_uk_company(self, supplier_id):
+        self.last_verify_call = supplier_id
+        return {"supplier_id": supplier_id, "match_status": "verified", "confidence": 95}
+
+
+class FailingFakeUKCompanyVerificationService(FakeUKCompanyVerificationService):
+    def verify_uk_company(self, supplier_id):
+        raise RuntimeError("Companies House API down")
+
+
+class TestRunCompaniesHouseJob:
+
+    def test_calls_verify_uk_company_with_supplier_id(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "UKCompanyVerificationService", FakeUKCompanyVerificationService)
+
+        repo.create_pipeline_job(job_id="job61", query="[companies-house] supplier #8", options={"supplier_id": 8})
+        jobs_module.run_companies_house_job("job61", 8)
+
+        assert FakeUKCompanyVerificationService.last_instance.last_verify_call == 8
+        job = repo.get_pipeline_job("job61")
+        assert job["status"] == "completed"
+        assert job["stats"]["match_status"] == "verified"
+
+    def test_failing_job_marks_failed_not_raised(self, repo, monkeypatch):
+        monkeypatch.setattr(jobs_module, "UKCompanyVerificationService", FailingFakeUKCompanyVerificationService)
+
+        repo.create_pipeline_job(job_id="job62", query="x", options={"supplier_id": 8})
+        jobs_module.run_companies_house_job("job62", 8)  # must not raise
+
+        job = repo.get_pipeline_job("job62")
+        assert job["status"] == "failed"
+        assert "Companies House API down" in job["error"]
+
+
 class FakeDiscoveryService:
     last_instance = None
 
