@@ -64,6 +64,8 @@ from api.jobs import (
 from api.models import (
     BuyerProfileRequest,
     BuyerProfileResponse,
+    ClassifySearchInputRequest,
+    ClassifySearchInputResponse,
     CollectionJobRequest,
     CommercialSearchResult,
     CompaniesHouseJobRequest,
@@ -787,6 +789,22 @@ def create_companies_house_job(
     background_tasks.add_task(run_companies_house_job, job_id, request.supplier_id)
     job = repo.get_pipeline_job(job_id)
     return _to_job_response(job)
+
+
+@app.post(
+    "/classify-search-input",
+    response_model=ClassifySearchInputResponse,
+    dependencies=[Depends(require_api_token)],
+)
+def classify_search_input_endpoint(request: ClassifySearchInputRequest) -> ClassifySearchInputResponse:
+    """Synchronous (not a job/poll pattern) -- see
+    api/models.py's ClassifySearchInputRequest own docstring for why.
+    One tiny real OpenAI call; never raises (classify_search_input's
+    own contract) -- a failure just returns kind=null, which the
+    frontend treats as "couldn't tell, ask the buyer directly"."""
+    from discovery.input_classifier import classify_search_input
+
+    return ClassifySearchInputResponse(kind=classify_search_input(request.text))
 
 
 @app.post(

@@ -1432,11 +1432,24 @@ function findParseTargetCountFromText(text) {
 /* Unambiguous cases (URL-shaped, or an explicit/inline target count)
    route automatically. Everything else is genuinely ambiguous between
    "a company name" and "a product/category term with no count" -- no
-   reliable heuristic exists for that (this codebase never
-   auto-classifies free text elsewhere, main.py always uses explicit
-   subcommands) -- so a one-click chip is shown rather than silently
-   guessing and spending a paid search call on the wrong pipeline. */
-let findAmbiguousChoice = null;  // "company" | "product" | null
+   reliable CLIENT-SIDE heuristic exists for that, so this used to
+   always show a manual one-click chip ("It's a company" / "It's a
+   product/category") rather than silently guess and spend a paid
+   search call on the wrong pipeline.
+
+   Now backed by POST /classify-search-input (discovery/
+   input_classifier.py) -- a real AI call classifies the ambiguous
+   text automatically, findAiClassifiedKind below, so the manual chip
+   is only ever shown when the buyer disagrees with that guess (or the
+   classification attempt itself failed/hasn't returned yet) -- see
+   findRenderMode's own handling of c.kind === "ambiguous". Manual
+   choice (findAmbiguousChoice) always takes priority over the AI's own
+   guess if both exist for the current text. */
+let findAmbiguousChoice = null;  // "company" | "product" | null -- an explicit buyer click, highest priority
+let findAiClassifiedKind = null;  // "company" | "product" | null -- the AI's own guess
+let findAiClassifiedText = null;  // exact text findAiClassifiedKind was computed for -- stale once the input changes
+let findAiClassifyFailedText = null;  // exact text a classify attempt already failed for -- don't retry it forever on every keystroke
+let findAiClassifyTimer = null;  // debounce handle
 function findClassifyInput(text) {
   if (findLooksLikeUrl(text)) return { kind: "url" };
   const inlineCount = findParseTargetCountFromText(text);
@@ -1445,7 +1458,36 @@ function findClassifyInput(text) {
   if (count) return { kind: "product", targetCount: count };
   if (findAmbiguousChoice === "company") return { kind: "company" };
   if (findAmbiguousChoice === "product") return { kind: "product", targetCount: null };
+  if (findAiClassifiedText === text && findAiClassifiedKind === "company") return { kind: "company", aiGuessed: true };
+  if (findAiClassifiedText === text && findAiClassifiedKind === "product") return { kind: "product", targetCount: null, aiGuessed: true };
   return { kind: "ambiguous" };
+}
+
+// Debounced (600ms after typing stops) so a real OpenAI call isn't
+// fired on every keystroke -- only once the buyer has paused on a
+// genuinely ambiguous query. Guards against a stale response applying
+// to text the buyer has since changed (checks the input's CURRENT
+// value against `text` once the call resolves) and against a manual
+// choice made while the call was in flight (checks findAmbiguousChoice
+// is still unset before applying the AI's guess).
+function findScheduleAiClassify(text) {
+  if (findAiClassifyTimer) clearTimeout(findAiClassifyTimer);
+  findAiClassifyTimer = setTimeout(async () => {
+    let result;
+    try {
+      result = await api("/classify-search-input", { method: "POST", body: JSON.stringify({ text }) });
+    } catch (err) {
+      result = null;
+    }
+    if ($("findInput").value.trim() !== text || findAmbiguousChoice) return;  // stale or overridden meanwhile
+    if (result && (result.kind === "company" || result.kind === "product")) {
+      findAiClassifiedKind = result.kind;
+      findAiClassifiedText = text;
+    } else {
+      findAiClassifyFailedText = text;  // fall back to the manual chip below, don't retry this exact text again
+    }
+    findRenderMode();
+  }, 600);
 }
 
 function findRenderMode() {
@@ -1475,16 +1517,33 @@ function findRenderMode() {
     $("findBriefBlock").classList.add("hidden");
     $("btnFindBriefToggle").textContent = "Paste a detailed brief instead →";
   }
-  if (!text) { row.innerHTML = ""; findAmbiguousChoice = null; $("findCostNote").textContent = ""; return; }
+  if (!text) {
+    row.innerHTML = ""; findAmbiguousChoice = null; $("findCostNote").textContent = "";
+    findAiClassifiedKind = null; findAiClassifiedText = null; findAiClassifyFailedText = null;
+    if (findAiClassifyTimer) { clearTimeout(findAiClassifyTimer); findAiClassifyTimer = null; }
+    return;
+  }
+  const aiTag = c.aiGuessed ? " (AI-detected)" : "";
   if (c.kind === "url") {
     row.innerHTML = `Detected: <strong>website URL</strong> — will collect this company's own site.`;
   } else if (c.kind === "company") {
-    row.innerHTML = `Detected: <strong>company name</strong> — will find its website, then collect. ` +
+    row.innerHTML = `Detected${aiTag}: <strong>company name</strong> — will find its website, then collect. ` +
       `<button class="btn btn-ghost btn-sm" data-find-mode="product">Not a company — it's a product/category &rarr;</button>`;
   } else if (c.kind === "product") {
-    row.innerHTML = `Detected: <strong>product/category search</strong>${c.targetCount ? ` — target ${c.targetCount} suppliers` : ""}. ` +
+    row.innerHTML = `Detected${aiTag}: <strong>product/category search</strong>${c.targetCount ? ` — target ${c.targetCount} suppliers` : ""}. ` +
       `<button class="btn btn-ghost btn-sm" data-find-mode="company">Not a product — it's a company name &rarr;</button>`;
+  } else if (state.connected && findAiClassifyFailedText !== text) {
+    // Ambiguous, not yet resolved -- kick off (or let an already-
+    // scheduled) AI classification run; show a neutral interim message
+    // rather than the manual chip while it's in flight, so the buyer
+    // isn't asked a question the model is about to answer for them.
+    findScheduleAiClassify(text);
+    row.innerHTML = `Working out whether "<strong>${esc(text)}</strong>" is a company name or a product/category…`;
   } else {
+    // Not connected (no backend to ask), or the AI classification
+    // already failed for this exact text -- same manual chip this
+    // codebase always showed here before automatic classification
+    // existed, never removed as a fallback.
     row.innerHTML = `Is "<strong>${esc(text)}</strong>" a company name or a product/category to search for? ` +
       `<button class="btn btn-ghost btn-sm" data-find-mode="company">It's a company</button> ` +
       `<button class="btn btn-ghost btn-sm" data-find-mode="product">It's a product/category</button>`;

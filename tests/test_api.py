@@ -1725,3 +1725,32 @@ class TestAuditVerdictEndpoint:
         response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
 
         assert response.json()["collection_failure_reason"] == ""
+
+
+class TestClassifySearchInputEndpoint:
+    """POST /classify-search-input -- synchronous (not a job/poll
+    pattern), backing Find Suppliers' automatic company-vs-product
+    detection (see api/models.py's ClassifySearchInputRequest own
+    docstring for why this replaced a manual two-button choice)."""
+
+    def test_returns_the_classified_kind(self, client, monkeypatch):
+        import discovery.input_classifier as classifier_module
+        monkeypatch.setattr(classifier_module, "classify_search_input", lambda text, llm_client=None: "company")
+
+        response = client.post("/classify-search-input", json={"text": "Acme Trailer Co"}, headers=auth_headers())
+
+        assert response.status_code == 200
+        assert response.json()["kind"] == "company"
+
+    def test_returns_null_kind_when_classification_fails(self, client, monkeypatch):
+        import discovery.input_classifier as classifier_module
+        monkeypatch.setattr(classifier_module, "classify_search_input", lambda text, llm_client=None: None)
+
+        response = client.post("/classify-search-input", json={"text": "trailer axle"}, headers=auth_headers())
+
+        assert response.status_code == 200
+        assert response.json()["kind"] is None
+
+    def test_requires_auth(self, client):
+        response = client.post("/classify-search-input", json={"text": "trailer axle"})
+        assert response.status_code == 401

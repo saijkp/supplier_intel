@@ -298,6 +298,27 @@ class CompaniesHouseJobRequest(BaseModel):
     supplier_id: int = Field(description="Check this supplier's canonical_name against Companies House.")
 
 
+class ClassifySearchInputRequest(BaseModel):
+    """Triggers discovery.input_classifier.classify_search_input --
+    synchronous (not a job/poll pattern like every other endpoint in
+    this file), since Find Suppliers' own UI needs an immediate answer
+    to update its own state before the buyer has even submitted a
+    search. Was a manual two-button choice ("It's a company" / "It's a
+    product/category") on every genuinely ambiguous query; this lets
+    the buyer's own free text be classified automatically instead, with
+    the manual buttons kept as a one-click override, never removed."""
+
+    text: str = Field(description="The raw text typed into Find Suppliers' search box.")
+
+
+class ClassifySearchInputResponse(BaseModel):
+    kind: Optional[str] = Field(
+        default=None,
+        description="\"company\" or \"product\", or null if the classification attempt failed -- "
+                     "the frontend falls back to asking the buyer directly in that case.",
+    )
+
+
 class DiscoveryJobRequest(BaseModel):
     """Triggers discovery.discovery_service.DiscoveryService -- the HTTP
     equivalent of `main.py discover`. AI-assisted supplier discovery,
