@@ -14,10 +14,16 @@
 # by its own explicit filename), so this doesn't break any in-app
 # navigation. Also fixes blog1.html/blog2.html's own header/home links,
 # which already point at "/" expecting the pitch, not the console.
+# force = true is required here: Netlify resolves "/" to the literal
+# index.html file before it ever considers redirects, and an existing
+# file wins over a redirect by default -- confirmed by testing this
+# rule without force, which had no effect. force makes this rewrite
+# take priority over that implicit file match.
 [[redirects]]
   from = "/"
   to = "/marketing.html"
   status = 200
+  force = true
 
 # Static blog post, served as-is rather than falling through to the
 # SPA catch-all below.
