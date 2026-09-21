@@ -431,10 +431,13 @@
   <div class="wrap">
     <h2>See it on your own sourcing categories</h2>
     <p>Request a short demo, or get in touch and we'll walk through a real evidence report together.</p>
-    <form class="cta-form" onsubmit="return false;">
-      <input type="email" placeholder="you@company.com" required>
-      <button type="submit" class="btn btn-primary" onclick="window.location.href='mailto:sai@ikeng.co.uk?subject=Supplier%20Intel%20demo%20request'">Request a demo</button>
+    <form name="demo-request" id="demo-request-form" class="cta-form" method="POST" data-netlify="true" netlify-honeypot="bot-field">
+      <input type="hidden" name="form-name" value="demo-request">
+      <p hidden><label>Leave this field blank: <input name="bot-field"></label></p>
+      <input type="email" name="email" placeholder="you@company.com" required>
+      <button type="submit" class="btn btn-primary">Request a demo</button>
     </form>
+    <p id="demo-request-success" class="cta-note" hidden>Thanks — that's landed with us. We'll follow up by email shortly.</p>
     <div class="cta-note">
       Email <a href="mailto:sai@ikeng.co.uk" style="color:#fff;">sai@ikeng.co.uk</a>
       &nbsp;·&nbsp;
@@ -442,6 +445,32 @@
     </div>
   </div>
 </section>
+
+<script>
+  (function () {
+    var form = document.getElementById('demo-request-form');
+    if (!form) return;
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var data = new FormData(form);
+      fetch('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(data).toString(),
+      })
+        .then(function (res) {
+          if (!res.ok) throw new Error('form submission failed');
+          form.hidden = true;
+          document.getElementById('demo-request-success').hidden = false;
+        })
+        .catch(function () {
+          // Network/Netlify hiccup -- fall back to the old behaviour rather
+          // than silently losing the lead.
+          window.location.href = 'mailto:sai@ikeng.co.uk?subject=Supplier%20Intel%20demo%20request&body=' + encodeURIComponent(data.get('email') || '');
+        });
+    });
+  })();
+</script>
 
 <footer class="site">
   <div class="wrap">
