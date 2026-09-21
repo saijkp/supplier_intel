@@ -9,6 +9,13 @@
   publish = "."
   command = ""
 
+# Static blog post, served as-is rather than falling through to the
+# SPA catch-all below.
+[[redirects]]
+  from = "/blog1.html"
+  to = "/blog1.html"
+  status = 200
+
 # Single-page app: every path serves index.html so a refresh on any
 # view doesn't 404.
 [[redirects]]
