@@ -16,6 +16,11 @@
   to = "/blog1.html"
   status = 200
 
+[[redirects]]
+  from = "/blog2.html"
+  to = "/blog2.html"
+  status = 200
+
 # Single-page app: every path serves index.html so a refresh on any
 # view doesn't 404.
 [[redirects]]
