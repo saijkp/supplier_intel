@@ -9,6 +9,16 @@
   publish = "."
   command = ""
 
+# Root serves the public marketing/landing page, not the internal app --
+# the app has no in-site links pointing at "/" (it's only ever reached
+# by its own explicit filename), so this doesn't break any in-app
+# navigation. Also fixes blog1.html/blog2.html's own header/home links,
+# which already point at "/" expecting the pitch, not the console.
+[[redirects]]
+  from = "/"
+  to = "/marketing.html"
+  status = 200
+
 # Static blog post, served as-is rather than falling through to the
 # SPA catch-all below.
 [[redirects]]
