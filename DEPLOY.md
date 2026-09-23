@@ -179,6 +179,11 @@ Core endpoints:
 | GET | `/export/csv` | Download results as CSV |
 | GET | `/export/excel` | Download results as `.xlsx`, with contact/address enrichment columns CSV omits |
 | GET | `/health` | No auth — for uptime checks |
+| POST | `/suppliers/{id}/public-pass` | Issue (or, with `regenerate: true`, reissue) a supplier's public "Verified" pass token |
+| GET | `/suppliers/{id}/public-pass` | Current pass status for one supplier — token, share URL, created/revoked timestamps |
+| DELETE | `/suppliers/{id}/public-pass` | Revoke a pass (the public page 404s; the token is kept, so Reinstating from the UI restores the same link) |
+| GET | `/public/suppliers/{token}` | No auth — the curated public profile a scanned QR code or share link resolves to |
+| GET | `/public/suppliers/{token}/qr.png` | No auth — QR code PNG for the same token, generated on the fly, not stored |
 
 `POST /pipeline/jobs` returns immediately (202) because a full run
 with capability extraction can take minutes — the frontend should

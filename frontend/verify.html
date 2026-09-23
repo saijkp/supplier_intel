@@ -158,7 +158,7 @@ a{color:var(--tier-stated)}
 // The Railway API this page reads from. Public, unauthenticated route
 // only (GET /public/suppliers/{token} and /qr.png) -- see api/app.py.
 // If this ever moves, update it here (no build step to worry about).
-const API_BASE = "https://supplier-intel.up.railway.app";
+const API_BASE = "https://supplierintel-production.up.railway.app";
 
 const params = new URLSearchParams(location.search);
 const token = params.get("t") || params.get("token");

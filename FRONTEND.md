@@ -130,6 +130,24 @@ merged into one number.
 The optional stages each spend real API credit per supplier, so they're
 off unless you tick them. CSV export downloads the current database.
 
+**Audit → public "Verified" pass** — each supplier's detail view has a
+Generate/Reinstate/Revoke/Regenerate control for an opt-in, public,
+unauthenticated verification page (backed by `GET
+/public/suppliers/{token}`, see `sharing/public_pass_service.py`).
+Generating one issues a random token and shows its QR code and share
+link right there; Revoke 404s the public page without deleting the
+token, so Reinstate brings back the *same* link and QR code later
+(useful for a physical printed card at a trade-show booth — it doesn't
+need reprinting after a revoke/reinstate cycle). Regenerate is the only
+action that issues a new token, invalidating any QR code already
+printed. The public page itself is `frontend/verify.html`, a separate
+noindex page (not part of the four-tab app) that a visitor reaches by
+scanning the QR code or opening the share link directly — no login,
+and it only ever shows the same curated, marketing-safe fields as the
+API's public payload (certifications, UK registry status,
+manufacturer-verification signals, capability findings) — never audit
+verdicts, scores, or contact names.
+
 ## Reading the evidence stamps
 
 Every claim carries a stamp showing its source tier and a confidence
