@@ -21,3 +21,4 @@ pytest
 pytest-xdist
 jinja2
 playwright
+qrcode[pil]

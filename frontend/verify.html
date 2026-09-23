@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verified Supplier — Supplier Intel</title>
+<meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/*
+  frontend/verify.html -- the public, unauthenticated page a scanned
+  "Verified" trade-show QR pass opens (see api/app.py's
+  GET /public/suppliers/{token} and sharing/public_pass_service.py for
+  what's on this page and, importantly, what's deliberately not: no
+  audit verdicts, no internal scores, no named contacts -- see that
+  module's own docstring). No build step, same single-file convention
+  as index.html/console.html (see FRONTEND.md).
+
+  Same steel/orange design tokens as index.html so a visitor who later
+  opens the marketing site or the buyer app recognises the brand, but
+  this page is deliberately much simpler: one card, no nav, phone-first
+  (it's almost always opened by scanning a physical card on a booth
+  table), and it never asks for an API address or access token --
+  those are for the buyer-side app only. This page's data source is a
+  fixed, public API base below.
+*/
+:root{
+  --steel-900:#0f1b2d;
+  --steel-700:#334862;
+  --steel-500:#5c7593;
+  --steel-300:#a9bdd4;
+  --rule:#d3e0ee;
+  --rule-soft:#e7eef7;
+  --paper:#f4f8fd;
+  --surface:#ffffff;
+  --orange:#2563eb;
+  --orange-dark:#1d4ed8;
+  --tier-verified:#0b6b4f;
+  --tier-verified-bg:#e4f2ec;
+  --tier-stated:#1a5fb4;
+  --tier-claimed:#9a6300;
+  --tier-claimed-bg:#f8efdd;
+  --danger:#c0311a;
+  --danger-bg:#fdece8;
+  --shadow:0 1px 3px rgba(15,27,45,.07),0 6px 20px rgba(15,27,45,.06);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  font-family:'Barlow',system-ui,sans-serif;
+  background:var(--paper);color:var(--steel-900);
+  font-size:16px;line-height:1.5;-webkit-font-smoothing:antialiased;
+  min-height:100vh;
+}
+a{color:var(--tier-stated)}
+.wrap{max-width:560px;margin:0 auto;padding:0 0 56px}
+
+.topbar{background:var(--steel-900);color:#fff;padding:18px 20px;text-align:center}
+.brand{display:inline-flex;align-items:baseline;gap:9px}
+.brand-mark{
+  font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:12px;
+  letter-spacing:.14em;background:var(--orange);color:#fff;padding:4px 7px;border-radius:5px;
+}
+.brand-name{
+  font-family:'Barlow Condensed',sans-serif;font-weight:700;
+  font-size:20px;letter-spacing:.06em;text-transform:uppercase;
+}
+
+.state{padding:60px 24px;text-align:center;color:var(--steel-500)}
+.state.error{color:var(--danger)}
+
+.card{
+  background:var(--surface);margin:20px 16px 0;border-radius:14px;
+  box-shadow:var(--shadow);overflow:hidden;
+}
+.card-head{padding:22px 20px 16px;border-bottom:1px solid var(--rule-soft)}
+.verified-pill{
+  display:inline-flex;align-items:center;gap:6px;
+  font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:11px;
+  letter-spacing:.08em;text-transform:uppercase;
+  color:var(--tier-verified);background:var(--tier-verified-bg);
+  border:1px solid var(--tier-verified);border-radius:20px;padding:4px 11px;
+  margin-bottom:12px;
+}
+.verified-pill svg{width:12px;height:12px;flex:none}
+.company-name{
+  font-family:'Barlow Condensed',sans-serif;font-weight:700;
+  font-size:28px;line-height:1.15;letter-spacing:.01em;
+}
+.company-meta{color:var(--steel-500);font-size:14.5px;margin-top:4px}
+.company-meta a{color:var(--steel-500);text-decoration:underline}
+
+.section{padding:16px 20px;border-bottom:1px solid var(--rule-soft)}
+.section:last-child{border-bottom:none}
+.section-title{
+  font-family:'Barlow Condensed',sans-serif;font-weight:600;
+  font-size:13px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--steel-500);margin-bottom:10px;
+}
+.badges{display:flex;flex-wrap:wrap;gap:6px}
+.badge{
+  font-family:'IBM Plex Mono',monospace;font-size:11px;
+  letter-spacing:.03em;padding:4px 9px;border-radius:6px;border:1px solid;white-space:nowrap;
+}
+.badge.pos{color:var(--tier-verified);border-color:var(--tier-verified);background:var(--tier-verified-bg)}
+.badge.reg{color:var(--tier-stated);border-color:var(--tier-stated);background:#e5edf8}
+.badge.neutral{color:var(--steel-700);border-color:var(--rule);background:var(--paper)}
+.empty-note{color:var(--steel-300);font-size:14px;font-style:italic}
+
+.cap-list{display:flex;flex-direction:column;gap:10px}
+.cap-item{border:1px solid var(--rule-soft);border-radius:8px;padding:10px 12px}
+.cap-item-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.cap-term{font-weight:600;font-size:14.5px}
+.cap-rel{
+  font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.05em;
+  text-transform:uppercase;color:var(--steel-500);white-space:nowrap;
+}
+.cap-evidence{color:var(--steel-500);font-size:13.5px;margin-top:4px;font-style:italic}
+.cap-evidence::before,.cap-evidence::after{content:'"'}
+
+.categories{color:var(--steel-700);font-size:14.5px}
+.last-verified{color:var(--steel-500);font-size:13px}
+
+.footer-cta{
+  text-align:center;padding:26px 20px 0;color:var(--steel-500);font-size:14px;
+}
+.footer-cta a{
+  display:inline-block;margin-top:10px;font-family:'Barlow Condensed',sans-serif;
+  font-weight:600;font-size:15px;letter-spacing:.03em;color:#fff;background:var(--orange);
+  padding:10px 20px;border-radius:8px;text-decoration:none;
+}
+.footer-cta a:hover{background:var(--orange-dark)}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="brand">
+    <span class="brand-mark">SI</span>
+    <span class="brand-name">Supplier Intel</span>
+  </span>
+</div>
+
+<div class="wrap">
+  <div id="state" class="state">Loading verification…</div>
+  <div id="card" class="card" hidden></div>
+  <div class="footer-cta">
+    Every fact on this page comes from a public registry or the
+    supplier's own website — never a self-reported checkbox.
+    <br>
+    <a href="/marketing.html">Verify your own suppliers →</a>
+  </div>
+</div>
+
+<script>
+// The Railway API this page reads from. Public, unauthenticated route
+// only (GET /public/suppliers/{token} and /qr.png) -- see api/app.py.
+// If this ever moves, update it here (no build step to worry about).
+const API_BASE = "https://supplier-intel.up.railway.app";
+
+const params = new URLSearchParams(location.search);
+const token = params.get("t") || params.get("token");
+const stateEl = document.getElementById("state");
+const cardEl = document.getElementById("card");
+
+function esc(s){
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+
+function checkSvg(){
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+}
+
+function renderError(message){
+  stateEl.hidden = false;
+  stateEl.className = "state error";
+  stateEl.textContent = message;
+  cardEl.hidden = true;
+}
+
+function certBadges(c){
+  const items = [];
+  if (c.iso_9001) items.push(["ISO 9001", c.iso_9001_expiry ? `expires ${c.iso_9001_expiry}` : null]);
+  if (c.iso_ts_16949) items.push(["IATF/ISO-TS 16949", null]);
+  if (c.iatf_16949) items.push(["IATF 16949", null]);
+  if (c.ce_certified) items.push(["CE", null]);
+  if (c.ukca_certified) items.push(["UKCA", null]);
+  if (c.e_mark_certified) items.push(["E-Mark", null]);
+  (c.other_certifications || []).forEach(name => items.push([name, null]));
+  if (!items.length) return '<span class="empty-note">No certifications on file yet</span>';
+  return items.map(([name, note]) =>
+    `<span class="badge pos" title="${esc(note || "")}">${esc(name)}</span>`
+  ).join("");
+}
+
+function render(profile){
+  document.title = `${profile.canonical_name} — Verified — Supplier Intel`;
+
+  const location_ = [profile.city, profile.country].filter(Boolean).join(", ");
+  const domainLink = profile.domain
+    ? `<a href="https://${esc(profile.domain)}" target="_blank" rel="noopener">${esc(profile.domain)}</a>`
+    : "";
+
+  let manufacturerBadge = "";
+  if (profile.is_manufacturer === true) {
+    manufacturerBadge = '<span class="badge pos">Confirmed manufacturer</span>';
+  } else if (profile.is_manufacturer === false) {
+    manufacturerBadge = '<span class="badge neutral">Trading company</span>';
+  }
+
+  let ukRegistrySection = "";
+  if (profile.uk_registry && profile.uk_registry.companies_house_number) {
+    const r = profile.uk_registry;
+    ukRegistrySection = `
+      <div class="section">
+        <div class="section-title">UK Companies House</div>
+        <span class="badge reg">${esc(r.status || "registered")}</span>
+        <div class="last-verified" style="margin-top:8px">
+          Company no. ${esc(r.companies_house_number)}${r.incorporated_at ? ` · incorporated ${esc(r.incorporated_at)}` : ""}
+        </div>
+      </div>`;
+  }
+
+  let capsSection = "";
+  if (profile.capabilities && profile.capabilities.length) {
+    const items = profile.capabilities.map(cap => `
+      <div class="cap-item">
+        <div class="cap-item-head">
+          <span class="cap-term">${esc(cap.term || "Capability")}</span>
+          <span class="cap-rel">${esc((cap.relationship || "").replace("_", " "))}</span>
+        </div>
+        ${cap.evidence ? `<div class="cap-evidence">${esc(cap.evidence)}</div>` : ""}
+      </div>`).join("");
+    capsSection = `
+      <div class="section">
+        <div class="section-title">What they make — from their own site</div>
+        <div class="cap-list">${items}</div>
+      </div>`;
+  }
+
+  let categoriesSection = "";
+  if (profile.primary_categories && profile.primary_categories.length) {
+    categoriesSection = `
+      <div class="section">
+        <div class="section-title">Product categories</div>
+        <div class="categories">${profile.primary_categories.map(esc).join(" · ")}</div>
+      </div>`;
+  }
+
+  cardEl.innerHTML = `
+    <div class="card-head">
+      <span class="verified-pill">${checkSvg()} Verified by Supplier Intel</span>
+      <div class="company-name">${esc(profile.canonical_name)}</div>
+      <div class="company-meta">
+        ${esc(location_)}${location_ && domainLink ? " · " : ""}${domainLink}
+        ${profile.year_established ? ` · est. ${esc(profile.year_established)}` : ""}
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">Verification</div>
+      <div class="badges">${manufacturerBadge}</div>
+      ${profile.last_verified ? `<div class="last-verified" style="margin-top:8px">Last checked ${esc(profile.last_verified.slice(0,10))}</div>` : ""}
+    </div>
+    <div class="section">
+      <div class="section-title">Certifications</div>
+      <div class="badges">${certBadges(profile.certifications || {})}</div>
+    </div>
+    ${ukRegistrySection}
+    ${categoriesSection}
+    ${capsSection}
+  `;
+  stateEl.hidden = true;
+  cardEl.hidden = false;
+}
+
+(async function main(){
+  if (!token) {
+    renderError("No verification code was given. Scan the QR code on the supplier's pass again.");
+    return;
+  }
+  try {
+    const res = await fetch(`${API_BASE}/public/suppliers/${encodeURIComponent(token)}`);
+    if (res.status === 404) {
+      renderError("This verification pass isn't active. It may have been suspended, or the link is out of date.");
+      return;
+    }
+    if (!res.ok) {
+      renderError("Couldn't load this verification right now. Please try again in a moment.");
+      return;
+    }
+    render(await res.json());
+  } catch (err) {
+    renderError("Couldn't reach Supplier Intel right now. Check your connection and try again.");
+  }
+})();
+</script>
+</body>
+</html>

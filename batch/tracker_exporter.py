@@ -725,4 +725,18 @@ def build_supplier_evidence_bundle(
             "verdict": supplier.get("factory_facts_verdict"),
         },
         "certificate_document_urls": list(supplier.get("certificate_document_urls") or []),
+        # Only ever populated by sharing/public_pass_service.py (POST
+        # /suppliers/{id}/public-pass) -- the public, unauthenticated
+        # "Verified" trade-show pass. None if no pass has ever been
+        # generated for this supplier; still returned (with
+        # public_pass_revoked_at set) if one exists but is currently
+        # suspended, so the Audit tab's own UI can tell the two apart
+        # rather than treating both as "no pass."
+        "public_pass": _public_pass_summary(repo, supplier_id),
     }
+
+
+def _public_pass_summary(repo: SupplierRepository, supplier_id: int) -> Optional[Dict[str, Any]]:
+    from sharing.public_pass_service import PublicPassService
+
+    return PublicPassService(repo).get_pass_status(supplier_id)

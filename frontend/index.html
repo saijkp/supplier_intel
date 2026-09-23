@@ -409,6 +409,25 @@ dialog.dlg-wide .dlg-body{max-height:calc(100vh - 180px);overflow-y:auto}
 .evidence-label{color:var(--steel-500);font-weight:600;margin-right:6px}
 .evidence-quote{color:var(--steel-700);font-style:italic}
 .evidence-empty{color:var(--steel-300);font-size:13px;font-style:italic}
+
+/* Verified pass (trade-show QR) -- Audit detail dialog, own small
+   section reusing the same evidence-section/btn tokens as the rest of
+   the dialog. See renderAuditDetail's publicPassSection(). */
+.pass-empty{color:var(--steel-500);font-size:13px;margin-bottom:10px}
+.pass-row{display:flex;gap:14px;align-items:flex-start}
+.pass-qr{border:1px solid var(--rule);border-radius:6px;background:#fff;flex:none}
+.pass-details{flex:1;min-width:0}
+.pass-status{
+  font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;
+  letter-spacing:.05em;text-transform:uppercase;display:inline-block;
+  padding:2px 8px;border-radius:5px;margin-bottom:6px;
+}
+.pass-status.ok{color:var(--tier-verified);background:var(--tier-verified-bg)}
+.pass-status.revoked{color:var(--danger-dark);background:var(--danger-bg)}
+.pass-link{display:block;font-size:12.5px;word-break:break-all;margin-bottom:8px}
+.pass-actions{display:flex;flex-wrap:wrap;gap:6px}
+.pass-note{color:var(--steel-300);font-size:12px;margin-top:6px}
+
 .dlg-head{padding:14px 18px;border-bottom:1px solid var(--rule);background:var(--steel-900);color:#fff}
 .dlg-title{
   font-family:'Barlow Condensed',sans-serif;font-weight:700;
@@ -3035,6 +3054,118 @@ function evidenceSection(title, bodyHtml) {
   return `<div class="evidence-section"><h3>${esc(title)}</h3>${bodyHtml}</div>`;
 }
 
+/* Verified pass (trade-show QR) -- see api/app.py's
+   POST/GET/DELETE /suppliers/{id}/public-pass and
+   sharing/public_pass_service.py. b.public_pass (from the audit
+   bundle -- see batch/tracker_exporter.py's own addition of this
+   field) is null until a pass has ever been generated for this
+   supplier; once generated it's returned even while revoked, so this
+   can tell "never generated" apart from "revoked" and offer Reinstate
+   rather than Generate. */
+function publicPassSection(b) {
+  return `<div class="evidence-section" id="publicPassSection" data-supplier-id="${b.supplier_id}">
+    <h3>Verified pass (trade-show QR)</h3>
+    <div id="publicPassBody">${publicPassBody(b.public_pass)}</div>
+  </div>`;
+}
+
+function publicPassBody(pass) {
+  if (!pass) {
+    return `
+      <p class="pass-empty">No pass yet. Generating one gives this supplier a public "Verified" page and a QR code you can print and leave on their table at a trade show.</p>
+      <button class="btn btn-primary btn-sm" id="passGenerateBtn">Generate pass</button>`;
+  }
+  const revoked = !!pass.public_pass_revoked_at;
+  const qrSrc = state.base + "/public/suppliers/" + encodeURIComponent(pass.public_token) + "/qr.png";
+  return `
+    <div class="pass-row">
+      <img class="pass-qr" src="${esc(qrSrc)}" alt="Verification QR code" width="96" height="96">
+      <div class="pass-details">
+        <span class="pass-status ${revoked ? "revoked" : "ok"}">${revoked ? "Revoked" : "Active"}</span>
+        <a class="pass-link" href="${esc(pass.public_url)}" target="_blank" rel="noopener">${esc(pass.public_url)}</a>
+        <div class="pass-actions">
+          <button class="btn btn-ghost btn-sm" id="passCopyBtn">Copy link</button>
+          ${revoked
+            ? `<button class="btn btn-primary btn-sm" id="passReinstateBtn">Reinstate</button>`
+            : `<button class="btn btn-ghost btn-sm" id="passRevokeBtn">Revoke</button>`}
+          <button class="btn btn-ghost btn-sm" id="passRegenerateBtn">Regenerate</button>
+        </div>
+        ${revoked ? "" : `<div class="pass-note">Regenerating invalidates this QR code permanently -- only do this if the printed card was lost.</div>`}
+      </div>
+    </div>`;
+}
+
+async function refreshPublicPassSection(supplierId) {
+  const host = document.getElementById("publicPassBody");
+  if (!host) return; // dialog closed/re-rendered in the meantime
+  try {
+    const pass = await api(`/suppliers/${supplierId}/public-pass`).catch(err => {
+      if (err.status === 404) return null;
+      throw err;
+    });
+    host.innerHTML = publicPassBody(pass);
+    wirePublicPassControls(supplierId);
+  } catch (err) {
+    host.innerHTML = `<p class="pass-empty">Couldn't load the pass status: ${esc(err.message)}</p>`;
+  }
+}
+
+function wirePublicPassControls(supplierId) {
+  const host = document.getElementById("publicPassBody");
+  if (!host) return;
+
+  const generate = document.getElementById("passGenerateBtn") || document.getElementById("passReinstateBtn");
+  if (generate) generate.addEventListener("click", async () => {
+    generate.disabled = true;
+    try {
+      await api(`/suppliers/${supplierId}/public-pass`, {method: "POST", body: JSON.stringify({regenerate: false})});
+      await refreshPublicPassSection(supplierId);
+    } catch (err) {
+      alert("Couldn't generate the pass: " + err.message);
+      generate.disabled = false;
+    }
+  });
+
+  const revoke = document.getElementById("passRevokeBtn");
+  if (revoke) revoke.addEventListener("click", async () => {
+    revoke.disabled = true;
+    try {
+      await api(`/suppliers/${supplierId}/public-pass`, {method: "DELETE"});
+      await refreshPublicPassSection(supplierId);
+    } catch (err) {
+      alert("Couldn't revoke the pass: " + err.message);
+      revoke.disabled = false;
+    }
+  });
+
+  const regenerate = document.getElementById("passRegenerateBtn");
+  if (regenerate) regenerate.addEventListener("click", async () => {
+    if (!confirm("This permanently invalidates the current QR code -- any printed card stops working. Continue?")) return;
+    regenerate.disabled = true;
+    try {
+      await api(`/suppliers/${supplierId}/public-pass`, {method: "POST", body: JSON.stringify({regenerate: true})});
+      await refreshPublicPassSection(supplierId);
+    } catch (err) {
+      alert("Couldn't regenerate the pass: " + err.message);
+      regenerate.disabled = false;
+    }
+  });
+
+  const copy = document.getElementById("passCopyBtn");
+  if (copy) copy.addEventListener("click", async () => {
+    const link = host.querySelector(".pass-link");
+    if (!link) return;
+    try {
+      await navigator.clipboard.writeText(link.href);
+      const original = copy.textContent;
+      copy.textContent = "Copied";
+      setTimeout(() => { copy.textContent = original; }, 1500);
+    } catch {
+      alert(link.href); // clipboard API unavailable (e.g. non-HTTPS/older browser) -- at least show it to copy manually
+    }
+  });
+}
+
 /* Audit tab Stage 2: verdict capture. Options are always Pending
    first, nothing pre-selected beyond what's actually stored in
    audit_verdicts -- see storage.repository.SupplierRepository
@@ -3354,6 +3485,7 @@ async function openAuditDetail(supplierId, name, category) {
     const b = await api("/audit/suppliers/" + supplierId);
     $("auditDetailBody").innerHTML = renderAuditDetail(b, {category});
     wireVerdictControls(supplierId);
+    wirePublicPassControls(supplierId);
   } catch (err) {
     $("auditDetailBody").innerHTML = `<div id="auditDetailErr"></div>`;
     explain(err, $("auditDetailErr"));
@@ -3376,6 +3508,12 @@ function renderAuditDetail(b, opts = {}) {
 
   const legalEntityCaveat = chinaLegalEntityCaveatSection(b, opts.category);
   if (legalEntityCaveat) sections.push(legalEntityCaveat);
+
+  // Same single-instance-at-a-time id-uniqueness concern as
+  // verdictSection() below (id="publicPassSection") -- only rendered
+  // for the real Audit tab modal, not the Find Suppliers inline
+  // evidence display, which calls this with includeVerdict: false.
+  if (opts.includeVerdict !== false) sections.push(publicPassSection(b));
 
   // A failed collection attempt (e.g. every URL variant blocked with
   // HTTP 403) and a genuinely-empty-but-reachable site both render an

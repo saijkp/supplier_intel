@@ -634,3 +634,64 @@ class ProcurementOutcomeResponse(BaseModel):
     outcome: str
     notes: Optional[str] = None
     recorded_at: Optional[str] = None
+
+
+# ─────────────────────────────────────────────────────────────
+# Public "Verified" pass (see sharing/public_pass_service.py)
+# ─────────────────────────────────────────────────────────────
+
+class PublicPassRequest(BaseModel):
+    regenerate: bool = False
+
+
+class PublicPassResponse(BaseModel):
+    public_token: str
+    public_url: str
+    public_pass_created_at: Optional[str] = None
+    public_pass_revoked_at: Optional[str] = None
+
+
+class PublicCertifications(BaseModel):
+    iso_9001: bool = False
+    iso_9001_expiry: Optional[str] = None
+    iso_ts_16949: bool = False
+    iatf_16949: bool = False
+    ce_certified: bool = False
+    ukca_certified: bool = False
+    e_mark_certified: bool = False
+    other_certifications: List[str] = Field(default_factory=list)
+
+
+class PublicUkRegistry(BaseModel):
+    companies_house_number: Optional[str] = None
+    status: Optional[str] = None
+    incorporated_at: Optional[str] = None
+
+
+class PublicCapability(BaseModel):
+    term: Optional[str] = None
+    category: Optional[str] = None
+    relationship: Optional[str] = None
+    evidence: Optional[str] = None
+
+
+class PublicSupplierProfile(BaseModel):
+    """The curated, unauthenticated payload GET /public/suppliers/{token}
+    returns for frontend/verify.html to render. See
+    PublicPassService.get_public_profile's own docstring for exactly
+    what's deliberately excluded (audit verdicts, internal scores,
+    named contacts) and why."""
+    canonical_name: str
+    country: Optional[str] = None
+    city: Optional[str] = None
+    domain: Optional[str] = None
+    year_established: Optional[int] = None
+    is_manufacturer: Optional[bool] = None
+    manufacturer_signals: List[str] = Field(default_factory=list)
+    certifications: PublicCertifications
+    uk_registry: Optional[PublicUkRegistry] = None
+    primary_categories: List[str] = Field(default_factory=list)
+    capabilities: List[PublicCapability] = Field(default_factory=list)
+    linkedin_url: Optional[str] = None
+    last_verified: Optional[str] = None
+    pass_active_since: Optional[str] = None

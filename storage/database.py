@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 
 
 # ═══════════════════════════════════════════════════════════
@@ -284,7 +284,14 @@ CREATE TABLE IF NOT EXISTS suppliers (
     -- failure (site down, DNS failure, blocked) and a successful fetch that
     -- genuinely found no capability language both look like zero
     -- supplier_capabilities rows -- indistinguishable in the Audit tab.
-    capability_extraction_status   TEXT
+    capability_extraction_status   TEXT,
+
+    -- Public "Verified" trade-show pass (v33) -- see MIGRATIONS[33]'s own
+    -- comment and sharing/public_pass_service.py. Opt-in, per-supplier:
+    -- NULL until a human explicitly generates a pass for this supplier.
+    public_token                    TEXT,        -- opaque, random (secrets.token_urlsafe) -- never the integer id, so a scanned QR can't be used to enumerate the rest of the database
+    public_pass_created_at          TIMESTAMP,   -- when the currently-active token was (re)generated or last reinstated
+    public_pass_revoked_at          TIMESTAMP    -- set to suspend the public page (404) without deleting the token, so a printed physical QR card can be revoked and later reinstated without a reprint
 );
 
 CREATE INDEX IF NOT EXISTS idx_sup_domain ON suppliers(domain);
@@ -295,6 +302,16 @@ CREATE INDEX IF NOT EXISTS idx_sup_recommendation ON suppliers(recommendation);
 CREATE INDEX IF NOT EXISTS idx_sup_e_mark ON suppliers(e_mark_certified);
 CREATE INDEX IF NOT EXISTS idx_sup_manufacturer ON suppliers(is_manufacturer);
 CREATE INDEX IF NOT EXISTS idx_sup_canonical_name ON suppliers(canonical_name);
+-- idx_sup_public_token is deliberately NOT created here (unlike the
+-- indexes above, all on columns present since Phase 1): this
+-- unconditional index block runs even against an old, pre-existing
+-- suppliers table that SCHEMA_SQL's own CREATE TABLE IF NOT EXISTS
+-- just skipped -- creating an index on a column that table doesn't
+-- have YET (the v33 ALTER hasn't run at this point in
+-- initialise_schema) fails outright. See MIGRATIONS[33]'s
+-- "statements" entry instead, which runs after that ALTER, for both a
+-- fresh DB and an upgraded old one alike (initialise_schema replays
+-- every not-yet-recorded migration unconditionally, fresh DB or not).
 
 
 -- ═══════════════════════════════════════
@@ -1724,6 +1741,37 @@ MIGRATIONS: dict[int, dict] = {
         ),
         "columns": [
             ("suppliers", "factory_facts_verdict", "TEXT"),
+        ],
+    },
+    33: {
+        "description": (
+            "suppliers.public_token/public_pass_created_at/"
+            "public_pass_revoked_at -- backs a public, unauthenticated "
+            "'Verified' profile page (GET /public/suppliers/{token}), built "
+            "for a printable trade-show QR pass: a supplier keeps the "
+            "physical card on their booth table, a visitor scans it and "
+            "sees the platform's own verified facts about them, no login "
+            "required. public_token is a random, URL-safe token -- never "
+            "the sequential integer id -- specifically so scanning one "
+            "pass can't be used to enumerate the rest of the supplier "
+            "database (see sharing/public_pass_service.py). NULL until a "
+            "human explicitly generates a pass for that supplier -- "
+            "nothing is made public by default, and this table's own "
+            "existing audit_verdicts/notes/internal fields are never "
+            "included in the public payload (see PublicPassService."
+            "get_public_profile's own docstring). public_pass_revoked_at, "
+            "when set, makes the public endpoint 404 again without "
+            "deleting the token -- a physical card already printed and "
+            "handed out can be suspended, and later reinstated with the "
+            "same QR code, without a reprint."
+        ),
+        "columns": [
+            ("suppliers", "public_token", "TEXT"),
+            ("suppliers", "public_pass_created_at", "TIMESTAMP"),
+            ("suppliers", "public_pass_revoked_at", "TIMESTAMP"),
+        ],
+        "statements": [
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sup_public_token ON suppliers(public_token) WHERE public_token IS NOT NULL",
         ],
     },
 }

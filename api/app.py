@@ -77,6 +77,9 @@ from api.models import (
     PipelineJobResponse,
     ProcurementOutcomeRequest,
     ProcurementOutcomeResponse,
+    PublicPassRequest,
+    PublicPassResponse,
+    PublicSupplierProfile,
     SingleCompanyEnrichRequest,
     SourcingRunRequest,
     SourcingRunResponse,
@@ -1466,3 +1469,104 @@ def run_due_monitoring_checks(
     from monitoring.monitoring_service import MonitoringService
 
     return MonitoringService(repo=repo).capture_snapshot_pending(limit=limit)
+
+
+# ─────────────────────────────────────────────────────────────
+# Public "Verified" pass -- see sharing/public_pass_service.py for what
+# this is and why the public routes below carry no auth dependency.
+# Authenticated management routes live under /suppliers/{id}/public-
+# pass; the two GET /public/... routes deliberately do NOT depend on
+# require_api_token -- they're the whole point of a QR code a stranger
+# scans at a trade show with no login of their own.
+# ─────────────────────────────────────────────────────────────
+
+@app.post(
+    "/suppliers/{supplier_id}/public-pass",
+    response_model=PublicPassResponse,
+    dependencies=[Depends(require_api_token)],
+)
+def create_supplier_public_pass(
+    supplier_id: int, payload: PublicPassRequest = PublicPassRequest(),
+    repo: SupplierRepository = Depends(get_repo),
+) -> PublicPassResponse:
+    """Generates a pass if this supplier doesn't have one yet, returns
+    the existing active one unchanged if it does, or reinstates a
+    revoked one (same token) -- see PublicPassService.create_pass's own
+    docstring. `regenerate: true` always issues a brand-new token,
+    permanently invalidating the old one (and whatever's printed on an
+    already-handed-out card)."""
+    from sharing.public_pass_service import PublicPassService
+
+    try:
+        status = PublicPassService(repo).create_pass(supplier_id, regenerate=payload.regenerate)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return PublicPassResponse(**status)
+
+
+@app.get(
+    "/suppliers/{supplier_id}/public-pass",
+    response_model=PublicPassResponse,
+    dependencies=[Depends(require_api_token)],
+)
+def get_supplier_public_pass(
+    supplier_id: int, repo: SupplierRepository = Depends(get_repo),
+) -> PublicPassResponse:
+    """404 if no pass has ever been generated for this supplier -- use
+    POST to the same path to create one. Returns the pass even if it's
+    currently revoked (public_pass_revoked_at set), so the caller can
+    tell "never generated" apart from "revoked" before deciding to
+    reinstate or regenerate."""
+    from sharing.public_pass_service import PublicPassService
+
+    status = PublicPassService(repo).get_pass_status(supplier_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="No public pass has been generated for this supplier")
+    return PublicPassResponse(**status)
+
+
+@app.delete(
+    "/suppliers/{supplier_id}/public-pass",
+    status_code=204,
+    dependencies=[Depends(require_api_token)],
+)
+def revoke_supplier_public_pass(supplier_id: int, repo: SupplierRepository = Depends(get_repo)) -> None:
+    """Suspends the pass (the public page 404s from now on) without
+    deleting the token -- a physical card already printed can be
+    reinstated later via POST .../public-pass with regenerate left
+    false, no reprint needed."""
+    from sharing.public_pass_service import PublicPassService
+
+    try:
+        PublicPassService(repo).revoke_pass(supplier_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@app.get("/public/suppliers/{token}", response_model=PublicSupplierProfile)
+def get_public_supplier_profile(token: str, repo: SupplierRepository = Depends(get_repo)) -> PublicSupplierProfile:
+    """No auth -- this is the endpoint a scanned QR code's page
+    (frontend/verify.html) calls. 404 for an unknown OR a revoked
+    token, identically, so a revoked pass never leaks "this used to
+    exist" (see SupplierRepository.get_supplier_by_public_token)."""
+    from sharing.public_pass_service import PublicPassService
+
+    profile = PublicPassService(repo).get_public_profile(token)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return PublicSupplierProfile(**profile)
+
+
+@app.get("/public/suppliers/{token}/qr.png")
+def get_public_supplier_qr_code(token: str, repo: SupplierRepository = Depends(get_repo)) -> Response:
+    """No auth, same reasoning as the profile route above -- the QR
+    image just encodes that same public URL, so serving it requires no
+    more trust than serving the page it points to. 404s under the same
+    condition as the profile route (checked first here) rather than
+    generating an image for a token that would itself 404."""
+    from sharing.public_pass_service import PublicPassService
+
+    service = PublicPassService(repo)
+    if service.get_public_profile(token) is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return Response(content=service.generate_qr_png(token), media_type="image/png")

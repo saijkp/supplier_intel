@@ -55,6 +55,13 @@ COLLECTION_ARTIFACTS_DIR = Path(os.getenv("COLLECTION_ARTIFACTS_DIR") or str(DAT
 for _dir in (DATA_DIR, EXPORTS_DIR, LOG_DIR, COLLECTION_ARTIFACTS_DIR):
     _dir.mkdir(parents=True, exist_ok=True)
 
+# Public site base URL -- where a "Verified" public pass's QR code
+# points (see sharing/public_pass_service.py): {PUBLIC_SITE_BASE_URL}/
+# verify.html?t={token}. Same `os.getenv(key) or default` pattern as
+# DB_PATH above, for the same reason (a blank env var must still fall
+# back, not resolve to an empty base). No trailing slash.
+PUBLIC_SITE_BASE_URL: str = (os.getenv("PUBLIC_SITE_BASE_URL") or "https://supplierintel.co").rstrip("/")
+
 
 # ─────────────────────────────────────────────────────────────
 # API Keys (loaded from environment / .env — never hardcode)

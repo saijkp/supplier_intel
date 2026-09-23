@@ -1670,6 +1670,78 @@ class SupplierRepository:
             latest = row["latest"] if row else None
             return latest[:10] if latest else None
 
+    def enable_public_pass(self, supplier_id: int, *, token: str) -> None:
+        """Sets (or replaces) supplier.public_token, stamps
+        public_pass_created_at as now, and clears any prior
+        public_pass_revoked_at -- used both for a brand-new pass and for
+        reinstating a previously-revoked one (same token, fresh
+        created_at). The mechanical write only -- token generation and
+        uniqueness retry live in sharing.public_pass_service
+        .PublicPassService, matching this repository's usual split with
+        its own *Service callers (e.g. MonitoringService)."""
+        with connection_scope(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE suppliers
+                SET public_token = ?, public_pass_created_at = CURRENT_TIMESTAMP, public_pass_revoked_at = NULL
+                WHERE id = ?
+                """,
+                (token, supplier_id),
+            )
+
+    def disable_public_pass(self, supplier_id: int) -> None:
+        """Stamps public_pass_revoked_at as now, leaving public_token in
+        place -- the public endpoint treats a revoked token as not
+        found (see get_supplier_by_public_token), but the same physical
+        QR code works again if the pass is later reinstated via
+        enable_public_pass with the same token."""
+        with connection_scope(self.db_path) as conn:
+            conn.execute(
+                "UPDATE suppliers SET public_pass_revoked_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (supplier_id,),
+            )
+
+    def get_public_pass(self, supplier_id: int) -> Optional[Dict[str, Any]]:
+        """{public_token, public_pass_created_at, public_pass_revoked_at}
+        for this supplier, or None if no pass has ever been generated
+        (public_token IS NULL) -- a revoked-but-once-generated pass still
+        returns its row here (with public_pass_revoked_at set) so an
+        authenticated caller can see and reinstate it, unlike the public
+        endpoint below which treats revoked the same as never-generated."""
+        with connection_scope(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT public_token, public_pass_created_at, public_pass_revoked_at "
+                "FROM suppliers WHERE id = ?",
+                (supplier_id,),
+            ).fetchone()
+            if row is None or row["public_token"] is None:
+                return None
+            return dict(row)
+
+    def public_token_in_use(self, token: str) -> bool:
+        """True if any supplier row (revoked or not) already has this
+        exact token -- checked before assigning a newly-generated one so
+        a uniqueness retry never has to rely on catching the DB's own
+        UNIQUE-index error."""
+        with connection_scope(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM suppliers WHERE public_token = ?", (token,)
+            ).fetchone()
+            return row is not None
+
+    def get_supplier_by_public_token(self, supplier_public_token: str) -> Optional[Dict[str, Any]]:
+        """The full supplier row for an active (non-revoked) public
+        token, or None if the token doesn't exist OR has been revoked --
+        deliberately the same outward result either way, so a revoked
+        pass's public page 404s exactly like one that was never issued,
+        never leaking "this used to exist" to an anonymous scanner."""
+        with connection_scope(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM suppliers WHERE public_token = ? AND public_pass_revoked_at IS NULL",
+                (supplier_public_token,),
+            ).fetchone()
+            return _row_to_dict(row, SUPPLIER_JSON_FIELDS)
+
     def clear_capabilities(self, supplier_id: int) -> int:
         """Deletes every existing capability finding for a supplier.
 
