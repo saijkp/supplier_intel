@@ -958,8 +958,30 @@ const store = {
   set(k,v){ try{ localStorage.setItem(k,v); }catch{ mem[k]=v; } }
 };
 
+// A bare host (e.g. "myapp.up.railway.app", no scheme) isn't an
+// absolute URL -- fetch() resolves it relative to the CURRENT page
+// instead of erroring, so every request silently hit supplierintel.co
+// itself, fell through its SPA catch-all, and got index.html back as
+// "successful" HTML rather than ever reaching the real API. Real
+// incident: this produced "Got a webpage instead of data" with no
+// indication the address itself was the problem. Assume https://
+// when no scheme is given, same default every browser address bar
+// already applies. Applied on load (so an already-saved bad address
+// self-heals) as well as on save.
+function normalizeApiBase(url) {
+  url = (url || "").trim().replace(/\/+$/, "");
+  if (url && !/^https?:\/\//i.test(url)) url = "https://" + url;
+  return url;
+}
+
+const _rawStoredBase = store.get("si.base") || "";
+const _normalizedStoredBase = normalizeApiBase(_rawStoredBase);
+if (_normalizedStoredBase && _normalizedStoredBase !== _rawStoredBase) {
+  store.set("si.base", _normalizedStoredBase);
+}
+
 const state = {
-  base: store.get("si.base") || "",
+  base: _normalizedStoredBase,
   token: store.get("si.token") || "",
   connected: false,
   jobTimer: null
@@ -1059,7 +1081,7 @@ $("connBtn").addEventListener("click", () => {
 
 $("btnConnect").addEventListener("click", (e) => {
   e.preventDefault();
-  const url = $("cUrl").value.trim().replace(/\/+$/, "");
+  const url = normalizeApiBase($("cUrl").value);
   const token = $("cToken").value.trim();
   if (!url) {
     alertBox($("connResult"), 1, "Address needed", "Enter the URL your API is running at.");
@@ -1480,6 +1502,14 @@ function findClassifyInput(text) {
   if (findAmbiguousChoice === "product") return { kind: "product", targetCount: null };
   if (findAiClassifiedText === text && findAiClassifiedKind === "company") return { kind: "company", aiGuessed: true };
   if (findAiClassifiedText === text && findAiClassifiedKind === "product") return { kind: "product", targetCount: null, aiGuessed: true };
+  if (!state.connected || findAiClassifyFailedText === text) {
+    // Can't ask the AI classifier (not connected) or it already failed
+    // for this exact text -- default to a product/category search
+    // instead of blocking the buyer on a manual choice. Still
+    // one-click correctable via the same override link shown for a
+    // confident guess, via findRenderMode's c.kind === "product" branch.
+    return { kind: "product", targetCount: null, fallbackGuess: true };
+  }
   return { kind: "ambiguous" };
 }
 
@@ -1543,7 +1573,7 @@ function findRenderMode() {
     if (findAiClassifyTimer) { clearTimeout(findAiClassifyTimer); findAiClassifyTimer = null; }
     return;
   }
-  const aiTag = c.aiGuessed ? " (AI-detected)" : "";
+  const aiTag = c.aiGuessed ? " (AI-detected)" : c.fallbackGuess ? " (best guess)" : "";
   if (c.kind === "url") {
     row.innerHTML = `Detected: <strong>website URL</strong> — will collect this company's own site.`;
   } else if (c.kind === "company") {
@@ -1552,21 +1582,15 @@ function findRenderMode() {
   } else if (c.kind === "product") {
     row.innerHTML = `Detected${aiTag}: <strong>product/category search</strong>${c.targetCount ? ` — target ${c.targetCount} suppliers` : ""}. ` +
       `<button class="btn btn-ghost btn-sm" data-find-mode="company">Not a product — it's a company name &rarr;</button>`;
-  } else if (state.connected && findAiClassifyFailedText !== text) {
-    // Ambiguous, not yet resolved -- kick off (or let an already-
-    // scheduled) AI classification run; show a neutral interim message
-    // rather than the manual chip while it's in flight, so the buyer
-    // isn't asked a question the model is about to answer for them.
+  } else {
+    // Only reachable while connected and genuinely not yet resolved
+    // (findClassifyInput defaults everything else -- disconnected, or
+    // a failed classify attempt -- straight to a "product" fallback
+    // guess above, so the buyer is never blocked on a manual choice).
+    // Kick off (or let an already-scheduled) AI classification run and
+    // show a neutral interim message while it's in flight.
     findScheduleAiClassify(text);
     row.innerHTML = `Working out whether "<strong>${esc(text)}</strong>" is a company name or a product/category…`;
-  } else {
-    // Not connected (no backend to ask), or the AI classification
-    // already failed for this exact text -- same manual chip this
-    // codebase always showed here before automatic classification
-    // existed, never removed as a fallback.
-    row.innerHTML = `Is "<strong>${esc(text)}</strong>" a company name or a product/category to search for? ` +
-      `<button class="btn btn-ghost btn-sm" data-find-mode="company">It's a company</button> ` +
-      `<button class="btn btn-ghost btn-sm" data-find-mode="product">It's a product/category</button>`;
   }
   findRenderCostNote(c);
 }
