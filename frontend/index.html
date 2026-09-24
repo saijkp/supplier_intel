@@ -1069,6 +1069,7 @@ $("btnConnect").addEventListener("click", (e) => {
   store.set("si.base", url); store.set("si.token", token);
   $("connDialog").close();
   checkHealth();
+  renderConnectionEmptyStates();
 });
 
 /* ═══ Navigation ════════════════════════════════════════════ */
@@ -3650,12 +3651,13 @@ function renderAuditDetail(b, opts = {}) {
 }
 
 /* ═══ Boot ══════════════════════════════════════════════════ */
-(async function init() {
-  await checkHealth();
-  initFindView();
-  if (getTrackedBulkJobs().length && state.connected) {
-    pollBulkJobs();
-  }
+/* Swaps the "Connect to get started" prompt for the ready-state empty
+   view (or back), based on state.base. Runs once at boot, but also
+   re-runs right after a successful Connect dialog submit -- without
+   this second call, the boot-time prompt stayed on screen forever
+   after connecting, since checkHealth() alone only updates the header
+   status pill, never this content area. */
+function renderConnectionEmptyStates() {
   if (!state.base) {
     const connectPrompt = `<div class="empty">
       <div class="empty-title">Connect to get started</div>
@@ -3665,11 +3667,21 @@ function renderAuditDetail(b, opts = {}) {
     $("findResults").innerHTML = connectPrompt;
     $("searchResults").innerHTML = connectPrompt;
   } else {
+    $("findResults").innerHTML = "";
     $("searchResults").innerHTML = `<div class="empty">
       <div class="empty-title">Search the supplier database</div>
       <p class="empty-text">Add a product and any filters, then search.</p>
     </div>`;
   }
+}
+
+(async function init() {
+  await checkHealth();
+  initFindView();
+  if (getTrackedBulkJobs().length && state.connected) {
+    pollBulkJobs();
+  }
+  renderConnectionEmptyStates();
 })();
 </script>
 </body>
