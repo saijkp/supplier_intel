@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>An AI-Generated Supplier Shortlist Isn't Sourcing Data — Supplier Intel</title>
+<meta name="description" content="A supplier list written by an AI model reads as confident and well-sourced. It isn't. Here's what actually fails when you ask an LLM for manufacturer names, and the checks that catch it.">
+<link rel="canonical" href="https://supplierintel.co/blog4.html">
+<style>
+  :root {
+    --ink: #14181f;
+    --ink-soft: #4a5265;
+    --paper: #ffffff;
+    --paper-soft: #f4f6f9;
+    --line: #e3e7ee;
+    --accent: #1f6f5c;
+    --accent-soft: #e8f3f0;
+    --amber: #b8721b;
+    --amber-soft: #fbf1e2;
+    --radius: 10px;
+    --maxw: 760px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+  header.site {
+    border-bottom: 1px solid var(--line);
+    background: rgba(255,255,255,0.92);
+  }
+  header.site .wrap {
+    display: flex; align-items: center; justify-content: space-between;
+    padding-top: 16px; padding-bottom: 16px;
+    max-width: 1080px;
+  }
+  .brand { font-weight: 700; font-size: 15px; text-decoration: none; color: var(--ink); }
+  .brand .dot { display:inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-right: 8px; }
+  header.site nav a {
+    font-size: 13.5px; font-weight: 600; text-decoration: none; color: var(--ink-soft);
+    margin-left: 22px;
+  }
+  header.site nav a:hover { color: var(--accent); }
+
+  main { padding: 48px 0 80px; }
+
+  .kicker {
+    font-size: 13px; font-weight: 700; color: var(--accent);
+    text-transform: uppercase; letter-spacing: .06em; margin-bottom: 14px;
+  }
+  h1 {
+    font-size: clamp(26px, 4vw, 36px);
+    line-height: 1.25;
+    margin: 0 0 16px;
+    letter-spacing: -0.01em;
+  }
+  .byline {
+    font-size: 13.5px; color: var(--ink-soft);
+    padding-bottom: 28px; margin-bottom: 32px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  article h2 {
+    font-size: 20px; margin: 40px 0 14px;
+    letter-spacing: -0.005em;
+  }
+  article p { margin: 0 0 18px; font-size: 16.5px; color: var(--ink); }
+  article ul { margin: 0 0 18px; padding-left: 22px; }
+  article li { margin-bottom: 10px; font-size: 16.5px; }
+  article strong { color: var(--ink); }
+
+  .stat-callout {
+    background: var(--accent-soft);
+    border: 1px solid #cfe4dd;
+    border-radius: var(--radius);
+    padding: 20px 22px;
+    margin: 24px 0;
+    font-size: 17px;
+    color: var(--ink);
+  }
+  .stat-callout strong { color: var(--accent); }
+
+  .cta-box {
+    margin-top: 44px;
+    padding: 24px;
+    background: var(--paper-soft);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+  }
+  .cta-box p { margin: 0; font-size: 15.5px; color: var(--ink-soft); }
+
+  footer.site {
+    border-top: 1px solid var(--line);
+    padding: 28px 0;
+    margin-top: 40px;
+  }
+  footer.site .wrap { max-width: 1080px; }
+  footer.site p { font-size: 12.5px; color: var(--ink-soft); margin: 0; }
+
+  @media (max-width: 480px) {
+    main { padding: 32px 0 56px; }
+    article h2 { font-size: 18px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="/"><span class="dot"></span>Supplier Intel</a>
+    <nav>
+      <a href="/">Home</a>
+      <a href="/blog.html">Blog</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+    <article>
+      <p class="kicker">Field notes</p>
+      <h1>An AI-Generated Supplier Shortlist Isn't Sourcing Data — It's a Starting Point</h1>
+      <p class="byline">Supplier Intel</p>
+
+      <p>Ask a general-purpose AI model to list manufacturers of a given component and it will answer instantly, in a confident, well-formatted list — company names, locations, sometimes even a product description and a domain. For a sourcing consultant working against a deadline, that's a tempting shortcut past the usual slog of directory searches and trade-show catalogues.</p>
+
+      <p>It's also, on its own, not sourcing data. These models are good at pattern-completing what a plausible supplier list <em>looks like</em> for a given product category, which is a different thing from reporting which real companies actually make it. The known failure modes are specific enough to check for directly, the same way we check for any other oversell pattern:</p>
+
+      <ul>
+        <li><strong>Invented or merged companies.</strong> A name that reads as plausible for the category but doesn't resolve to any real, independently findable business.</li>
+        <li><strong>Domain mismatch.</strong> A domain the model states with confidence that either doesn't exist, is parked, or belongs to an unrelated business — security researchers have already documented large-scale "hallucinated domain" squatting aimed at exactly this gap between confident AI output and real registration records.</li>
+        <li><strong>Scope creep.</strong> A real company, but not actually in the product category asked for — the model filled the gap with something adjacent rather than leaving it blank.</li>
+        <li><strong>Unsourced specifics.</strong> A stated certification, address, or "manufacturer not trader" claim that isn't attributable to anything the company itself published — it reads like a fact because the sentence is fluent, not because it's grounded in a page you could go check.</li>
+      </ul>
+
+      <h2>A starting point, not a finding</h2>
+      <p>None of this makes an AI-generated shortlist useless as a starting point. It makes it exactly as unverified as a cold search-engine hit or a trade-show badge-scan list — a set of names worth checking, not a set of findings. The same evidence discipline applies either way: does the domain resolve to a real, non-parked site for that specific company; does that site's own stated scope actually match what you asked for; does a claimed registration or certification show up on the actual issuing registry rather than just in the company's own copy.</p>
+
+      <p>For a sense of how wide the gap between a confident supplier claim and a verified one can be in practice, see our <a href="/blog1.html">write-up on validating a batch of "manufacturer" names against real evidence</a>.</p>
+
+      <h2>Evidence, not a verdict</h2>
+      <p>Treat an AI-written list as a set of hypotheses to run through verification — evidence-gathered, human-reviewed — before any name on it reaches a shortlist you'd act on.</p>
+
+      <div class="cta-box">
+        <p>Doing supplier verification for clients? <a href="/">Supplier Intel</a> is built for exactly this workflow — get in touch if you'd like to compare notes.</p>
+      </div>
+    </article>
+  </div>
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <p>&copy; Supplier Intel</p>
+  </div>
+</footer>
+
+</body>
+</html>
