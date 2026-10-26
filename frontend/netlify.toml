@@ -25,7 +25,7 @@
   status = 200
   force = true
 
-# Static blog post, served as-is rather than falling through to the
+# Static blog posts, index, sitemap and robots.txt, served as-is rather than falling through to the
 # SPA catch-all below.
 [[redirects]]
   from = "/blog1.html"
@@ -35,6 +35,46 @@
 [[redirects]]
   from = "/blog2.html"
   to = "/blog2.html"
+  status = 200
+
+[[redirects]]
+  from = "/blog3.html"
+  to = "/blog3.html"
+  status = 200
+
+[[redirects]]
+  from = "/blog4.html"
+  to = "/blog4.html"
+  status = 200
+
+[[redirects]]
+  from = "/blog5.html"
+  to = "/blog5.html"
+  status = 200
+
+[[redirects]]
+  from = "/blog6.html"
+  to = "/blog6.html"
+  status = 200
+
+[[redirects]]
+  from = "/blog7.html"
+  to = "/blog7.html"
+  status = 200
+
+[[redirects]]
+  from = "/blog.html"
+  to = "/blog.html"
+  status = 200
+
+[[redirects]]
+  from = "/sitemap.xml"
+  to = "/sitemap.xml"
+  status = 200
+
+[[redirects]]
+  from = "/robots.txt"
+  to = "/robots.txt"
   status = 200
 
 # Single-page app: every path serves index.html so a refresh on any
