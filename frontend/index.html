@@ -409,6 +409,25 @@ dialog.dlg-wide .dlg-body{max-height:calc(100vh - 180px);overflow-y:auto}
 .evidence-label{color:var(--steel-500);font-weight:600;margin-right:6px}
 .evidence-quote{color:var(--steel-700);font-style:italic}
 .evidence-empty{color:var(--steel-300);font-size:13px;font-style:italic}
+
+/* Verified pass (trade-show QR) -- Audit detail dialog, own small
+   section reusing the same evidence-section/btn tokens as the rest of
+   the dialog. See renderAuditDetail's publicPassSection(). */
+.pass-empty{color:var(--steel-500);font-size:13px;margin-bottom:10px}
+.pass-row{display:flex;gap:14px;align-items:flex-start}
+.pass-qr{border:1px solid var(--rule);border-radius:6px;background:#fff;flex:none}
+.pass-details{flex:1;min-width:0}
+.pass-status{
+  font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;
+  letter-spacing:.05em;text-transform:uppercase;display:inline-block;
+  padding:2px 8px;border-radius:5px;margin-bottom:6px;
+}
+.pass-status.ok{color:var(--tier-verified);background:var(--tier-verified-bg)}
+.pass-status.revoked{color:var(--danger-dark);background:var(--danger-bg)}
+.pass-link{display:block;font-size:12.5px;word-break:break-all;margin-bottom:8px}
+.pass-actions{display:flex;flex-wrap:wrap;gap:6px}
+.pass-note{color:var(--steel-300);font-size:12px;margin-top:6px}
+
 .dlg-head{padding:14px 18px;border-bottom:1px solid var(--rule);background:var(--steel-900);color:#fff}
 .dlg-title{
   font-family:'Barlow Condensed',sans-serif;font-weight:700;
@@ -624,6 +643,7 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
       <button data-view="jobs">Job history</button>
       <button data-view="compare">Compare</button>
       <button data-view="audit">Audit</button>
+      <button data-view="quotes">Quotes</button>
     </nav>
     <div class="conn">
       <span class="dot" id="connDot"></span>
@@ -890,6 +910,22 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
       </div>
     </div>
   </section>
+<section id="view-quotes" class="hidden">
+  <div class="panel"><div class="panel-head"><h2 class="panel-title">Quotes</h2><button class="btn btn-ghost" id="rfqRefresh">Refresh</button><button class="btn" id="rfqPoll">Check inbox</button></div>
+  <div class="card-body"><div id="rfqReadiness" class="hint"></div><div id="rfqNotice" role="status"></div>
+  <form id="rfqCreate"><h3>Create an RFQ campaign</h3><div class="form-grid">
+  <label>Title<input class="input" name="title" required></label><label>Product<input class="input" name="product" required></label>
+  <label>Chinese product name<input class="input" name="product_zh"></label><label>Specification<textarea class="input" name="specification"></textarea></label>
+  <label>Quantity<input class="input" name="quantity"></label><label>Unit<input class="input" name="unit"></label>
+  <label>Requested incoterm<input class="input" name="target_incoterm"></label><label>Destination<input class="input" name="destination"></label>
+  <label>Required certifications (comma separated)<input class="input" name="certifications"></label><label>Quote deadline<input class="input" name="quote_deadline" type="date"></label>
+  <label>Supplier IDs (comma separated; optional)<input class="input" name="supplier_ids"></label><label>Supplier search<input class="input" name="query"></label>
+  <label>Supplier limit<input class="input" name="limit" type="number" min="1" max="500" value="25"></label>
+  <label><input type="checkbox" name="all_channels"> Draft every usable channel</label>
+  </div><button class="btn" type="submit">Create and draft</button></form>
+  <div id="rfqCampaigns"></div><div id="rfqCampaign"></div><div id="rfqComparison"></div></div></div>
+</section>
+
 </main>
 
 <!-- ══ CONNECTION DIALOG ═════════════════════════════════ -->
@@ -939,8 +975,30 @@ const store = {
   set(k,v){ try{ localStorage.setItem(k,v); }catch{ mem[k]=v; } }
 };
 
+// A bare host (e.g. "myapp.up.railway.app", no scheme) isn't an
+// absolute URL -- fetch() resolves it relative to the CURRENT page
+// instead of erroring, so every request silently hit supplierintel.co
+// itself, fell through its SPA catch-all, and got index.html back as
+// "successful" HTML rather than ever reaching the real API. Real
+// incident: this produced "Got a webpage instead of data" with no
+// indication the address itself was the problem. Assume https://
+// when no scheme is given, same default every browser address bar
+// already applies. Applied on load (so an already-saved bad address
+// self-heals) as well as on save.
+function normalizeApiBase(url) {
+  url = (url || "").trim().replace(/\/+$/, "");
+  if (url && !/^https?:\/\//i.test(url)) url = "https://" + url;
+  return url;
+}
+
+const _rawStoredBase = store.get("si.base") || "";
+const _normalizedStoredBase = normalizeApiBase(_rawStoredBase);
+if (_normalizedStoredBase && _normalizedStoredBase !== _rawStoredBase) {
+  store.set("si.base", _normalizedStoredBase);
+}
+
 const state = {
-  base: store.get("si.base") || "",
+  base: _normalizedStoredBase,
   token: store.get("si.token") || "",
   connected: false,
   jobTimer: null
@@ -1040,7 +1098,7 @@ $("connBtn").addEventListener("click", () => {
 
 $("btnConnect").addEventListener("click", (e) => {
   e.preventDefault();
-  const url = $("cUrl").value.trim().replace(/\/+$/, "");
+  const url = normalizeApiBase($("cUrl").value);
   const token = $("cToken").value.trim();
   if (!url) {
     alertBox($("connResult"), 1, "Address needed", "Enter the URL your API is running at.");
@@ -1050,6 +1108,7 @@ $("btnConnect").addEventListener("click", (e) => {
   store.set("si.base", url); store.set("si.token", token);
   $("connDialog").close();
   checkHealth();
+  renderConnectionEmptyStates();
 });
 
 /* ═══ Navigation ════════════════════════════════════════════ */
@@ -1059,12 +1118,13 @@ $("nav").addEventListener("click", (e) => {
   const view = btn.dataset.view;
   document.querySelectorAll("#nav button").forEach(b =>
     b.setAttribute("aria-current", b === btn ? "page" : "false"));
-  ["find","search","bulk","jobs","compare","audit"].forEach(v =>
+  ["find","search","bulk","jobs","compare","audit","quotes"].forEach(v =>
     $("view-" + v).classList.toggle("hidden", v !== view));
   if (view === "find") initFindView();
   if (view === "jobs") loadJobs();
   if (view === "compare") initCompareView();
   if (view === "audit") initAuditView();
+  if (view === "quotes") loadRFQ();
 });
 
 /* ═══ Supplier cards ════════════════════════════════════════ */
@@ -1460,6 +1520,14 @@ function findClassifyInput(text) {
   if (findAmbiguousChoice === "product") return { kind: "product", targetCount: null };
   if (findAiClassifiedText === text && findAiClassifiedKind === "company") return { kind: "company", aiGuessed: true };
   if (findAiClassifiedText === text && findAiClassifiedKind === "product") return { kind: "product", targetCount: null, aiGuessed: true };
+  if (!state.connected || findAiClassifyFailedText === text) {
+    // Can't ask the AI classifier (not connected) or it already failed
+    // for this exact text -- default to a product/category search
+    // instead of blocking the buyer on a manual choice. Still
+    // one-click correctable via the same override link shown for a
+    // confident guess, via findRenderMode's c.kind === "product" branch.
+    return { kind: "product", targetCount: null, fallbackGuess: true };
+  }
   return { kind: "ambiguous" };
 }
 
@@ -1523,7 +1591,7 @@ function findRenderMode() {
     if (findAiClassifyTimer) { clearTimeout(findAiClassifyTimer); findAiClassifyTimer = null; }
     return;
   }
-  const aiTag = c.aiGuessed ? " (AI-detected)" : "";
+  const aiTag = c.aiGuessed ? " (AI-detected)" : c.fallbackGuess ? " (best guess)" : "";
   if (c.kind === "url") {
     row.innerHTML = `Detected: <strong>website URL</strong> — will collect this company's own site.`;
   } else if (c.kind === "company") {
@@ -1532,21 +1600,15 @@ function findRenderMode() {
   } else if (c.kind === "product") {
     row.innerHTML = `Detected${aiTag}: <strong>product/category search</strong>${c.targetCount ? ` — target ${c.targetCount} suppliers` : ""}. ` +
       `<button class="btn btn-ghost btn-sm" data-find-mode="company">Not a product — it's a company name &rarr;</button>`;
-  } else if (state.connected && findAiClassifyFailedText !== text) {
-    // Ambiguous, not yet resolved -- kick off (or let an already-
-    // scheduled) AI classification run; show a neutral interim message
-    // rather than the manual chip while it's in flight, so the buyer
-    // isn't asked a question the model is about to answer for them.
+  } else {
+    // Only reachable while connected and genuinely not yet resolved
+    // (findClassifyInput defaults everything else -- disconnected, or
+    // a failed classify attempt -- straight to a "product" fallback
+    // guess above, so the buyer is never blocked on a manual choice).
+    // Kick off (or let an already-scheduled) AI classification run and
+    // show a neutral interim message while it's in flight.
     findScheduleAiClassify(text);
     row.innerHTML = `Working out whether "<strong>${esc(text)}</strong>" is a company name or a product/category…`;
-  } else {
-    // Not connected (no backend to ask), or the AI classification
-    // already failed for this exact text -- same manual chip this
-    // codebase always showed here before automatic classification
-    // existed, never removed as a fallback.
-    row.innerHTML = `Is "<strong>${esc(text)}</strong>" a company name or a product/category to search for? ` +
-      `<button class="btn btn-ghost btn-sm" data-find-mode="company">It's a company</button> ` +
-      `<button class="btn btn-ghost btn-sm" data-find-mode="product">It's a product/category</button>`;
   }
   findRenderCostNote(c);
 }
@@ -3035,6 +3097,118 @@ function evidenceSection(title, bodyHtml) {
   return `<div class="evidence-section"><h3>${esc(title)}</h3>${bodyHtml}</div>`;
 }
 
+/* Verified pass (trade-show QR) -- see api/app.py's
+   POST/GET/DELETE /suppliers/{id}/public-pass and
+   sharing/public_pass_service.py. b.public_pass (from the audit
+   bundle -- see batch/tracker_exporter.py's own addition of this
+   field) is null until a pass has ever been generated for this
+   supplier; once generated it's returned even while revoked, so this
+   can tell "never generated" apart from "revoked" and offer Reinstate
+   rather than Generate. */
+function publicPassSection(b) {
+  return `<div class="evidence-section" id="publicPassSection" data-supplier-id="${b.supplier_id}">
+    <h3>Verified pass (trade-show QR)</h3>
+    <div id="publicPassBody">${publicPassBody(b.public_pass)}</div>
+  </div>`;
+}
+
+function publicPassBody(pass) {
+  if (!pass) {
+    return `
+      <p class="pass-empty">No pass yet. Generating one gives this supplier a public "Verified" page and a QR code you can print and leave on their table at a trade show.</p>
+      <button class="btn btn-primary btn-sm" id="passGenerateBtn">Generate pass</button>`;
+  }
+  const revoked = !!pass.public_pass_revoked_at;
+  const qrSrc = state.base + "/public/suppliers/" + encodeURIComponent(pass.public_token) + "/qr.png";
+  return `
+    <div class="pass-row">
+      <img class="pass-qr" src="${esc(qrSrc)}" alt="Verification QR code" width="96" height="96">
+      <div class="pass-details">
+        <span class="pass-status ${revoked ? "revoked" : "ok"}">${revoked ? "Revoked" : "Active"}</span>
+        <a class="pass-link" href="${esc(pass.public_url)}" target="_blank" rel="noopener">${esc(pass.public_url)}</a>
+        <div class="pass-actions">
+          <button class="btn btn-ghost btn-sm" id="passCopyBtn">Copy link</button>
+          ${revoked
+            ? `<button class="btn btn-primary btn-sm" id="passReinstateBtn">Reinstate</button>`
+            : `<button class="btn btn-ghost btn-sm" id="passRevokeBtn">Revoke</button>`}
+          <button class="btn btn-ghost btn-sm" id="passRegenerateBtn">Regenerate</button>
+        </div>
+        ${revoked ? "" : `<div class="pass-note">Regenerating invalidates this QR code permanently -- only do this if the printed card was lost.</div>`}
+      </div>
+    </div>`;
+}
+
+async function refreshPublicPassSection(supplierId) {
+  const host = document.getElementById("publicPassBody");
+  if (!host) return; // dialog closed/re-rendered in the meantime
+  try {
+    const pass = await api(`/suppliers/${supplierId}/public-pass`).catch(err => {
+      if (err.status === 404) return null;
+      throw err;
+    });
+    host.innerHTML = publicPassBody(pass);
+    wirePublicPassControls(supplierId);
+  } catch (err) {
+    host.innerHTML = `<p class="pass-empty">Couldn't load the pass status: ${esc(err.message)}</p>`;
+  }
+}
+
+function wirePublicPassControls(supplierId) {
+  const host = document.getElementById("publicPassBody");
+  if (!host) return;
+
+  const generate = document.getElementById("passGenerateBtn") || document.getElementById("passReinstateBtn");
+  if (generate) generate.addEventListener("click", async () => {
+    generate.disabled = true;
+    try {
+      await api(`/suppliers/${supplierId}/public-pass`, {method: "POST", body: JSON.stringify({regenerate: false})});
+      await refreshPublicPassSection(supplierId);
+    } catch (err) {
+      alert("Couldn't generate the pass: " + err.message);
+      generate.disabled = false;
+    }
+  });
+
+  const revoke = document.getElementById("passRevokeBtn");
+  if (revoke) revoke.addEventListener("click", async () => {
+    revoke.disabled = true;
+    try {
+      await api(`/suppliers/${supplierId}/public-pass`, {method: "DELETE"});
+      await refreshPublicPassSection(supplierId);
+    } catch (err) {
+      alert("Couldn't revoke the pass: " + err.message);
+      revoke.disabled = false;
+    }
+  });
+
+  const regenerate = document.getElementById("passRegenerateBtn");
+  if (regenerate) regenerate.addEventListener("click", async () => {
+    if (!confirm("This permanently invalidates the current QR code -- any printed card stops working. Continue?")) return;
+    regenerate.disabled = true;
+    try {
+      await api(`/suppliers/${supplierId}/public-pass`, {method: "POST", body: JSON.stringify({regenerate: true})});
+      await refreshPublicPassSection(supplierId);
+    } catch (err) {
+      alert("Couldn't regenerate the pass: " + err.message);
+      regenerate.disabled = false;
+    }
+  });
+
+  const copy = document.getElementById("passCopyBtn");
+  if (copy) copy.addEventListener("click", async () => {
+    const link = host.querySelector(".pass-link");
+    if (!link) return;
+    try {
+      await navigator.clipboard.writeText(link.href);
+      const original = copy.textContent;
+      copy.textContent = "Copied";
+      setTimeout(() => { copy.textContent = original; }, 1500);
+    } catch {
+      alert(link.href); // clipboard API unavailable (e.g. non-HTTPS/older browser) -- at least show it to copy manually
+    }
+  });
+}
+
 /* Audit tab Stage 2: verdict capture. Options are always Pending
    first, nothing pre-selected beyond what's actually stored in
    audit_verdicts -- see storage.repository.SupplierRepository
@@ -3354,6 +3528,7 @@ async function openAuditDetail(supplierId, name, category) {
     const b = await api("/audit/suppliers/" + supplierId);
     $("auditDetailBody").innerHTML = renderAuditDetail(b, {category});
     wireVerdictControls(supplierId);
+    wirePublicPassControls(supplierId);
   } catch (err) {
     $("auditDetailBody").innerHTML = `<div id="auditDetailErr"></div>`;
     explain(err, $("auditDetailErr"));
@@ -3376,6 +3551,12 @@ function renderAuditDetail(b, opts = {}) {
 
   const legalEntityCaveat = chinaLegalEntityCaveatSection(b, opts.category);
   if (legalEntityCaveat) sections.push(legalEntityCaveat);
+
+  // Same single-instance-at-a-time id-uniqueness concern as
+  // verdictSection() below (id="publicPassSection") -- only rendered
+  // for the real Audit tab modal, not the Find Suppliers inline
+  // evidence display, which calls this with includeVerdict: false.
+  if (opts.includeVerdict !== false) sections.push(publicPassSection(b));
 
   // A failed collection attempt (e.g. every URL variant blocked with
   // HTTP 403) and a genuinely-empty-but-reachable site both render an
@@ -3512,12 +3693,13 @@ function renderAuditDetail(b, opts = {}) {
 }
 
 /* ═══ Boot ══════════════════════════════════════════════════ */
-(async function init() {
-  await checkHealth();
-  initFindView();
-  if (getTrackedBulkJobs().length && state.connected) {
-    pollBulkJobs();
-  }
+/* Swaps the "Connect to get started" prompt for the ready-state empty
+   view (or back), based on state.base. Runs once at boot, but also
+   re-runs right after a successful Connect dialog submit -- without
+   this second call, the boot-time prompt stayed on screen forever
+   after connecting, since checkHealth() alone only updates the header
+   status pill, never this content area. */
+function renderConnectionEmptyStates() {
   if (!state.base) {
     const connectPrompt = `<div class="empty">
       <div class="empty-title">Connect to get started</div>
@@ -3527,12 +3709,81 @@ function renderAuditDetail(b, opts = {}) {
     $("findResults").innerHTML = connectPrompt;
     $("searchResults").innerHTML = connectPrompt;
   } else {
+    $("findResults").innerHTML = "";
     $("searchResults").innerHTML = `<div class="empty">
       <div class="empty-title">Search the supplier database</div>
       <p class="empty-text">Add a product and any filters, then search.</p>
     </div>`;
   }
+}
+
+(async function init() {
+  await checkHealth();
+  initFindView();
+  if (getTrackedBulkJobs().length && state.connected) {
+    pollBulkJobs();
+  }
+  renderConnectionEmptyStates();
 })();
+/* RFQ outreach: all external content is escaped before insertion. */
+let rfqCampaignId = null;
+const rfqPost = (path, body={}) => api(path,{method:'POST',body:JSON.stringify(body)});
+async function rfqAction(work) {
+  try { await work(); } catch(e) { $('rfqNotice').textContent = e.message; }
+}
+async function loadRFQ() {
+  await rfqAction(async () => {
+    const [status,campaigns] = await Promise.all([api('/rfq/status'),api('/rfq/campaigns')]);
+    $('rfqReadiness').textContent = `${status.ready ? 'Email sending ready' : 'Email sending unavailable'} · Remaining rolling 24h cap: ${status.remaining_cap}. ${status.missing.length ? 'Missing: '+status.missing.join(', ') : ''} ${status.sending_needs_review.length ? status.sending_needs_review.length+' interrupted sends need human review; they will not be resent.' : ''}`;
+    $('rfqCampaigns').innerHTML = '<h3>Campaigns</h3>'+campaigns.map(c=>`<button class="btn btn-ghost" data-rfq-campaign="${Number(c.id)}">${esc(c.title)} (${esc(c.status)})</button>`).join('');
+  });
+}
+async function showRFQ(id) {
+  rfqCampaignId=Number(id);
+  const c=await api('/rfq/campaigns/'+rfqCampaignId);
+  $('rfqCampaign').innerHTML=`<h3>${esc(c.title)}</h3><button class="btn" data-rfq-action="approve">Approve email drafts</button> <button class="btn" data-rfq-action="send">Send approved emails</button> <button class="btn btn-ghost" data-rfq-action="followups">Draft follow-ups</button> <button class="btn btn-ghost" data-rfq-action="compare">Compare quotes</button>
+  <div style="overflow:auto"><table class="tbl"><thead><tr><th>Supplier / channel</th><th>Draft</th><th>Status / actions</th></tr></thead><tbody>${c.messages.map(m=>`<tr><td>${esc(m.supplier_name)}<br>${esc(m.channel)}<br>${esc(m.recipient)}</td><td>${m.channel==='email'?`<label>Recipient<input class="input" id="rfqRecipient${Number(m.id)}" value="${esc(m.recipient)}" ${m.status==='draft'?'':'disabled'}></label>`:''}<label>Subject<input class="input" id="rfqSubject${Number(m.id)}" value="${esc(m.subject)}" ${m.status==='draft'?'':'disabled'}></label><label>Message<textarea class="input" rows="7" id="rfqBody${Number(m.id)}" ${m.status==='draft'?'':'disabled'}>${esc(m.body)}</textarea></label></td><td>${esc(m.status)}<br>${esc(m.status_reason)}<br>${m.status==='draft'?`<button class="btn btn-sm" data-rfq-save="${Number(m.id)}">Save draft</button>`:''}
+  ${m.channel!=='email'?`${/^https?:\/\//i.test(m.action_url||'')?`<a href="${esc(m.action_url)}" target="_blank" rel="noopener noreferrer">Open channel</a>`:''}<button class="btn btn-sm" data-rfq-copy="${Number(m.id)}">Copy message</button>${m.status==='draft'?`<button class="btn btn-sm" data-rfq-sent="${Number(m.id)}">Mark sent</button>`:''}`:''}<button class="btn btn-sm" data-rfq-reply="${Number(m.id)}">Paste reply</button></td></tr>`).join('')}</tbody></table></div>
+  <h3>Replies</h3>${c.replies.map(r=>`<details><summary>Supplier ${Number(r.supplier_id)} · ${esc(r.reply_type)} · ${esc(r.parse_status)}</summary><pre style="white-space:pre-wrap">${esc(r.body_text)}</pre>${(r.attachments||[]).map(a=>`<div>${esc(a.filename)}: ${esc(a.read_status)}</div>`).join('')}</details>`).join('')}`;
+}
+async function compareRFQ() {
+  const result=await api(`/rfq/campaigns/${rfqCampaignId}/compare`);
+  $('rfqComparison').innerHTML='<h3>Quote comparison</h3><p>Compare within each currency. Incoterms and quantities may differ; the buyer decides.</p>'+Object.entries(result.currencies).map(([currency,quotes])=>`<h4>${esc(currency)}</h4><div style="overflow:auto"><table class="tbl"><thead><tr><th>Supplier</th><th>Unit price / basis</th><th>Incoterm</th><th>MOQ</th><th>Lead time</th><th>Other terms</th><th>Evidence</th></tr></thead><tbody>${quotes.map(q=>`<tr><td>${esc(q.supplier_name)}</td><td>${esc(q.unit_price)} / ${esc(q.quantity_basis)}</td><td>${esc(q.incoterm)}</td><td>${esc(q.moq)}</td><td>${esc(q.lead_time)}</td><td>${esc(q.payment_terms)}<br>Valid: ${esc(q.valid_until)}<br>Sample: ${esc(q.sample_terms)}<br>Tooling: ${esc(q.tooling_cost)}</td><td>${Object.entries(q.evidence).map(([field,text])=>`<div><strong>${esc(field)}</strong>: ${esc(text)}</div>`).join('')}</td></tr>`).join('')}</tbody></table></div>`).join('')+'<h4>Awaiting reply</h4>'+result.unanswered.map(m=>`<div>Supplier ${Number(m.supplier_id)} · ${esc(m.channel)} · ${esc(m.recipient)} · ${esc(m.status)}</div>`).join('');
+}
+$('rfqRefresh').addEventListener('click',()=>rfqAction(async()=>{await loadRFQ();if(rfqCampaignId)await showRFQ(rfqCampaignId);}));
+$('rfqPoll').addEventListener('click',()=>rfqAction(async()=>{
+  const job=await rfqPost('/rfq/poll'); $('rfqNotice').textContent='Inbox job '+job.job_id+' queued. See Job history for results.';
+}));
+$('rfqCreate').addEventListener('submit',e=>{
+  e.preventDefault(); rfqAction(async()=>{
+    const form=new FormData(e.target), values=Object.fromEntries(form.entries());
+    values.required_certifications=values.certifications.split(',').map(s=>s.trim()).filter(Boolean); delete values.certifications;
+    values.supplier_ids=values.supplier_ids.trim()?values.supplier_ids.split(',').map(Number):null;
+    values.limit=Number(values.limit);values.all_channels=form.has('all_channels');
+    values.query=values.query||null;
+    const c=await rfqPost('/rfq/campaigns',values);await loadRFQ();await showRFQ(c.id);
+    $('rfqNotice').textContent='Drafts created: '+JSON.stringify(c.drafting);
+  });
+});
+$('view-quotes').addEventListener('click',e=>rfqAction(async()=>{
+  const b=e.target.closest('button'); if(!b)return;
+  if(b.dataset.rfqCampaign){await showRFQ(b.dataset.rfqCampaign);return;}
+  const id=b.dataset.rfqSave||b.dataset.rfqCopy||b.dataset.rfqSent||b.dataset.rfqReply;
+  if(b.dataset.rfqSave){await api('/rfq/messages/'+id,{method:'PATCH',body:JSON.stringify({subject:$('rfqSubject'+id).value,body:$('rfqBody'+id).value,...($('rfqRecipient'+id)?{recipient:$('rfqRecipient'+id).value}:{})})});}
+  if(b.dataset.rfqCopy){await navigator.clipboard.writeText($('rfqBody'+id).value);$('rfqNotice').textContent='Message copied';return;}
+  if(b.dataset.rfqSent){if(!confirm('Confirm you sent this message yourself?'))return;await rfqPost('/rfq/messages/'+id+'/mark-sent');}
+  if(b.dataset.rfqReply){const text=prompt('Paste the supplier reply:');if(!text)return;await rfqPost('/rfq/messages/'+id+'/reply',{text});}
+  if(b.dataset.rfqAction){
+    const action=b.dataset.rfqAction;
+    if(action==='compare'){await compareRFQ();return;}
+    if(action==='send'&&!confirm('Send all approved emails in this campaign?'))return;
+    if(action==='approve'&&!confirm('Approve all current email drafts? Review and save edits first.'))return;
+    const result=await rfqPost(`/rfq/campaigns/${rfqCampaignId}/${action}`);
+    $('rfqNotice').textContent=result.job_id?'Send job '+result.job_id+' queued. See Job history for results.':JSON.stringify(result);
+  }
+  if(id||b.dataset.rfqAction){await showRFQ(rfqCampaignId);await loadRFQ();}
+}));
+
 </script>
 </body>
 </html>

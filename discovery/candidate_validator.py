@@ -31,7 +31,16 @@ A candidate is "validated" only if every gate passes:
 4. The LLM found a company name explicitly stated in the page text
    (grounded-only prompt discipline -- same "quote-required, omit
    rather than infer" rules verification.capability_extractor.py's
-   system prompt already established).
+   system prompt already established). If the LLM call itself couldn't
+   be answered at all (an OpenAI outage/quota exhaustion, not the model
+   running fine and finding nothing), falls back to a name read
+   directly off the page's own <title> tag or copyright footer instead
+   of rejecting the candidate outright -- see _deterministic_name_from_page
+   and ValidationResult.name_source. Found live: an OpenAI quota
+   exhaustion turned a "LED light suppliers in China" run into 0 of 20
+   found after examining 100 real, individually-fetchable candidates --
+   every single rejection technically correct but none of them a real
+   signal about any of those 100 companies.
 5. That extracted name fuzzy-matches the original search result
    (proves the fetched page is genuinely about the company the search
    surfaced, not an unrelated site that happens to share the domain).
@@ -709,6 +718,64 @@ def _title_name_candidates(title: str) -> list[str]:
     return candidates
 
 
+# A copyright-footer line naming the legal entity -- "(c) 2024 Shenzhen
+# ABC Lighting Co., Ltd. All rights reserved" -- common on manufacturer
+# sites (especially Chinese ones) even when the <title> tag itself is
+# just a generic marketing tagline with no company name in it at all.
+# Deliberately requires a recognised legal-entity suffix (not just
+# "any capitalised phrase after a (c)") -- without that, this matched
+# far too much unrelated footer boilerplate in a quick manual check
+# against real fetched pages ("(c) 2024 All Rights Reserved" alone,
+# theme/CMS attribution lines, etc). IGNORECASE since footers are
+# inconsistently cased ("CO.,LTD", "co. ltd").
+_COPYRIGHT_FOOTER_NAME_RE = re.compile(
+    r"(?:©|\(c\)|copyright)\s*(?:\d{4}\s*[-–]?\s*\d{0,4})?\s*[,.]?\s*"
+    r"([A-Za-z][A-Za-z0-9&.,'\-\s]{2,80}?"
+    r"(?:Co\.,?\s*Ltd\.?|Ltd\.?|Inc\.?|LLC|GmbH|Limited|Corporation|Corp\.?|"
+    r"Group|Manufacturing|Industr(?:y|ies)|Company|Enterprises?|Factory|"
+    r"Technolog(?:y|ies)|Electronics?|Electric))(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def _deterministic_name_from_page(page_title: str, page_text: str) -> Optional[str]:
+    """Best-effort, still-grounded company-name candidate read directly
+    off the page itself -- NOT gate 4's job normally (that's the LLM's
+    call), used only as a fallback for when the LLM call could not be
+    answered at all (see validate()'s own comment at its call site).
+    Two sources, tried in order, both literal text the site itself put
+    on the page -- never a guess derived from the domain name, same
+    grounded-extraction discipline as everything else this codebase
+    reads off a page (CLAUDE.md standing rule 3):
+
+    1. The page's own <title> tag (scrapers.own_website_scraper.
+       extract_page_title). A company homepage's <title> routinely IS
+       (or leads with) its own name ("ABC Lighting Co., Ltd. - LED
+       Manufacturer") -- the same raw material _title_name_candidates
+       above mines from a SERP title, reused here against the page's
+       OWN title instead. Returned whole, not segmented: gate 5's own
+       fuzzy-match against the original search result is what actually
+       decides whether this guess corroborates, exactly as it already
+       does for an LLM-produced name, so a wrong guess here is caught
+       there, not here.
+    2. _COPYRIGHT_FOOTER_NAME_RE against the page text, for when the
+       <title> tag is empty or too generic to have been useful (a
+       loading-shell SPA title, a bare tagline).
+
+    Returns None if neither source found anything -- caller falls back
+    to the existing "no company name found" rejection, same as always.
+    """
+    title = (page_title or "").strip()
+    if title:
+        return title
+
+    match = _COPYRIGHT_FOOTER_NAME_RE.search(page_text or "")
+    if match:
+        return " ".join(match.group(1).split())
+
+    return None
+
+
 # Tokens the LLM has been observed to return as the literal string
 # VALUE of a JSON field instead of an actual JSON null when it means
 # "not stated" -- found live: Principle Fork Lifts Ltd's country field
@@ -854,6 +921,17 @@ class ValidationResult:
     # `resolved_domain or candidate.domain`, never `candidate.domain`
     # alone.
     resolved_domain: Optional[str] = None
+    # "llm" (default, the normal path) or "deterministic_fallback" --
+    # set only on a successful validate() call, when the LLM call
+    # (gate 4) couldn't be answered at all and a page-grounded fallback
+    # name was used instead (see validate()'s own comment there and
+    # _deterministic_name_from_page's docstring). Exists so a caller
+    # storing this result (discovery_service.py) can record how the
+    # name was actually arrived at rather than silently presenting it
+    # as an LLM-verified extraction it wasn't -- same "never hide how a
+    # value was reached" discipline as SOURCE_QUALITY_WEIGHTS already
+    # applies to 'llm-discovery' vs a corroborated search hit.
+    name_source: str = "llm"
 
 
 class CandidateValidator:
@@ -1070,18 +1148,54 @@ class CandidateValidator:
                 )
 
         extracted = self.llm_client.complete_json(SYSTEM_PROMPT, f"Website page content:\n\n{page_text[:20_000]}")
+        name_source = "llm"
         if not isinstance(extracted, dict):
-            return ValidationResult(
-                candidate, False, None, None, None, "LLM extraction failed or returned invalid JSON",
+            # The LLM call itself couldn't be answered at all (API
+            # outage, quota exhaustion, auth/config error -- complete_json
+            # doesn't currently distinguish which, see llm/client.py's
+            # own docstring) -- NOT the same thing as the model running
+            # fine and finding no name (handled below, left as a real
+            # rejection). Found live: an OpenAI quota exhaustion turned
+            # a "LED light suppliers in China" discovery run into 0 of
+            # 20 found after examining 100 real, fetchable candidates --
+            # every one individually correct ("the LLM call failed") but
+            # collectively a total, silent loss of a run that should
+            # have been trivial, with no real per-candidate signal
+            # behind any of the 100 rejections.
+            #
+            # Falls back to a name read directly off the page itself
+            # instead of discarding the candidate outright -- still
+            # grounded (CLAUDE.md standing rule 3: text the site itself
+            # states, never inferred from the domain), and still run
+            # through every gate below exactly as an LLM-produced name
+            # would be (gate 5's fuzzy match against the original search
+            # result, gate 6's product-term check, gate 7's trader
+            # check) -- a wrong fallback guess costs nothing extra, it
+            # just fails those the same way a bad LLM guess already
+            # could. See _deterministic_name_from_page's own docstring
+            # for the two sources tried.
+            page_title = getattr(fetch_result.pages[0], "title", "")
+            fallback_name = _deterministic_name_from_page(page_title, page_text)
+            if fallback_name is None:
+                return ValidationResult(
+                    candidate, False, None, None, None,
+                    "LLM extraction failed or returned invalid JSON, and no deterministic "
+                    "fallback name (page <title>/copyright footer) was found either",
+                )
+            logger.info(
+                "discovery: gate 4 LLM call unavailable for %s -- falling back to a deterministic "
+                "page-title/copyright-footer name (%r) rather than rejecting the candidate outright",
+                candidate.domain, fallback_name,
             )
-
-        extracted_name = extracted.get("company_name")
-        extracted_country = _clean_llm_string_field(extracted.get("country"))
-        if not isinstance(extracted_name, str) or not extracted_name.strip():
-            return ValidationResult(
-                candidate, False, None, extracted_country, None, "no company name found in page text",
-            )
-        extracted_name = extracted_name.strip()
+            extracted_name, extracted_country, name_source = fallback_name, None, "deterministic_fallback"
+        else:
+            extracted_name = extracted.get("company_name")
+            extracted_country = _clean_llm_string_field(extracted.get("country"))
+            if not isinstance(extracted_name, str) or not extracted_name.strip():
+                return ValidationResult(
+                    candidate, False, None, extracted_country, None, "no company name found in page text",
+                )
+            extracted_name = extracted_name.strip()
 
         # gate 3.6 -- catches a fetch that silently landed on a
         # DIFFERENT real company's site (found live: duraauto.com's own
@@ -1175,10 +1289,13 @@ class CandidateValidator:
         reason = f"{REASON_SUCCESS_PREFIX} (score={score:.0f}), product term found on page"
         if used_fallback_page:
             reason += " (via the search result's own deeper page, not the homepage)"
+        if name_source == "deterministic_fallback":
+            reason += " (name via deterministic fallback, not the LLM -- see name_source)"
         return ValidationResult(
             candidate, True, extracted_name, extracted_country, score,
             reason,
             resolved_domain=resolved_domain,
+            name_source=name_source,
         )
 
     def recover(

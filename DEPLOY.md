@@ -179,6 +179,11 @@ Core endpoints:
 | GET | `/export/csv` | Download results as CSV |
 | GET | `/export/excel` | Download results as `.xlsx`, with contact/address enrichment columns CSV omits |
 | GET | `/health` | No auth — for uptime checks |
+| POST | `/suppliers/{id}/public-pass` | Issue (or, with `regenerate: true`, reissue) a supplier's public "Verified" pass token |
+| GET | `/suppliers/{id}/public-pass` | Current pass status for one supplier — token, share URL, created/revoked timestamps |
+| DELETE | `/suppliers/{id}/public-pass` | Revoke a pass (the public page 404s; the token is kept, so Reinstating from the UI restores the same link) |
+| GET | `/public/suppliers/{token}` | No auth — the curated public profile a scanned QR code or share link resolves to |
+| GET | `/public/suppliers/{token}/qr.png` | No auth — QR code PNG for the same token, generated on the fly, not stored |
 
 `POST /pipeline/jobs` returns immediately (202) because a full run
 with capability extraction can take minutes — the frontend should
@@ -195,3 +200,72 @@ is the one that happens to poll for it. `storage.repository`'s
 `pipeline_jobs` methods are the thing to replace with a real queue
 (Celery + Redis, or Railway's own queue primitives) if that need
 arises; nothing else in the API needs to change.
+
+## RFQ mailbox configuration
+
+Use a dedicated procurement mailbox rather than a personal mailbox. SMTP
+submission uses STARTTLS on 587 or implicit TLS on 465; IMAP uses TLS. Gmail
+and similar providers may require an app password. Credentials belong in
+server environment variables, never frontend settings. `/rfq/status` reports
+readiness and missing variable names, never passwords. These settings are
+optional and do not affect `missing_api_keys()`.
+
+| Environment variable | Default / purpose |
+|---|---|
+| `RFQ_SEND_ENABLED` | `false`; explicit delivery switch |
+| `RFQ_DAILY_SEND_LIMIT` | `25`; rolling 24-hour cap across campaigns |
+| `RFQ_SEND_DELAY_SECONDS` | `45`; spacing plus jitter |
+| `RFQ_SEND_JOB_MAX_SECONDS` | `900`; send-job wall-clock budget |
+| `RFQ_SMTP_HOST` | SMTP hostname; required to send |
+| `RFQ_SMTP_PORT` | `587`; STARTTLS, or `465` for SSL |
+| `RFQ_IMAP_HOST` | IMAP hostname |
+| `RFQ_IMAP_PORT` | `993` |
+| `RFQ_IMAP_FOLDER` | `INBOX` |
+| `RFQ_EMAIL_USER` | Mailbox login |
+| `RFQ_EMAIL_PASSWORD` | Mailbox password / app password; secret |
+| `RFQ_FROM_ADDRESS` | Sender email address |
+| `RFQ_BUYER_COMPANY` | Required buyer company |
+| `RFQ_BUYER_NAME` | Required buyer name |
+| `RFQ_BUYER_ADDRESS` | Required postal address |
+
+Migration v34 creates campaigns, outbound messages, replies, quote tiers and
+suppressions. Email sends reserve a database slot before SMTP; rows stuck in
+`sending` consume capacity until reviewed by a human and are never retried.
+The send semaphore is process-wide; database claims and the cap remain atomic
+across processes. Long operations retain the existing single-instance
+BackgroundTasks limitations. Check delivery before manually resolving an
+ambiguous SMTP failure or interrupted send.
+
+All RFQ endpoints require the same API bearer token as other private endpoints.
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/rfq/status` | Readiness, remaining cap, interrupted sends |
+| POST | `/rfq/campaigns` | Create campaign and draft shortlisted suppliers |
+| GET | `/rfq/campaigns` | List campaigns |
+| GET | `/rfq/campaigns/{id}` | Campaign, messages and readable replies |
+| PATCH | `/rfq/messages/{id}` | Edit subject, body or recipient of a draft |
+| POST | `/rfq/campaigns/{id}/approve` | Approve email drafts; optional `message_ids` |
+| POST | `/rfq/campaigns/{id}/send` | 202 background job; optional `limit` |
+| POST | `/rfq/poll` | 202 inbox job; `since_days=14`, `limit=200` |
+| POST | `/rfq/messages/{id}/mark-sent` | Human confirms assisted message sent |
+| POST | `/rfq/messages/{id}/reply` | Paste reply as `text` and parse quote candidates |
+| POST | `/rfq/campaigns/{id}/followups` | Draft unanswered follow-ups; `after_days=3` |
+| GET | `/rfq/campaigns/{id}/compare` | Quote groups and unanswered messages |
+
+Campaign creation accepts `title`, `product`, optional `product_zh`,
+`specification`, `quantity`, `unit`, `target_incoterm`, `destination`,
+`required_certifications` (array), `quote_deadline`, plus drafting options:
+`supplier_ids` or `query`, `limit` (25), `channels`, and `all_channels` (false).
+Default routing picks the first usable email / Alibaba / Made-in-China /
+WhatsApp / WeChat / contact form route. Marketplace profile URLs are preferred;
+otherwise assisted marketplace search links are provided.
+
+CLI commands: `rfq create`, `list`, `show`, `approve`, `send`, `followups`,
+`poll`, `reply`, `mark-sent`, `compare`, `check`, `test-email --to ADDRESS`.
+`send` prints recipients and remaining cap and requires confirmation unless
+`--yes`. `check` performs SMTP/IMAP logins without sending. `test-email` uses
+the same sending enablement, buyer identity, MX, suppression and cap gates.
+Follow-ups remain drafts until separately approved. Opt-outs (`unsubscribe`,
+`退订`) and bounces suppress the recipient and bypass quote parsing.
+No automated account interactions are used for assisted channels.

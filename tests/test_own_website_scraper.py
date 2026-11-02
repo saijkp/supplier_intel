@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import httpx
 
-from scrapers.own_website_scraper import OwnWebsiteScraper, html_to_text
+from scrapers.own_website_scraper import OwnWebsiteScraper, extract_page_title, html_to_text
 
 
 class FakeResponse:
@@ -430,3 +430,54 @@ class TestHtmlToTextMetaDescription:
         )
         text = html_to_text(html)
         assert text.count("same text twice") == 2
+
+
+class TestExtractPageTitle:
+    """extract_page_title() backs OwnWebsitePage.title -- added so
+    discovery.candidate_validator.CandidateValidator has a real,
+    grounded fallback source for a candidate's company name when the
+    LLM call can't be answered at all (an OpenAI outage/quota
+    exhaustion). See that module's _deterministic_name_from_page."""
+
+    def test_extracts_title_text(self):
+        html = "<html><head><title>Acme Trailer Co - Manufacturer</title></head><body></body></html>"
+        assert extract_page_title(html) == "Acme Trailer Co - Manufacturer"
+
+    def test_collapses_internal_whitespace(self):
+        html = "<html><head><title>\n  Acme   Trailer\n  Co  \n</title></head><body></body></html>"
+        assert extract_page_title(html) == "Acme Trailer Co"
+
+    def test_no_title_tag_returns_empty_string(self):
+        html = "<html><head></head><body><p>No title here</p></body></html>"
+        assert extract_page_title(html) == ""
+
+    def test_empty_title_tag_returns_empty_string(self):
+        html = "<html><head><title></title></head><body></body></html>"
+        assert extract_page_title(html) == ""
+
+
+class TestFetchPopulatesPageTitle:
+    """Integration-level check that OwnWebsiteScraper.fetch() actually
+    wires extract_page_title() into the pages it returns, not just that
+    the helper itself works in isolation."""
+
+    def test_homepage_title_is_populated(self):
+        client = FakeOwnWebsiteClient({
+            "https://acmetrailer.com": FakeResponse(
+                "<html><head><title>Acme Trailer Co</title></head>"
+                "<body><p>Welcome to Acme Trailer Co.</p></body></html>",
+            ),
+        })
+        scraper = OwnWebsiteScraper(http_client=client, enable_delays=False)
+        result = scraper.fetch("acmetrailer.com")
+        assert result.success is True
+        assert result.pages[0].title == "Acme Trailer Co"
+
+    def test_missing_title_yields_empty_string_not_an_error(self):
+        client = FakeOwnWebsiteClient({
+            "https://acmetrailer.com": FakeResponse("<html><body><p>No title tag here.</p></body></html>"),
+        })
+        scraper = OwnWebsiteScraper(http_client=client, enable_delays=False)
+        result = scraper.fetch("acmetrailer.com")
+        assert result.success is True
+        assert result.pages[0].title == ""

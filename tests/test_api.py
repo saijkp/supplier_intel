@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import threading
 
 import pytest
@@ -1649,6 +1650,27 @@ class TestAuditVerdictEndpoint:
         assert dossier["oem_odm_notes"] == "Acme asserts OEM capability with in-house tooling."
         assert dossier["verification_status"] == "verified"
 
+    def test_get_audit_supplier_bundle_public_pass_is_none_when_never_generated(self, client):
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+
+        response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
+
+        assert response.json()["public_pass"] is None
+
+    def test_get_audit_supplier_bundle_includes_public_pass_once_generated(self, client):
+        """So the Audit tab's own UI can show the pass link/QR and a
+        Revoke button without a second request -- see
+        sharing/public_pass_service.py."""
+        supplier_id = client.repo.create_golden_record({"canonical_name": "Acme Co", "domain": "acme.com"})
+        created = client.post(f"/suppliers/{supplier_id}/public-pass", json={}, headers=auth_headers()).json()
+
+        response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
+
+        pass_info = response.json()["public_pass"]
+        assert pass_info["public_token"] == created["public_token"]
+        assert pass_info["public_url"] == created["public_url"]
+        assert pass_info["public_pass_revoked_at"] is None
+
     def test_sourcing_dossier_fields_are_none_when_never_run(self, client):
         supplier_id = client.repo.create_golden_record({"canonical_name": "Never Sourced Co"})
         response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
@@ -1725,6 +1747,157 @@ class TestAuditVerdictEndpoint:
         response = client.get(f"/audit/suppliers/{supplier_id}", headers=auth_headers())
 
         assert response.json()["collection_failure_reason"] == ""
+
+
+class TestPublicPassEndpoints:
+    """POST/GET/DELETE /suppliers/{id}/public-pass (authenticated
+    management) and GET /public/suppliers/{token}[/qr.png] (no auth --
+    the routes an actual scanned QR code hits). See
+    sharing/public_pass_service.py's own docstring for what the public
+    profile deliberately excludes and why."""
+
+    def _supplier(self, client, **overrides):
+        fields = {"canonical_name": "Acme Manufacturing Co", "domain": "acme.example.com"}
+        fields.update(overrides)
+        return client.repo.create_golden_record(fields)
+
+    def test_create_needs_auth(self, client):
+        supplier_id = self._supplier(client)
+        response = client.post(f"/suppliers/{supplier_id}/public-pass")
+        assert response.status_code == 401
+
+    def test_create_unknown_supplier_is_404(self, client):
+        response = client.post("/suppliers/999999/public-pass", json={}, headers=auth_headers())
+        assert response.status_code == 404
+
+    def test_create_returns_token_and_public_url(self, client):
+        supplier_id = self._supplier(client)
+        response = client.post(f"/suppliers/{supplier_id}/public-pass", json={}, headers=auth_headers())
+        assert response.status_code == 200
+        body = response.json()
+        assert body["public_token"]
+        assert body["public_token"] in body["public_url"]
+        assert body["public_pass_revoked_at"] is None
+
+    def test_create_again_without_regenerate_returns_same_token(self, client):
+        supplier_id = self._supplier(client)
+        first = client.post(f"/suppliers/{supplier_id}/public-pass", json={}, headers=auth_headers()).json()
+        second = client.post(f"/suppliers/{supplier_id}/public-pass", json={}, headers=auth_headers()).json()
+        assert second["public_token"] == first["public_token"]
+
+    def test_regenerate_issues_a_new_token(self, client):
+        supplier_id = self._supplier(client)
+        first = client.post(f"/suppliers/{supplier_id}/public-pass", json={}, headers=auth_headers()).json()
+        second = client.post(
+            f"/suppliers/{supplier_id}/public-pass", json={"regenerate": True}, headers=auth_headers(),
+        ).json()
+        assert second["public_token"] != first["public_token"]
+        # The old token is dead, not just superseded -- the public endpoint 404s for it.
+        assert client.get(f"/public/suppliers/{first['public_token']}").status_code == 404
+
+    def test_get_status_needs_auth(self, client):
+        supplier_id = self._supplier(client)
+        assert client.get(f"/suppliers/{supplier_id}/public-pass").status_code == 401
+
+    def test_get_status_404_when_never_generated(self, client):
+        supplier_id = self._supplier(client)
+        response = client.get(f"/suppliers/{supplier_id}/public-pass", headers=auth_headers())
+        assert response.status_code == 404
+
+    def test_get_status_after_create(self, client):
+        supplier_id = self._supplier(client)
+        created = client.post(f"/suppliers/{supplier_id}/public-pass", json={}, headers=auth_headers()).json()
+        fetched = client.get(f"/suppliers/{supplier_id}/public-pass", headers=auth_headers()).json()
+        assert fetched["public_token"] == created["public_token"]
+
+    def test_revoke_needs_auth(self, client):
+        supplier_id = self._supplier(client)
+        assert client.delete(f"/suppliers/{supplier_id}/public-pass").status_code == 401
+
+    def test_revoke_makes_public_page_404_and_status_shows_revoked(self, client):
+        supplier_id = self._supplier(client)
+        created = client.post(f"/suppliers/{supplier_id}/public-pass", json={}, headers=auth_headers()).json()
+        token = created["public_token"]
+        assert client.get(f"/public/suppliers/{token}").status_code == 200
+
+        revoke_response = client.delete(f"/suppliers/{supplier_id}/public-pass", headers=auth_headers())
+        assert revoke_response.status_code == 204
+        assert client.get(f"/public/suppliers/{token}").status_code == 404
+
+        status = client.get(f"/suppliers/{supplier_id}/public-pass", headers=auth_headers()).json()
+        assert status["public_pass_revoked_at"] is not None
+        assert status["public_token"] == token  # not deleted, just suspended
+
+    def test_reinstating_a_revoked_pass_reuses_the_same_token(self, client):
+        supplier_id = self._supplier(client)
+        created = client.post(f"/suppliers/{supplier_id}/public-pass", json={}, headers=auth_headers()).json()
+        token = created["public_token"]
+        client.delete(f"/suppliers/{supplier_id}/public-pass", headers=auth_headers())
+
+        reinstated = client.post(f"/suppliers/{supplier_id}/public-pass", json={}, headers=auth_headers()).json()
+        assert reinstated["public_token"] == token
+        assert reinstated["public_pass_revoked_at"] is None
+        assert client.get(f"/public/suppliers/{token}").status_code == 200
+
+    def test_public_profile_unknown_token_is_404(self, client):
+        assert client.get("/public/suppliers/does-not-exist").status_code == 404
+
+    def test_public_profile_needs_no_auth_and_carries_marketing_safe_fields(self, client):
+        supplier_id = self._supplier(
+            client,
+            canonical_name="Acme Manufacturing Co",
+            country="China",
+            city="Ningbo",
+            is_manufacturer=True,
+            iso_9001=True,
+        )
+        token = client.post(f"/suppliers/{supplier_id}/public-pass", json={}, headers=auth_headers()).json()["public_token"]
+
+        response = client.get(f"/public/suppliers/{token}")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["canonical_name"] == "Acme Manufacturing Co"
+        assert body["country"] == "China"
+        assert body["is_manufacturer"] is True
+        assert body["certifications"]["iso_9001"] is True
+
+    def test_public_profile_never_includes_audit_verdicts_scores_or_contacts(self, client):
+        """Standing rule check: an internal/private field must never leak
+        onto the public page, however it's named in the raw supplier
+        row -- see sharing/public_pass_service.py's own docstring and
+        CLAUDE.md standing rule 2 (audit verdicts are always the
+        buyer's own manual call, never anyone else's to see)."""
+        supplier_id = self._supplier(client, composite_score=91, recommendation="recommended")
+        client.repo.update_supplier_fields(supplier_id, {
+            "key_contacts": json.dumps([{"name": "Jane Buyer", "email": "jane@buyer.example.com"}]),
+            "notes": "Internal note: chased twice, slow to respond.",
+        })
+        client.put(f"/audit/suppliers/{supplier_id}/verdicts/A", json={"value": "Fail"}, headers=auth_headers())
+        token = client.post(f"/suppliers/{supplier_id}/public-pass", json={}, headers=auth_headers()).json()["public_token"]
+
+        body = client.get(f"/public/suppliers/{token}").json()
+
+        assert "composite_score" not in body
+        assert "recommendation" not in body
+        assert "key_contacts" not in body
+        assert "notes" not in body
+        assert "audit_verdicts" not in body
+        assert "Fail" not in json.dumps(body)
+        assert "Jane Buyer" not in json.dumps(body)
+
+    def test_qr_code_needs_no_auth_and_returns_png(self, client):
+        supplier_id = self._supplier(client)
+        token = client.post(f"/suppliers/{supplier_id}/public-pass", json={}, headers=auth_headers()).json()["public_token"]
+
+        response = client.get(f"/public/suppliers/{token}/qr.png")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.content[:8] == b"\x89PNG\r\n\x1a\n"  # real PNG magic bytes, not an empty/placeholder body
+
+    def test_qr_code_unknown_token_is_404(self, client):
+        assert client.get("/public/suppliers/does-not-exist/qr.png").status_code == 404
 
 
 class TestClassifySearchInputEndpoint:

@@ -21,3 +21,6 @@ pytest
 pytest-xdist
 jinja2
 playwright
+qrcode[pil]
+
+pypdf>=5.0

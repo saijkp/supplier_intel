@@ -55,6 +55,13 @@ COLLECTION_ARTIFACTS_DIR = Path(os.getenv("COLLECTION_ARTIFACTS_DIR") or str(DAT
 for _dir in (DATA_DIR, EXPORTS_DIR, LOG_DIR, COLLECTION_ARTIFACTS_DIR):
     _dir.mkdir(parents=True, exist_ok=True)
 
+# Public site base URL -- where a "Verified" public pass's QR code
+# points (see sharing/public_pass_service.py): {PUBLIC_SITE_BASE_URL}/
+# verify.html?t={token}. Same `os.getenv(key) or default` pattern as
+# DB_PATH above, for the same reason (a blank env var must still fall
+# back, not resolve to an empty base). No trailing slash.
+PUBLIC_SITE_BASE_URL: str = (os.getenv("PUBLIC_SITE_BASE_URL") or "https://supplierintel.co").rstrip("/")
+
 
 # ─────────────────────────────────────────────────────────────
 # API Keys (loaded from environment / .env — never hardcode)
@@ -670,3 +677,20 @@ def configure_logging() -> None:
     redaction_filter = _RedactApiKeysFilter()
     for handler in root.handlers:
         handler.addFilter(redaction_filter)
+
+# RFQ outreach is disabled until explicitly configured.
+RFQ_SEND_ENABLED = (os.getenv("RFQ_SEND_ENABLED") or 'false').lower() in ("1", "true", "yes")
+RFQ_DAILY_SEND_LIMIT = int((os.getenv("RFQ_DAILY_SEND_LIMIT") or '25'))
+RFQ_SEND_DELAY_SECONDS = int((os.getenv("RFQ_SEND_DELAY_SECONDS") or '45'))
+RFQ_SEND_JOB_MAX_SECONDS = int((os.getenv("RFQ_SEND_JOB_MAX_SECONDS") or '900'))
+RFQ_SMTP_HOST = (os.getenv("RFQ_SMTP_HOST") or '')
+RFQ_SMTP_PORT = int((os.getenv("RFQ_SMTP_PORT") or '587'))
+RFQ_IMAP_HOST = (os.getenv("RFQ_IMAP_HOST") or '')
+RFQ_IMAP_PORT = int((os.getenv("RFQ_IMAP_PORT") or '993'))
+RFQ_IMAP_FOLDER = (os.getenv("RFQ_IMAP_FOLDER") or 'INBOX')
+RFQ_EMAIL_USER = (os.getenv("RFQ_EMAIL_USER") or '')
+RFQ_EMAIL_PASSWORD = (os.getenv("RFQ_EMAIL_PASSWORD") or '')
+RFQ_FROM_ADDRESS = (os.getenv("RFQ_FROM_ADDRESS") or '')
+RFQ_BUYER_COMPANY = (os.getenv("RFQ_BUYER_COMPANY") or '')
+RFQ_BUYER_NAME = (os.getenv("RFQ_BUYER_NAME") or '')
+RFQ_BUYER_ADDRESS = (os.getenv("RFQ_BUYER_ADDRESS") or '')

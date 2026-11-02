@@ -41,6 +41,7 @@ from scrapers.own_website_scraper import (
     OwnWebsiteFetchResult,
     OwnWebsitePage,
     OwnWebsiteScraper,
+    extract_page_title,
     html_to_text,
 )
 
@@ -131,4 +132,6 @@ class PlaywrightWebsiteScraper:
             return None
         html = page.content()
         final_url = page.url or url
-        return OwnWebsitePage(url=url, final_url=final_url, text=html_to_text(html)), html
+        return OwnWebsitePage(
+            url=url, final_url=final_url, text=html_to_text(html), title=extract_page_title(html),
+        ), html

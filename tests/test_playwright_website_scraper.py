@@ -135,6 +135,20 @@ class TestFetch:
         assert result.pages[0].url == "https://acme.example.com"
         assert "Plain homepage." in result.pages[0].text
 
+    def test_page_title_is_populated_same_as_own_website_scraper(self):
+        """Same extract_page_title() wiring as OwnWebsiteScraper -- this
+        fetcher must populate OwnWebsitePage.title identically, since
+        discovery.candidate_validator.CandidateValidator treats either
+        fetcher as a drop-in-equivalent `.fetch(domain)` source."""
+        fake = FakePlaywright({
+            "https://acme.example.com": (200, "<html><head><title>Acme Example Co</title></head><body></body></html>"),
+        })
+        scraper = PlaywrightWebsiteScraper(playwright_factory=lambda: fake)
+
+        result = scraper.fetch("acme.example.com")
+
+        assert result.pages[0].title == "Acme Example Co"
+
     def test_fetches_homepage_and_capability_linked_pages(self):
         fake = FakePlaywright({
             "https://acme.example.com": (200, HOMEPAGE_WITH_LINKS),

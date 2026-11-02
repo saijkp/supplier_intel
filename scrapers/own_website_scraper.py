@@ -99,6 +99,13 @@ class OwnWebsitePage:
     text: str
     image_urls: List[str] = field(default_factory=list)
     has_contact_form: bool = False
+    # The page's own <title> tag text (see extract_page_title above), ""
+    # if absent. Kept separate from `text` (which already includes it
+    # somewhere in the middle of a get_text() dump, with no reliable way
+    # to pick it back out) so a caller that specifically wants the
+    # site's own stated title -- not just any line of body text -- has
+    # a direct, unambiguous field to read.
+    title: str = ""
     # The ACTUAL URL this page's content was served from, after
     # following any redirect -- distinct from `url` (the URL that was
     # REQUESTED). httpx's own `response.url` already reflects this when
@@ -169,6 +176,30 @@ def html_to_text(html: str) -> str:
     lines = [line.strip() for line in text.splitlines()]
     body_lines = [line for line in lines if line]
     return "\n".join(meta_lines + body_lines)
+
+
+def extract_page_title(html: str) -> str:
+    """The page's own `<title>` tag text, stripped -- "" if absent or
+    empty. Public (like html_to_text above) so both this module's own
+    OwnWebsiteScraper and playwright_website_scraper.PlaywrightWebsiteScraper
+    populate OwnWebsitePage.title identically from the SAME extraction,
+    rather than each reimplementing it.
+
+    Added specifically to give discovery.candidate_validator.
+    CandidateValidator.validate() a real, grounded fallback source for a
+    candidate's company name when the LLM call (gate 4) can't be
+    answered at all -- e.g. an OpenAI outage/quota exhaustion, found
+    live to zero out an entire discovery run (every one of 100
+    candidates in a real "LED light suppliers in China" run rejected as
+    "LLM extraction failed", none of it a real signal about any of
+    those 100 companies). A `<title>` tag is text the site itself
+    chose to state, same grounded-extraction discipline as everything
+    else this codebase reads off a page (CLAUDE.md standing rule 3) --
+    never a guess derived from the domain name."""
+    soup = BeautifulSoup(_SCRIPT_STYLE_RE.sub(" ", html), "html.parser")
+    if soup.title is None or not soup.title.string:
+        return ""
+    return " ".join(soup.title.string.split())
 
 
 class OwnWebsiteScraper:
@@ -326,6 +357,7 @@ class OwnWebsiteScraper:
                 url=base_url, final_url=homepage_final_url, text=html_to_text(homepage_html),
                 image_urls=self._find_image_urls(base_url, homepage_html),
                 has_contact_form=self._has_contact_form(homepage_html),
+                title=extract_page_title(homepage_html),
             ))
 
             for link in self._find_capability_links(base_url, homepage_html):
@@ -339,6 +371,7 @@ class OwnWebsiteScraper:
                         url=link, final_url=page_final_url, text=html_to_text(page_html),
                         image_urls=self._find_image_urls(link, page_html),
                         has_contact_form=self._has_contact_form(page_html),
+                        title=extract_page_title(page_html),
                     ))
         except Exception as e:  # noqa: BLE001 - never let one supplier's fetch abort a batch run
             logger.error("own_website: unexpected error fetching %s: %s", domain, e)

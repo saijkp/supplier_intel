@@ -19,6 +19,7 @@ from discovery.candidate_validator import (
     CandidateValidator,
     _core_product_term,
     _countries_plausibly_match,
+    _deterministic_name_from_page,
     _distinctive_tokens,
     _mentions_product_term,
     _shares_distinctive_token,
@@ -235,6 +236,145 @@ class TestCandidateValidator:
 
         assert result.validated is False
         assert "does not match the original search result" in result.reason
+
+
+class TestDeterministicNameFromPage:
+    """Unit tests for the standalone helper -- see its own docstring.
+    Both sources are literal text the page itself states, never a
+    guess derived from the domain (CLAUDE.md standing rule 3)."""
+
+    def test_prefers_page_title_when_present(self):
+        name = _deterministic_name_from_page(
+            "Acme Trailer Co - Trailer Axle Manufacturer",
+            "(c) 2024 A Different Name Ltd. All rights reserved.",
+        )
+        assert name == "Acme Trailer Co - Trailer Axle Manufacturer"
+
+    def test_falls_back_to_copyright_footer_when_no_title(self):
+        name = _deterministic_name_from_page(
+            "", "Welcome to our factory.\n(c) 2024 Acme Trailer Co., Ltd. All rights reserved.",
+        )
+        assert name == "Acme Trailer Co., Ltd."
+
+    def test_real_copyright_symbol_and_year_range_also_match(self):
+        name = _deterministic_name_from_page(
+            "", "© 2019-2026 Shenzhen ABC Lighting Co.,Ltd All Rights Reserved.",
+        )
+        assert name == "Shenzhen ABC Lighting Co.,Ltd"
+
+    def test_returns_none_when_neither_source_found(self):
+        name = _deterministic_name_from_page("", "Just some ordinary page text, nothing legal-sounding here.")
+        assert name is None
+
+    def test_footer_boilerplate_with_no_legal_suffix_is_not_matched(self):
+        """A bare "(c) 2024 All rights reserved" (no named entity at
+        all) must not match -- the legal-suffix requirement exists
+        specifically to keep this from firing on generic boilerplate."""
+        name = _deterministic_name_from_page("", "(c) 2024 All Rights Reserved.")
+        assert name is None
+
+    def test_suffix_word_mid_longer_word_does_not_truncate_the_match(self):
+        """A suffix keyword ("Group") that's really just the start of a
+        longer, unrelated word ("Groupware") must not cause the match
+        to stop there -- it should keep extending to a real suffix
+        further along, or fail entirely, never truncate mid-word."""
+        name = _deterministic_name_from_page(
+            "", "(c) 2024 Acme Groupware Solutions Inc. All rights reserved.",
+        )
+        assert name == "Acme Groupware Solutions Inc."
+
+
+class TestGate4DeterministicFallback:
+    """When the LLM call itself can't be answered at all (an OpenAI
+    outage/quota exhaustion -- see validate()'s own comment at its call
+    site), the candidate isn't discarded outright: a name read directly
+    off the page's own <title> tag or copyright footer is tried
+    instead, and still has to clear every gate below exactly as an
+    LLM-produced name would (gate 5's fuzzy match, gate 6's product-term
+    check, gate 7's trader check)."""
+
+    def test_page_title_used_when_llm_unavailable(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Acme Trailer Co manufactures trailer axle assemblies.",
+            title="Acme Trailer Co - Trailer Axle Manufacturer",
+        )])
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=FakeLLMClient(response=None))
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is True
+        assert result.extracted_name == "Acme Trailer Co - Trailer Axle Manufacturer"
+        assert result.name_source == "deterministic_fallback"
+        assert "deterministic fallback" in result.reason
+
+    def test_copyright_footer_used_when_no_title_and_llm_unavailable(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text=(
+                "Welcome to our factory. We manufacture trailer axle assemblies.\n"
+                "(c) 2024 Acme Trailer Co., Ltd. All rights reserved."
+            ),
+            title="",
+        )])
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=FakeLLMClient(response=None))
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is True
+        assert result.extracted_name == "Acme Trailer Co., Ltd."
+        assert result.name_source == "deterministic_fallback"
+
+    def test_no_fallback_available_still_rejected_same_as_before(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Some real page text about axles with no name anywhere.", title="",
+        )])
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=FakeLLMClient(response=None))
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is False
+        assert "invalid JSON" in result.reason
+
+    def test_fallback_name_still_must_corroborate_search_result(self):
+        """The fallback doesn't weaken gate 5 -- a page title/footer
+        naming an unrelated company must still be rejected."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Welcome to Totally Different Corp, makers of trailer axle parts.",
+            title="Totally Different Corp",
+        )])
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=FakeLLMClient(response=None))
+
+        result = validator.validate(
+            _candidate(title="Acme Trailer Co", snippet="trailer axle manufacturer"), "trailer axle",
+        )
+
+        assert result.validated is False
+        assert "does not match the original search result" in result.reason
+
+    def test_fallback_name_still_must_mention_product_term(self):
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Welcome to Acme Trailer Co, a general industrial manufacturer.",
+            title="Acme Trailer Co",
+        )])
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=FakeLLMClient(response=None))
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is False
+        assert "does not mention the searched term" in result.reason
+
+    def test_successful_llm_extraction_keeps_llm_name_source(self):
+        """The default/normal path is unaffected -- name_source stays
+        "llm" when the LLM call actually works."""
+        fetcher = FakeWebsiteFetcher(pages=[SimpleNamespace(
+            text="Welcome to Acme Trailer Co, manufacturer of trailer axle assemblies.",
+        )])
+        llm = FakeLLMClient(response={"company_name": "Acme Trailer Co", "country": None})
+        validator = CandidateValidator(website_fetcher=fetcher, llm_client=llm)
+
+        result = validator.validate(_candidate(), "trailer axle")
+
+        assert result.validated is True
+        assert result.name_source == "llm"
 
 
 class TestGate6DeeperPageFallback:
