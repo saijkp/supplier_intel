@@ -204,3 +204,40 @@ Grouped by what kind of risk each one is.
 10. **A GDPR/data-retention review**, before any wider launch —
     genuinely worth doing earlier rather than later given the
     personal data this system collects and stores.
+
+## RFQ outreach and quote comparison
+
+The Quotes view and `python main.py rfq` take existing suppliers through
+campaign creation, deterministic drafts, explicit email approval, sending,
+reply capture and evidence-backed quote comparison. Use a **dedicated mailbox**
+rather than a personal one. Only matching inbound messages are stored, but a
+separate mailbox keeps procurement correspondence isolated.
+
+Configure the RFQ variables in DEPLOY.md, run `python main.py rfq check`
+(SMTP/IMAP login only), and optionally `rfq test-email --to YOUR_ADDRESS`.
+Sending defaults off. Every email draft and follow-up requires approval;
+interrupted `sending` rows require human review and are never automatically
+resent. Email has a rolling 24-hour cap, suppression list and buyer footer.
+Alibaba, Made-in-China, WeChat, WhatsApp and contact forms use assisted links
+and copy-ready messages: send yourself, mark sent, then paste replies.
+
+Example (drafting only):
+
+```bash
+python main.py rfq create --title "Wheel quotation" --product wheel --quantity 100 --unit pieces --supplier-id 12
+python main.py rfq show 1
+python main.py rfq approve 1
+# Only after configuring the mailbox and deliberately enabling sending:
+python main.py rfq send 1
+python main.py rfq poll
+python main.py rfq compare 1
+```
+
+Inbound quote extraction uses the existing LLM client and may incur provider
+cost when polling matching replies or pasting a manual reply. It validates exact
+source evidence for every field, preserves unreadable replies for review, and
+never changes supplier scores. Comparisons group currencies separately and
+retain incoterms, MOQ, lead time and evidence; they do not choose a winner.
+PDF, XLSX, CSV and TXT attachments are supported (10 MB/file, bounded text).
+Scanned PDFs and unreadable files require manual review. Polling is manual;
+there is no scheduled inbox access or marketplace-account automation.

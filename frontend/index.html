@@ -643,6 +643,7 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
       <button data-view="jobs">Job history</button>
       <button data-view="compare">Compare</button>
       <button data-view="audit">Audit</button>
+      <button data-view="quotes">Quotes</button>
     </nav>
     <div class="conn">
       <span class="dot" id="connDot"></span>
@@ -909,6 +910,22 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
       </div>
     </div>
   </section>
+<section id="view-quotes" class="hidden">
+  <div class="panel"><div class="panel-head"><h2 class="panel-title">Quotes</h2><button class="btn btn-ghost" id="rfqRefresh">Refresh</button><button class="btn" id="rfqPoll">Check inbox</button></div>
+  <div class="card-body"><div id="rfqReadiness" class="hint"></div><div id="rfqNotice" role="status"></div>
+  <form id="rfqCreate"><h3>Create an RFQ campaign</h3><div class="form-grid">
+  <label>Title<input class="input" name="title" required></label><label>Product<input class="input" name="product" required></label>
+  <label>Chinese product name<input class="input" name="product_zh"></label><label>Specification<textarea class="input" name="specification"></textarea></label>
+  <label>Quantity<input class="input" name="quantity"></label><label>Unit<input class="input" name="unit"></label>
+  <label>Requested incoterm<input class="input" name="target_incoterm"></label><label>Destination<input class="input" name="destination"></label>
+  <label>Required certifications (comma separated)<input class="input" name="certifications"></label><label>Quote deadline<input class="input" name="quote_deadline" type="date"></label>
+  <label>Supplier IDs (comma separated; optional)<input class="input" name="supplier_ids"></label><label>Supplier search<input class="input" name="query"></label>
+  <label>Supplier limit<input class="input" name="limit" type="number" min="1" max="500" value="25"></label>
+  <label><input type="checkbox" name="all_channels"> Draft every usable channel</label>
+  </div><button class="btn" type="submit">Create and draft</button></form>
+  <div id="rfqCampaigns"></div><div id="rfqCampaign"></div><div id="rfqComparison"></div></div></div>
+</section>
+
 </main>
 
 <!-- ══ CONNECTION DIALOG ═════════════════════════════════ -->
@@ -1101,12 +1118,13 @@ $("nav").addEventListener("click", (e) => {
   const view = btn.dataset.view;
   document.querySelectorAll("#nav button").forEach(b =>
     b.setAttribute("aria-current", b === btn ? "page" : "false"));
-  ["find","search","bulk","jobs","compare","audit"].forEach(v =>
+  ["find","search","bulk","jobs","compare","audit","quotes"].forEach(v =>
     $("view-" + v).classList.toggle("hidden", v !== view));
   if (view === "find") initFindView();
   if (view === "jobs") loadJobs();
   if (view === "compare") initCompareView();
   if (view === "audit") initAuditView();
+  if (view === "quotes") loadRFQ();
 });
 
 /* ═══ Supplier cards ════════════════════════════════════════ */
@@ -3707,6 +3725,65 @@ function renderConnectionEmptyStates() {
   }
   renderConnectionEmptyStates();
 })();
+/* RFQ outreach: all external content is escaped before insertion. */
+let rfqCampaignId = null;
+const rfqPost = (path, body={}) => api(path,{method:'POST',body:JSON.stringify(body)});
+async function rfqAction(work) {
+  try { await work(); } catch(e) { $('rfqNotice').textContent = e.message; }
+}
+async function loadRFQ() {
+  await rfqAction(async () => {
+    const [status,campaigns] = await Promise.all([api('/rfq/status'),api('/rfq/campaigns')]);
+    $('rfqReadiness').textContent = `${status.ready ? 'Email sending ready' : 'Email sending unavailable'} · Remaining rolling 24h cap: ${status.remaining_cap}. ${status.missing.length ? 'Missing: '+status.missing.join(', ') : ''} ${status.sending_needs_review.length ? status.sending_needs_review.length+' interrupted sends need human review; they will not be resent.' : ''}`;
+    $('rfqCampaigns').innerHTML = '<h3>Campaigns</h3>'+campaigns.map(c=>`<button class="btn btn-ghost" data-rfq-campaign="${Number(c.id)}">${esc(c.title)} (${esc(c.status)})</button>`).join('');
+  });
+}
+async function showRFQ(id) {
+  rfqCampaignId=Number(id);
+  const c=await api('/rfq/campaigns/'+rfqCampaignId);
+  $('rfqCampaign').innerHTML=`<h3>${esc(c.title)}</h3><button class="btn" data-rfq-action="approve">Approve email drafts</button> <button class="btn" data-rfq-action="send">Send approved emails</button> <button class="btn btn-ghost" data-rfq-action="followups">Draft follow-ups</button> <button class="btn btn-ghost" data-rfq-action="compare">Compare quotes</button>
+  <div style="overflow:auto"><table class="tbl"><thead><tr><th>Supplier / channel</th><th>Draft</th><th>Status / actions</th></tr></thead><tbody>${c.messages.map(m=>`<tr><td>${esc(m.supplier_name)}<br>${esc(m.channel)}<br>${esc(m.recipient)}</td><td>${m.channel==='email'?`<label>Recipient<input class="input" id="rfqRecipient${Number(m.id)}" value="${esc(m.recipient)}" ${m.status==='draft'?'':'disabled'}></label>`:''}<label>Subject<input class="input" id="rfqSubject${Number(m.id)}" value="${esc(m.subject)}" ${m.status==='draft'?'':'disabled'}></label><label>Message<textarea class="input" rows="7" id="rfqBody${Number(m.id)}" ${m.status==='draft'?'':'disabled'}>${esc(m.body)}</textarea></label></td><td>${esc(m.status)}<br>${esc(m.status_reason)}<br>${m.status==='draft'?`<button class="btn btn-sm" data-rfq-save="${Number(m.id)}">Save draft</button>`:''}
+  ${m.channel!=='email'?`${/^https?:\/\//i.test(m.action_url||'')?`<a href="${esc(m.action_url)}" target="_blank" rel="noopener noreferrer">Open channel</a>`:''}<button class="btn btn-sm" data-rfq-copy="${Number(m.id)}">Copy message</button>${m.status==='draft'?`<button class="btn btn-sm" data-rfq-sent="${Number(m.id)}">Mark sent</button>`:''}`:''}<button class="btn btn-sm" data-rfq-reply="${Number(m.id)}">Paste reply</button></td></tr>`).join('')}</tbody></table></div>
+  <h3>Replies</h3>${c.replies.map(r=>`<details><summary>Supplier ${Number(r.supplier_id)} · ${esc(r.reply_type)} · ${esc(r.parse_status)}</summary><pre style="white-space:pre-wrap">${esc(r.body_text)}</pre>${(r.attachments||[]).map(a=>`<div>${esc(a.filename)}: ${esc(a.read_status)}</div>`).join('')}</details>`).join('')}`;
+}
+async function compareRFQ() {
+  const result=await api(`/rfq/campaigns/${rfqCampaignId}/compare`);
+  $('rfqComparison').innerHTML='<h3>Quote comparison</h3><p>Compare within each currency. Incoterms and quantities may differ; the buyer decides.</p>'+Object.entries(result.currencies).map(([currency,quotes])=>`<h4>${esc(currency)}</h4><div style="overflow:auto"><table class="tbl"><thead><tr><th>Supplier</th><th>Unit price / basis</th><th>Incoterm</th><th>MOQ</th><th>Lead time</th><th>Other terms</th><th>Evidence</th></tr></thead><tbody>${quotes.map(q=>`<tr><td>${esc(q.supplier_name)}</td><td>${esc(q.unit_price)} / ${esc(q.quantity_basis)}</td><td>${esc(q.incoterm)}</td><td>${esc(q.moq)}</td><td>${esc(q.lead_time)}</td><td>${esc(q.payment_terms)}<br>Valid: ${esc(q.valid_until)}<br>Sample: ${esc(q.sample_terms)}<br>Tooling: ${esc(q.tooling_cost)}</td><td>${Object.entries(q.evidence).map(([field,text])=>`<div><strong>${esc(field)}</strong>: ${esc(text)}</div>`).join('')}</td></tr>`).join('')}</tbody></table></div>`).join('')+'<h4>Awaiting reply</h4>'+result.unanswered.map(m=>`<div>Supplier ${Number(m.supplier_id)} · ${esc(m.channel)} · ${esc(m.recipient)} · ${esc(m.status)}</div>`).join('');
+}
+$('rfqRefresh').addEventListener('click',()=>rfqAction(async()=>{await loadRFQ();if(rfqCampaignId)await showRFQ(rfqCampaignId);}));
+$('rfqPoll').addEventListener('click',()=>rfqAction(async()=>{
+  const job=await rfqPost('/rfq/poll'); $('rfqNotice').textContent='Inbox job '+job.job_id+' queued. See Job history for results.';
+}));
+$('rfqCreate').addEventListener('submit',e=>{
+  e.preventDefault(); rfqAction(async()=>{
+    const form=new FormData(e.target), values=Object.fromEntries(form.entries());
+    values.required_certifications=values.certifications.split(',').map(s=>s.trim()).filter(Boolean); delete values.certifications;
+    values.supplier_ids=values.supplier_ids.trim()?values.supplier_ids.split(',').map(Number):null;
+    values.limit=Number(values.limit);values.all_channels=form.has('all_channels');
+    values.query=values.query||null;
+    const c=await rfqPost('/rfq/campaigns',values);await loadRFQ();await showRFQ(c.id);
+    $('rfqNotice').textContent='Drafts created: '+JSON.stringify(c.drafting);
+  });
+});
+$('view-quotes').addEventListener('click',e=>rfqAction(async()=>{
+  const b=e.target.closest('button'); if(!b)return;
+  if(b.dataset.rfqCampaign){await showRFQ(b.dataset.rfqCampaign);return;}
+  const id=b.dataset.rfqSave||b.dataset.rfqCopy||b.dataset.rfqSent||b.dataset.rfqReply;
+  if(b.dataset.rfqSave){await api('/rfq/messages/'+id,{method:'PATCH',body:JSON.stringify({subject:$('rfqSubject'+id).value,body:$('rfqBody'+id).value,...($('rfqRecipient'+id)?{recipient:$('rfqRecipient'+id).value}:{})})});}
+  if(b.dataset.rfqCopy){await navigator.clipboard.writeText($('rfqBody'+id).value);$('rfqNotice').textContent='Message copied';return;}
+  if(b.dataset.rfqSent){if(!confirm('Confirm you sent this message yourself?'))return;await rfqPost('/rfq/messages/'+id+'/mark-sent');}
+  if(b.dataset.rfqReply){const text=prompt('Paste the supplier reply:');if(!text)return;await rfqPost('/rfq/messages/'+id+'/reply',{text});}
+  if(b.dataset.rfqAction){
+    const action=b.dataset.rfqAction;
+    if(action==='compare'){await compareRFQ();return;}
+    if(action==='send'&&!confirm('Send all approved emails in this campaign?'))return;
+    if(action==='approve'&&!confirm('Approve all current email drafts? Review and save edits first.'))return;
+    const result=await rfqPost(`/rfq/campaigns/${rfqCampaignId}/${action}`);
+    $('rfqNotice').textContent=result.job_id?'Send job '+result.job_id+' queued. See Job history for results.':JSON.stringify(result);
+  }
+  if(id||b.dataset.rfqAction){await showRFQ(rfqCampaignId);await loadRFQ();}
+}));
+
 </script>
 </body>
 </html>
