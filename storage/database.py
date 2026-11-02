@@ -27,12 +27,41 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 33
+SCHEMA_VERSION = 34
 
 
 # ═══════════════════════════════════════════════════════════
 # Schema DDL
 # ═══════════════════════════════════════════════════════════
+
+RFQ_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS rfq_campaigns (
+ id INTEGER PRIMARY KEY, title TEXT NOT NULL, product TEXT NOT NULL, product_zh TEXT,
+ specification TEXT, quantity TEXT, unit TEXT, target_incoterm TEXT, destination TEXT,
+ required_certifications TEXT DEFAULT '[]', quote_deadline TEXT, status TEXT DEFAULT 'open',
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS rfq_messages (
+ id INTEGER PRIMARY KEY, campaign_id INTEGER REFERENCES rfq_campaigns(id),
+ supplier_id INTEGER REFERENCES suppliers(id), channel TEXT, kind TEXT DEFAULT 'initial', language TEXT,
+ recipient TEXT, subject TEXT, body TEXT, action_url TEXT, reference TEXT UNIQUE,
+ status TEXT DEFAULT 'draft', status_reason TEXT, smtp_message_id TEXT, approved_at TEXT,
+ sent_at TEXT, replied_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+ UNIQUE(campaign_id,supplier_id,channel,kind));
+CREATE TABLE IF NOT EXISTS rfq_replies (
+ id INTEGER PRIMARY KEY, message_id INTEGER REFERENCES rfq_messages(id),
+ campaign_id INTEGER REFERENCES rfq_campaigns(id), supplier_id INTEGER REFERENCES suppliers(id),
+ channel TEXT, source TEXT, external_message_id TEXT UNIQUE, from_address TEXT, subject TEXT,
+ body_text TEXT, attachments TEXT DEFAULT '[]', reply_type TEXT, parse_status TEXT DEFAULT 'pending',
+ received_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS rfq_quotes (
+ id INTEGER PRIMARY KEY, reply_id INTEGER REFERENCES rfq_replies(id), campaign_id INTEGER REFERENCES rfq_campaigns(id),
+ supplier_id INTEGER REFERENCES suppliers(id), unit_price REAL, currency TEXT, quantity_basis TEXT,
+ moq REAL, lead_time TEXT, incoterm TEXT, payment_terms TEXT, valid_until TEXT, sample_terms TEXT,
+ tooling_cost REAL, evidence TEXT DEFAULT '{}', created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS rfq_suppressions (
+ email TEXT PRIMARY KEY, reason TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS idx_rfq_sent ON rfq_messages(status,sent_at);
+"""
 
 SCHEMA_SQL = """
 -- ═══════════════════════════════════════
@@ -839,6 +868,8 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 #     IF NOT EXISTS) for anything beyond a simple column addition, e.g.
 #     a brand new table
 # ═══════════════════════════════════════════════════════════
+
+SCHEMA_SQL += RFQ_SCHEMA_SQL
 
 MIGRATIONS: dict[int, dict] = {
     2: {
@@ -1774,6 +1805,10 @@ MIGRATIONS: dict[int, dict] = {
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_sup_public_token ON suppliers(public_token) WHERE public_token IS NOT NULL",
         ],
     },
+    34: {
+        "description": "RFQ outreach campaigns, approval workflow, replies, quotes and suppressions",
+        "statements": [statement for statement in RFQ_SCHEMA_SQL.split(";") if statement.strip()],
+    },
 }
 
 
@@ -1996,6 +2031,8 @@ def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(row["name"] == column for row in rows)
 
 
+
+
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, col_type: str) -> None:
     if not _column_exists(conn, table, column):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
@@ -2123,6 +2160,7 @@ def table_counts(db_path: Path | str | None = None) -> dict[str, int]:
     """Return row counts for every core table — used by `main.py status`
     and by tests to sanity-check the schema was created correctly."""
     tables = (
+        "rfq_campaigns", "rfq_messages", "rfq_replies", "rfq_quotes", "rfq_suppressions",
         "suppliers",
         "raw_source_data",
         "shipment_records",
