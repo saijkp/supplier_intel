@@ -21,6 +21,22 @@ def client(env,monkeypatch):
         test_client.headers['Authorization']='Bearer rfq-test'
         yield test_client
 
+def test_check_endpoint_reports_logins_and_sends_nothing(client,env):
+    response=client.post('/rfq/check')
+    assert response.status_code==200
+    assert response.json()=={'smtp':'login successful','imap':'login successful'}
+    assert env.sender.messages==[]
+
+def test_check_distinguishes_blocked_network_from_bad_login(client,env,monkeypatch):
+    def blocked(): raise TimeoutError('timed out')
+    def bad_login(): raise RuntimeError('SMTP login failed')
+    monkeypatch.setattr(env.sender,'check',blocked,raising=False)
+    monkeypatch.setattr(env.inbox,'check',bad_login,raising=False)
+    assert client.post('/rfq/check').json()=={'smtp':'could not connect (network blocked or wrong host)','imap':'login failed (check configuration)'}
+
+def test_check_requires_token(client):
+    assert client.post('/rfq/check',headers={'Authorization':'Bearer wrong'}).status_code==401
+
 @pytest.mark.parametrize('method,path,body',[
     ('GET','/rfq/status',None),('GET','/rfq/campaigns',None),('POST','/rfq/campaigns',{'title':'a','product':'b'}),
     ('GET','/rfq/campaigns/1',None),('PATCH','/rfq/messages/1',{'body':'text'}),

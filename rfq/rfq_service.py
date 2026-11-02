@@ -337,6 +337,9 @@ class RFQService:
             try:
                 transport.check()
                 result[name] = 'login successful'
+            except OSError:
+                # Reached no server at all: a blocked port or wrong host, not bad credentials.
+                result[name] = 'could not connect (network blocked or wrong host)'
             except Exception:
                 result[name] = 'login failed (check configuration)'
         return result

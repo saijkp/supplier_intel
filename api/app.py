@@ -1591,6 +1591,11 @@ def _rfq_call(method, *args, **kwargs):
 def rfq_status():
     return _rfq_call('status')
 
+@app.post('/rfq/check', dependencies=[Depends(require_api_token)])
+def rfq_check():
+    """Mailbox logins from this server's own network. Sends nothing, reads nothing."""
+    return _rfq_call('check')
+
 @app.post('/rfq/campaigns', dependencies=[Depends(require_api_token)])
 def rfq_create(request: RFQCampaignRequest):
     values = request.model_dump()
