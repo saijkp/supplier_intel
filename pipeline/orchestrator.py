@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from config.settings import TRAILER_COMPONENT_SEARCH_TERMS
+from config.settings import SWEEP_SEARCH_TERMS
 from deduplication.matcher import SupplierMatcher
 from llm.client import LLMClient
 from normalizers.alibaba_normalizer import AlibabaNormalizer
@@ -354,7 +354,7 @@ class SupplierIntelligencePipeline:
     ) -> Dict[str, Any]:
         """
         Sweep the pipeline across multiple queries in one call — e.g.
-        every term in config.settings.TRAILER_COMPONENT_SEARCH_TERMS
+        every term in config.settings.SWEEP_SEARCH_TERMS (active SOURCING_DOMAIN)
         (the default) — instead of the one-query-at-a-time usage run()
         supports directly. This is what turns the platform from "a tool
         you point at one search" into a standing discovery engine across
@@ -369,7 +369,7 @@ class SupplierIntelligencePipeline:
         query's run() is logged and counted, and the campaign continues
         with the next query rather than aborting the whole sweep.
         """
-        queries = queries or list(TRAILER_COMPONENT_SEARCH_TERMS)
+        queries = queries or list(SWEEP_SEARCH_TERMS)
         campaign_stats: Dict[str, Any] = {
             "queries_total": len(queries),
             "queries_run": 0,

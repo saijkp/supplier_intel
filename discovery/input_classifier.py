@@ -32,7 +32,7 @@ from llm.client import LLMClient
 
 SYSTEM_PROMPT = """You are classifying a short piece of text a buyer typed into a supplier-search box. Decide whether it is most likely:
 - "company": the name of a SPECIFIC company/business (e.g. "Acme Trailer Co", "JCB", "Beta Bearings Ltd")
-- "product": a PRODUCT, PART, or CATEGORY search term (e.g. "trailer axle", "injection moulding manufacturers", "LED marker lights")
+- "product": a PRODUCT, PART, or CATEGORY search term (e.g. "kitchen cabinets", "sliding wardrobe doors", "soft close hinges", "injection moulding manufacturers")
 
 Rules:
 1. Base your answer only on how the text itself reads -- you have no other context about what the buyer meant, and must not guess based on anything else.

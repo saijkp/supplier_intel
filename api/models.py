@@ -325,7 +325,7 @@ class DiscoveryJobRequest(BaseModel):
     grounded entirely in real SerpAPI search results (see
     discovery/discovery_service.py's module docstring)."""
 
-    product: str = Field(description="Product/component search term, e.g. 'trailer axle'.")
+    product: str = Field(description="Product/component search term, e.g. 'kitchen cabinets'.")
     category: Optional[str] = Field(default=None, description="Optional product category, recorded on discovery_runs.")
     country: Optional[str] = Field(default=None, description="Optional country to qualify the search.")
     source: str = Field(
@@ -518,8 +518,8 @@ class SourcingRunRequest(BaseModel):
     Source tab."""
 
     brief_text: str = Field(
-        description="Free-text sourcing brief, e.g. 'find 15 genuine winch manufacturers for "
-                     "off-road trailer recovery, ISO 9001, prioritise China then India, annual "
+        description="Free-text sourcing brief, e.g. 'find 15 genuine kitchen cabinet manufacturers for "
+                     "UK new-build flats, FSC and E1 board, prioritise China then Vietnam, annual "
                      "volume 5000pcs, 30 day payment terms'.",
     )
     max_multiplier: int = Field(

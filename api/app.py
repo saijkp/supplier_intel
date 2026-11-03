@@ -183,7 +183,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Supplier Intelligence API",
-    description="Search, verify, and enrich trailer-component suppliers.",
+    description="Search, verify, and enrich suppliers (IK Eng: house furnishing — kitchens and wardrobes first).",
     version="1.0.0",
     lifespan=lifespan,
 )

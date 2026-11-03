@@ -438,14 +438,17 @@ TRAILER_COMPONENT_TAXONOMY: Dict[str, Dict[str, Any]] = {
 }
 
 
-def get_search_terms(level: Optional[str] = None, category: Optional[str] = None) -> List[str]:
-    """Flatten TRAILER_COMPONENT_TAXONOMY into a search-term list,
-    optionally filtered to level='assembly'|'component' and/or a
+def get_search_terms(level: Optional[str] = None, category: Optional[str] = None,
+                     domain: Optional[str] = None) -> List[str]:
+    """Flatten the sourcing domain's product taxonomy into a search-term
+    list, optionally filtered to level='assembly'|'component' and/or a
     specific category. get_search_terms(level='assembly') is the fix
     for the bulb-vs-housing ambiguity: it only returns terms for
-    complete units, never bare consumable/wear parts."""
+    complete units, never bare consumable/wear parts. `domain` defaults
+    to SOURCING_DOMAIN ('furnishing' or 'trailer')."""
+    taxonomy = _DOMAINS[_resolve_domain(domain)]["taxonomy"]
     terms: List[str] = []
-    for entry in TRAILER_COMPONENT_TAXONOMY.values():
+    for entry in taxonomy.values():
         if level and entry["level"] != level:
             continue
         if category and entry["category"] != category:
@@ -510,6 +513,221 @@ TRAILER_COMPONENT_SEARCH_TERMS: List[str] = [
     "trailer tailgate",
     "horsebox ramp",
 ]
+
+
+# ═════════════════════════════════════════════════════════════
+# Furnishing sourcing domain (IK Eng Ltd, ikeng.co.uk)
+# ═════════════════════════════════════════════════════════════
+# The platform was first built for trailer components; IK Eng sources
+# full house furnishing, with kitchens and wardrobes as the priority.
+# Both domains are kept: SOURCING_DOMAIN picks which one drives the
+# sweep, categories, HS codes and coverage/product-fit scoring. Trailer
+# definitions above are unchanged, so trailer work still runs with
+# SOURCING_DOMAIN=trailer.
+
+FURNISHING_HS_CODES: List[str] = [
+    "940340",   # Wooden kitchen furniture (kitchen cabinets, units)
+    "940350",   # Wooden bedroom furniture (wardrobes, chests, beds)
+    "940360",   # Other wooden furniture
+    "940320",   # Metal furniture
+    "940391",   # Parts of furniture, of wood (doors, fronts, carcass panels)
+    "830242",   # Base metal mountings for furniture (hinges, drawer runners, handles)
+    "6810",     # Articles of artificial stone (engineered quartz worktops)
+    "6802",     # Worked natural stone (granite/marble worktops)
+    "732410",   # Stainless steel sinks
+    "848180",   # Taps and mixers
+    "4410",     # Particleboard (chipboard, melamine-faced board)
+    "4411",     # Fibreboard (MDF)
+    "9401",     # Seats (sofas, chairs)
+    "9404",     # Mattresses and bedding
+    "9405",     # Lighting
+    "7009",     # Glass mirrors (wardrobe mirror doors)
+]
+
+FURNISHING_PRODUCT_CATEGORIES: List[str] = [
+    # Priority: kitchens and wardrobes
+    "Kitchen Cabinets & Carcasses",
+    "Kitchen Doors & Fronts",
+    "Worktops",
+    "Sinks & Taps",
+    "Fitted & Sliding Wardrobes",
+    "Sliding Door Systems",
+    "Wardrobe Interiors & Fittings",
+    "Hinges, Drawer Runners & Lift Systems",
+    "Handles & Knobs",
+    "Board & Panel Materials",
+    # Rest of the house
+    "Bathroom Vanity Units",
+    "Upholstered Furniture",
+    "Beds & Mattresses",
+    "Dining & Occasional Furniture",
+    "Lighting",
+    "Soft Furnishings & Textiles",
+    "Flooring",
+    "Kitchen Appliances",
+]
+
+# Informational flag only, same contract as SAFETY_CRITICAL_CATEGORIES:
+# tells a buyer to look harder at compliance evidence (UK furniture fire
+# safety, electrical safety, WRAS water fittings, glass, bunk-bed and
+# tip-over standards). Never a filter or a substitute for checking it.
+FURNISHING_COMPLIANCE_CRITICAL_CATEGORIES: set = {
+    "Upholstered Furniture",        # Furniture and Furnishings (Fire) (Safety) Regs 1988
+    "Beds & Mattresses",            # FFR 1988, BS 7177; bunk beds BS EN 747
+    "Sinks & Taps",                 # WRAS / Water Fittings Regulations
+    "Lighting",                     # Electrical safety, UKCA
+    "Kitchen Appliances",           # Electrical/gas safety, UKCA
+    "Fitted & Sliding Wardrobes",   # Tip-over, glass/mirror doors
+    "Sliding Door Systems",         # Safety glass, anti-derailment
+}
+
+FURNISHING_TAXONOMY: Dict[str, Dict[str, Any]] = {
+    "kitchen_cabinet_set": {
+        "category": "Kitchen Cabinets & Carcasses", "level": "assembly",
+        "search_terms": [
+            "kitchen cabinets manufacturer complete set",
+            "flat pack kitchen cabinet manufacturer",
+            "modular kitchen units factory",
+        ],
+    },
+    "kitchen_carcass": {
+        "category": "Kitchen Cabinets & Carcasses", "level": "component",
+        "search_terms": ["kitchen cabinet carcass manufacturer", "melamine kitchen carcass"],
+    },
+    "kitchen_door_front": {
+        "category": "Kitchen Doors & Fronts", "level": "component",
+        "search_terms": [
+            "kitchen cabinet doors manufacturer",
+            "shaker kitchen door manufacturer",
+            "high gloss handleless kitchen door",
+            "vinyl wrapped kitchen door",
+        ],
+    },
+    "worktop": {
+        "category": "Worktops", "level": "component",
+        "search_terms": [
+            "quartz worktop manufacturer",
+            "laminate kitchen worktop manufacturer",
+            "solid wood worktop manufacturer",
+        ],
+    },
+    "sink_tap": {
+        "category": "Sinks & Taps", "level": "component",
+        "search_terms": ["stainless steel kitchen sink manufacturer", "kitchen mixer tap manufacturer"],
+    },
+    "fitted_wardrobe": {
+        "category": "Fitted & Sliding Wardrobes", "level": "assembly",
+        "search_terms": [
+            "fitted wardrobe manufacturer",
+            "sliding door wardrobe manufacturer",
+            "built in wardrobe factory",
+        ],
+    },
+    "sliding_door_system": {
+        "category": "Sliding Door Systems", "level": "component",
+        "search_terms": ["sliding wardrobe door system manufacturer", "aluminium sliding door track wardrobe"],
+    },
+    "wardrobe_interior": {
+        "category": "Wardrobe Interiors & Fittings", "level": "component",
+        "search_terms": ["wardrobe interior fittings manufacturer", "pull out wardrobe accessories"],
+    },
+    "cabinet_hardware": {
+        "category": "Hinges, Drawer Runners & Lift Systems", "level": "component",
+        "search_terms": [
+            "soft close cabinet hinge manufacturer",
+            "soft close drawer runner manufacturer",
+            "kitchen drawer system manufacturer",
+        ],
+    },
+}
+
+FURNISHING_SEARCH_TERMS: List[str] = [
+    # Kitchens (priority)
+    "kitchen cabinets manufacturer complete set",
+    "flat pack kitchen cabinet manufacturer",
+    "modular kitchen units factory",
+    "kitchen cabinet carcass manufacturer",
+    "kitchen cabinet doors manufacturer",
+    "shaker kitchen door manufacturer",
+    "high gloss handleless kitchen door",
+    "vinyl wrapped kitchen door",
+    "quartz worktop manufacturer",
+    "laminate kitchen worktop manufacturer",
+    "solid wood worktop manufacturer",
+    "stainless steel kitchen sink manufacturer",
+    "kitchen mixer tap manufacturer",
+    # Wardrobes (priority)
+    "fitted wardrobe manufacturer",
+    "sliding door wardrobe manufacturer",
+    "built in wardrobe factory",
+    "sliding wardrobe door system manufacturer",
+    "aluminium sliding door track wardrobe",
+    "wardrobe interior fittings manufacturer",
+    # Shared cabinet hardware and materials
+    "soft close cabinet hinge manufacturer",
+    "soft close drawer runner manufacturer",
+    "kitchen drawer system manufacturer",
+    "furniture handle manufacturer",
+    "melamine faced chipboard manufacturer",
+    "MDF board manufacturer",
+    "PVC edge banding manufacturer",
+    # Rest of the house
+    "bathroom vanity unit manufacturer",
+    "upholstered sofa manufacturer",
+    "bed frame manufacturer",
+    "pocket spring mattress manufacturer",
+    "dining table and chairs manufacturer",
+    "LED ceiling light manufacturer",
+    "curtain fabric manufacturer",
+    "laminate flooring manufacturer",
+]
+
+
+# ─────────────────────────────────────────────────────────────
+# Active sourcing domain
+# ─────────────────────────────────────────────────────────────
+_DOMAINS: Dict[str, Dict[str, Any]] = {
+    "furnishing": {
+        "hs_codes": FURNISHING_HS_CODES,
+        "categories": FURNISHING_PRODUCT_CATEGORIES,
+        "critical": FURNISHING_COMPLIANCE_CRITICAL_CATEGORIES,
+        "taxonomy": FURNISHING_TAXONOMY,
+        "search_terms": FURNISHING_SEARCH_TERMS,
+        "label": "house furnishing",
+    },
+    "trailer": {
+        "hs_codes": TRAILER_HS_CODES,
+        "categories": PRODUCT_CATEGORIES,
+        "critical": SAFETY_CRITICAL_CATEGORIES,
+        "taxonomy": TRAILER_COMPONENT_TAXONOMY,
+        "search_terms": TRAILER_COMPONENT_SEARCH_TERMS,
+        "label": "trailer components",
+    },
+}
+
+SOURCING_DOMAIN: str = (os.getenv("SOURCING_DOMAIN") or "furnishing").strip().lower()
+if SOURCING_DOMAIN not in _DOMAINS:
+    raise ValueError(f"SOURCING_DOMAIN must be one of {sorted(_DOMAINS)}, got {SOURCING_DOMAIN!r}")
+
+
+def _resolve_domain(domain: Optional[str]) -> str:
+    key = (domain or SOURCING_DOMAIN).strip().lower()
+    if key not in _DOMAINS:
+        raise ValueError(f"Unknown sourcing domain {domain!r}; expected one of {sorted(_DOMAINS)}")
+    return key
+
+
+def domain_config(domain: Optional[str] = None) -> Dict[str, Any]:
+    """HS codes, categories, critical categories, taxonomy and sweep
+    terms for `domain` (default SOURCING_DOMAIN)."""
+    return _DOMAINS[_resolve_domain(domain)]
+
+
+# Active-domain views. TRAILER_* / FURNISHING_* stay available by name.
+ACTIVE_HS_CODES: List[str] = _DOMAINS[SOURCING_DOMAIN]["hs_codes"]
+ACTIVE_PRODUCT_CATEGORIES: List[str] = _DOMAINS[SOURCING_DOMAIN]["categories"]
+ACTIVE_CRITICAL_CATEGORIES: set = _DOMAINS[SOURCING_DOMAIN]["critical"]
+SWEEP_SEARCH_TERMS: List[str] = _DOMAINS[SOURCING_DOMAIN]["search_terms"]
 
 
 # ─────────────────────────────────────────────────────────────

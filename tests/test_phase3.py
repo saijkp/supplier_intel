@@ -352,6 +352,15 @@ class TestResolveAndStore:
 # ═════════════════════════════════════════════════════════════
 
 class TestSupplierScorer:
+    # These cases were written against the trailer bill of materials, so pin
+    # product_fit to it; furnishing product_fit is covered in
+    # tests/test_furnishing_domain.py.
+
+    @pytest.fixture(autouse=True)
+    def _trailer_bom(self, monkeypatch):
+        import verification.scorer as scorer_module
+        from reports.coverage import TRAILER_BOM_CATEGORIES
+        monkeypatch.setattr(scorer_module, "BOM_CATEGORIES", TRAILER_BOM_CATEGORIES)
 
     def test_fully_qualified_supplier_scores_high(self):
         scorer = SupplierScorer()

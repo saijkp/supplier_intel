@@ -137,6 +137,60 @@ VOCABULARY: Tuple[CapabilityTerm, ...] = (
     CapabilityTerm("iso 13485", CATEGORY_STANDARD, ("iso13485", "iso 13485:2016")),
     CapabilityTerm("ce marking", CATEGORY_STANDARD, ("ce mark", "ce marked", "ce certified", "ce compliance")),
 
+    # --- Furnishing: processes (IK Eng; kitchens and wardrobes first) -----------
+    # How a cabinetry/furniture factory makes things -- the evidence that
+    # separates a panel-processing plant from a trader re-listing photos.
+    CapabilityTerm("cnc panel processing", CATEGORY_PROCESS, (
+        "cnc nesting", "nesting cnc", "panel saw", "beam saw", "cnc router", "panel processing",
+        "cnc boring", "point to point machining",
+    )),
+    CapabilityTerm("edge banding", CATEGORY_PROCESS, (
+        "edgebanding", "edge banding machine", "edgebander", "laser edging", "pur edge banding",
+    )),
+    CapabilityTerm("membrane pressing", CATEGORY_PROCESS, (
+        "vinyl wrapping", "vinyl wrapped", "pvc membrane", "membrane press", "3d lamination",
+    )),
+    CapabilityTerm("lacquer spray finishing", CATEGORY_PROCESS, (
+        "spray painting line", "lacquer finishing", "high gloss lacquer", "pu lacquer", "uv lacquer",
+        "spray booth", "painting line",
+    )),
+    CapabilityTerm("veneer pressing", CATEGORY_PROCESS, ("veneering", "veneer press", "hot press veneer")),
+    CapabilityTerm("solid wood joinery", CATEGORY_PROCESS, (
+        "solid wood processing", "timber joinery", "wood joinery", "mortise and tenon", "solid wood furniture production",
+    )),
+    CapabilityTerm("stone worktop fabrication", CATEGORY_PROCESS, (
+        "quartz fabrication", "granite fabrication", "worktop fabrication", "stone cutting", "bridge saw", "waterjet cutting",
+    )),
+    CapabilityTerm("glass tempering", CATEGORY_PROCESS, (
+        "tempered glass production", "toughened glass production", "glass toughening", "tempering furnace",
+    )),
+    CapabilityTerm("upholstery", CATEGORY_PROCESS, (
+        "upholstery workshop", "sofa upholstery", "upholstering", "foam cutting", "sewing workshop",
+    )),
+    CapabilityTerm("aluminium profile extrusion", CATEGORY_PROCESS, (
+        "aluminum extrusion", "aluminium extrusion", "aluminium profile", "aluminum profile",
+    )),
+
+    # --- Furnishing: UK/EU standards and certifications -----------------------
+    CapabilityTerm("uk furniture fire safety", CATEGORY_STANDARD, (
+        "furniture and furnishings fire safety regulations", "ffr 1988", "bs 5852", "bs 7177",
+        "crib 5", "cigarette and match test", "uk fire regulations",
+    )),
+    CapabilityTerm("bs en 14749", CATEGORY_STANDARD, (
+        "en 14749", "domestic kitchen storage units", "kitchen furniture safety",
+    )),
+    CapabilityTerm("bs en 16122", CATEGORY_STANDARD, ("en 16122", "storage furniture test", "storage furniture strength")),
+    CapabilityTerm("bs en 747", CATEGORY_STANDARD, ("en 747", "bunk bed standard", "bunk beds safety")),
+    CapabilityTerm("fsc certified", CATEGORY_STANDARD, ("fsc", "forest stewardship council", "fsc coc", "fsc chain of custody")),
+    CapabilityTerm("pefc certified", CATEGORY_STANDARD, ("pefc", "pefc chain of custody")),
+    CapabilityTerm("low formaldehyde emission", CATEGORY_STANDARD, (
+        "carb p2", "carb phase 2", "e1 emission", "e0 emission", "e05", "tsca title vi", "low formaldehyde",
+    )),
+    CapabilityTerm("reach compliance", CATEGORY_STANDARD, ("reach compliant", "reach regulation", "svhc")),
+    CapabilityTerm("ukca marking", CATEGORY_STANDARD, ("ukca", "ukca marked", "ukca certified")),
+    CapabilityTerm("wras approval", CATEGORY_STANDARD, ("wras", "wras approved", "water regulations approval")),
+    CapabilityTerm("fira certified", CATEGORY_STANDARD, ("fira", "fira gold", "fira testing")),
+
     # --- Logistics (commercial intelligence extension) --------------------
     # Evidence source is the supplier's own shipping/incoterms page, not
     # a directory listing -- same capability_extractor pipeline every

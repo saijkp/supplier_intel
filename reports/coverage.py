@@ -3,9 +3,11 @@ reports/coverage.py
 
 BOM category coverage analysis.
 
-The point of this module is to answer one question: "for each thing Ifor
-Williams actually buys, how many candidate suppliers do we hold, and how
-far short of a usable shortlist are we?"
+The point of this module is to answer one question: "for each thing the
+buyer actually purchases, how many candidate suppliers do we hold, and how
+far short of a usable shortlist are we?" Categories follow SOURCING_DOMAIN:
+FURNISHING_BOM_CATEGORIES (IK Eng: kitchens and wardrobes first) or the
+original TRAILER_BOM_CATEGORIES (built for Ifor Williams).
 
 That is deliberately different from the global row count. A database of
 10,000 suppliers that holds 900 brake makers and zero jockey wheel makers
@@ -36,7 +38,7 @@ TIER_TARGETS: Dict[str, int] = {"A": 60, "B": 40, "C": 25}
 
 @dataclass(frozen=True)
 class BomCategory:
-    """One purchasable category on the trailer BOM."""
+    """One purchasable category on the buyer's bill of materials."""
 
     key: str
     label: str
@@ -60,7 +62,7 @@ class BomCategory:
 # so "air spring" and "fifth wheel" would otherwise inflate categories
 # that mean something quite different on a 3.5t braked trailer.
 
-BOM_CATEGORIES: tuple[BomCategory, ...] = (
+TRAILER_BOM_CATEGORIES: tuple[BomCategory, ...] = (
     # ── Running gear ────────────────────────────────────────────
     BomCategory("axles", "Axles (braked/unbraked)", "Running gear", "A",
                 ("axle", "stub axle", "beam axle", "torsion axle")),
@@ -153,6 +155,87 @@ BOM_CATEGORIES: tuple[BomCategory, ...] = (
 )
 
 
+# Furnishing (IK Eng): kitchens and wardrobes are tier A, the priority.
+# Terms are deliberately specific: a bare "cabinet" or "door" would match
+# electrical enclosures and building doors, so those are excluded or
+# qualified (e.g. "kitchen door", "cabinet door").
+FURNISHING_BOM_CATEGORIES: tuple[BomCategory, ...] = (
+    # ── Kitchens (priority) ─────────────────────────────────────
+    BomCategory("kitchen_cabinets", "Kitchen cabinets & carcasses", "Kitchen", "A",
+                ("kitchen cabinet", "kitchen unit", "kitchen carcass", "cabinet carcass",
+                 "base unit", "wall unit", "tall unit", "flat pack kitchen", "modular kitchen",
+                 "kitchen furniture"),
+                ("electrical cabinet", "control cabinet", "server cabinet", "network cabinet",
+                 "distribution cabinet")),
+    BomCategory("kitchen_doors", "Kitchen doors & fronts", "Kitchen", "A",
+                ("kitchen door", "cabinet door", "door front", "drawer front", "shaker door",
+                 "handleless", "vinyl wrap", "high gloss door", "replacement kitchen door")),
+    BomCategory("worktops", "Worktops", "Kitchen", "A",
+                ("worktop", "countertop", "quartz", "granite", "solid surface",
+                 "compact laminate", "work surface"),
+                ("quartz crystal", "quartz watch", "quartz clock")),
+    BomCategory("sinks_taps", "Sinks & taps", "Kitchen", "A",
+                ("kitchen sink", "stainless steel sink", "composite sink", "ceramic sink",
+                 "mixer tap", "kitchen tap", "faucet", "boiling water tap")),
+
+    # ── Wardrobes (priority) ────────────────────────────────────
+    BomCategory("wardrobes", "Fitted & sliding wardrobes", "Wardrobes", "A",
+                ("wardrobe", "fitted wardrobe", "built-in wardrobe", "built in wardrobe",
+                 "closet", "walk-in", "walk in wardrobe")),
+    BomCategory("sliding_doors", "Sliding door systems", "Wardrobes", "A",
+                ("sliding door system", "sliding wardrobe door", "sliding door track",
+                 "sliding door kit", "mirror door", "soft close sliding")),
+    BomCategory("wardrobe_fittings", "Wardrobe interiors & fittings", "Wardrobes", "B",
+                ("wardrobe fitting", "wardrobe interior", "hanging rail", "pull-out", "pull out",
+                 "shoe rack", "trouser rack", "closet organizer", "closet organiser")),
+
+    # ── Cabinet hardware & materials (shared by kitchens and wardrobes) ──
+    BomCategory("hinges_runners", "Hinges, drawer runners & lift systems", "Hardware", "A",
+                ("hinge", "soft close", "drawer runner", "drawer slide", "drawer system",
+                 "tandem box", "lift system", "lift-up", "gas strut", "push to open")),
+    BomCategory("handles", "Handles & knobs", "Hardware", "B",
+                ("handle", "knob", "pull handle", "profile handle", "j-pull", "gola")),
+    BomCategory("boards", "Board & panel materials", "Materials", "B",
+                ("mdf", "chipboard", "particleboard", "melamine", "mfc", "plywood",
+                 "hpl", "laminate board", "veneered board")),
+    BomCategory("edging", "Edge banding", "Materials", "C",
+                ("edge banding", "edgebanding", "edge band", "abs edging", "pvc edging")),
+
+    # ── Rest of the house ───────────────────────────────────────
+    BomCategory("bathroom", "Bathroom vanity units", "Bathroom", "B",
+                ("vanity unit", "bathroom cabinet", "bathroom furniture", "basin unit")),
+    BomCategory("upholstery", "Upholstered furniture", "Living", "B",
+                ("sofa", "upholster", "armchair", "recliner", "corner sofa", "fabric sofa")),
+    BomCategory("beds", "Beds & mattresses", "Bedroom", "B",
+                ("bed frame", "ottoman bed", "divan", "mattress", "headboard", "bunk bed")),
+    BomCategory("dining", "Dining & occasional furniture", "Living", "C",
+                ("dining table", "dining chair", "coffee table", "side table", "sideboard",
+                 "tv unit", "bookcase")),
+    BomCategory("lighting", "Lighting", "Lighting", "C",
+                ("ceiling light", "pendant light", "led light", "downlight", "lamp",
+                 "chandelier", "under cabinet light", "led strip")),
+    BomCategory("textiles", "Soft furnishings & textiles", "Textiles", "C",
+                ("curtain", "blind", "cushion", "rug", "bedding", "upholstery fabric", "throw")),
+    BomCategory("flooring", "Flooring", "Flooring", "C",
+                ("laminate flooring", "vinyl flooring", "lvt", "engineered wood flooring",
+                 "carpet", "spc flooring")),
+    BomCategory("appliances", "Kitchen appliances", "Kitchen", "C",
+                ("oven", "hob", "cooker hood", "extractor hood", "dishwasher",
+                 "integrated fridge", "built-in appliance")),
+)
+
+
+def categories_for(domain: Optional[str] = None) -> tuple[BomCategory, ...]:
+    """BOM categories for `domain` ('furnishing' or 'trailer'), default SOURCING_DOMAIN."""
+    from config.settings import _resolve_domain
+
+    return FURNISHING_BOM_CATEGORIES if _resolve_domain(domain) == "furnishing" else TRAILER_BOM_CATEGORIES
+
+
+# Active categories for the configured domain; also used by the scorer's product_fit.
+BOM_CATEGORIES: tuple[BomCategory, ...] = categories_for()
+
+
 # ═══════════════════════════════════════════════════════════════
 # Analysis
 # ═══════════════════════════════════════════════════════════════
@@ -200,6 +283,7 @@ def _matches(hay: str, category: BomCategory) -> bool:
 def analyse_coverage(
     db_path: Optional[str] = None,
     countries: Optional[Iterable[str]] = None,
+    domain: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Return per-category counts against tier targets.
@@ -208,6 +292,7 @@ def analyse_coverage(
     countries — useful for asking "how much of this category could plausibly
     quote DDP in EUR?" by passing the European and Turkish set.
     """
+    cats = categories_for(domain)
     conn = sqlite3.connect(str(db_path or DB_PATH))
     conn.row_factory = sqlite3.Row
 
@@ -229,14 +314,14 @@ def analyse_coverage(
             "with_email": 0,
             "countries": {},
         }
-        for c in BOM_CATEGORIES
+        for c in cats
     }
 
     unmatched = 0
     for row in rows:
         hay = _haystack(row)
         hit = False
-        for cat in BOM_CATEGORIES:
+        for cat in cats:
             if not _matches(hay, cat):
                 continue
             hit = True
@@ -252,7 +337,7 @@ def analyse_coverage(
             unmatched += 1
 
     results: List[Dict[str, Any]] = []
-    for cat in BOM_CATEGORIES:
+    for cat in cats:
         b = buckets[cat.key]
         gap = max(0, cat.target - b["total"])
         pct = (b["total"] / cat.target * 100) if cat.target else 0.0
@@ -281,7 +366,7 @@ def analyse_coverage(
         "unmatched": unmatched,
         "categories": results,
         "total_gap": total_gap,
-        "target_total": sum(c.target for c in BOM_CATEGORIES),
+        "target_total": sum(c.target for c in cats),
         "covered_categories": sum(1 for r in results if r["gap"] == 0),
     }
 

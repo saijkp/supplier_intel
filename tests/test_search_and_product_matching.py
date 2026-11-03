@@ -25,20 +25,20 @@ from pipeline.orchestrator import SupplierIntelligencePipeline
 class TestTaxonomy:
 
     def test_assembly_terms_exclude_bulbs(self):
-        assembly_terms = get_search_terms(level="assembly")
+        assembly_terms = get_search_terms(level="assembly", domain="trailer")
         assert not any("bulb" in t.lower() for t in assembly_terms)
 
     def test_component_terms_include_bulbs(self):
-        component_terms = get_search_terms(level="component")
+        component_terms = get_search_terms(level="component", domain="trailer")
         assert any("bulb" in t.lower() for t in component_terms)
 
     def test_combined_level_and_category_filter(self):
-        terms = get_search_terms(level="assembly", category="LED Lighting")
+        terms = get_search_terms(level="assembly", category="LED Lighting", domain="trailer")
         assert "trailer rear combination lamp assembly" in terms
         assert not any("bulb" in t.lower() for t in terms)
 
     def test_no_filter_returns_everything(self):
-        all_terms = get_search_terms()
+        all_terms = get_search_terms(domain="trailer")
         total_expected = sum(len(e["search_terms"]) for e in TRAILER_COMPONENT_TAXONOMY.values())
         assert len(all_terms) == total_expected
 
