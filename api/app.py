@@ -42,8 +42,13 @@ from typing import Any, Dict, List, Optional
 from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
 from api.auth import require_api_token
+from api.rfq import router as rfq_router
+from api.rfq_workflow import router as rfq_workflow_router
+from rfq.workspace_worker import run as run_rfq_worker
 from api.jobs import (
     run_batch_job,
     run_collection_job,
@@ -164,9 +169,13 @@ async def lifespan(app: FastAPI):
     # long as the process does, to catch a job that hangs without any
     # restart at all -- see _stalled_job_watchdog's own docstring.
     watchdog_task = asyncio.create_task(_stalled_job_watchdog())
+    rfq_worker_task = asyncio.create_task(run_rfq_worker(lambda:get_repo().db_path))
     try:
         yield
     finally:
+        rfq_worker_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await rfq_worker_task
         watchdog_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await watchdog_task
@@ -178,6 +187,10 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+app.include_router(rfq_workflow_router)
+app.include_router(rfq_router)
+app.mount('/workspace', StaticFiles(directory=Path(__file__).resolve().parents[1] / 'frontend', html=True), name='workspace')
 
 app.add_middleware(
     CORSMiddleware,
