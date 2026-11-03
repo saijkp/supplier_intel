@@ -1585,7 +1585,7 @@ def get_public_supplier_qr_code(token: str, repo: SupplierRepository = Depends(g
     return Response(content=service.generate_qr_png(token), media_type="image/png")
 
 # RFQ routes stay thin; sending and inbox work use the shared job lifecycle.
-from api.models import (RFQCampaignRequest, RFQDraftRequest, RFQApproveRequest,
+from api.models import (RFQAgentQuotesRequest, RFQCampaignRequest, RFQDraftRequest, RFQApproveRequest,
                         RFQSendRequest, RFQPollRequest, RFQReplyRequest, RFQFollowupsRequest)
 from rfq.rfq_service import RFQService
 from api.jobs import run_rfq_job
@@ -1651,6 +1651,16 @@ def rfq_poll(request: RFQPollRequest, background_tasks: BackgroundTasks):
 @app.post('/rfq/messages/{message_id}/mark-sent', dependencies=[Depends(require_api_token)])
 def rfq_mark_sent(message_id: int):
     return _rfq_call('mark_sent',message_id)
+
+@app.get('/rfq/replies/pending', dependencies=[Depends(require_api_token)])
+def rfq_pending_replies(limit: int = Query(default=20, ge=1, le=100)):
+    """Replies awaiting a Claude Code / Codex read (RFQ_QUOTE_PARSER=agent), or failed OpenAI parses."""
+    return _rfq_call('pending_replies', limit)
+
+@app.post('/rfq/replies/{reply_id}/quotes', dependencies=[Depends(require_api_token)])
+def rfq_submit_agent_quotes(reply_id: int, request: RFQAgentQuotesRequest):
+    """Candidate quotes from an agent session; validated against the reply's own text before storing."""
+    return _rfq_call('submit_agent_quotes', reply_id, request.quotes)
 
 @app.post('/rfq/messages/{message_id}/reply', dependencies=[Depends(require_api_token)])
 def rfq_reply(message_id: int, request: RFQReplyRequest):
