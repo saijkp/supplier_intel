@@ -700,3 +700,8 @@ RFQ_ZOHO_CLIENT_ID = (os.getenv('RFQ_ZOHO_CLIENT_ID') or '')
 RFQ_ZOHO_CLIENT_SECRET = (os.getenv('RFQ_ZOHO_CLIENT_SECRET') or '')
 RFQ_ZOHO_REFRESH_TOKEN = (os.getenv('RFQ_ZOHO_REFRESH_TOKEN') or '')
 RFQ_ZOHO_ACCOUNT_ID = (os.getenv('RFQ_ZOHO_ACCOUNT_ID') or '')
+# 'openai' (default): replies are parsed by the OpenAI API on arrival.
+# 'agent': the app never calls OpenAI for quotes; replies wait as 'pending' until a
+# Claude Code / Codex session reads them (scripts/rfq_agent.py) and submits candidates,
+# which go through the same evidence validation in rfq.quote_parser.validate_candidates.
+RFQ_QUOTE_PARSER = (os.getenv('RFQ_QUOTE_PARSER') or 'openai').lower()

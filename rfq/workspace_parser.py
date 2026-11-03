@@ -26,7 +26,8 @@ def excerpt(proof, source):
 class WorkspaceParser:
     def __init__(self, llm=None, use_model=None):
         self.llm = llm if llm is not None else LLMClient(max_retries=0,timeout=20)
-        self.use_model = bool(cfg.OPENAI_API_KEY) if use_model is None else use_model
+        # Agent mode: deterministic labelled-text extraction only; never call OpenAI.
+        self.use_model = (bool(cfg.OPENAI_API_KEY) and cfg.RFQ_QUOTE_PARSER != 'agent') if use_model is None else use_model
 
     def parse(self, source, specs):
         if len(source)>50000:

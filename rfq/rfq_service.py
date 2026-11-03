@@ -17,7 +17,7 @@ from storage.repository import SupplierRepository
 from verification.email_deliverability import check_email_domain
 from rfq.channels import SmtpSender, ImapInbox, routes
 from rfq.templates import draft, footer, header
-from rfq.quote_parser import QuoteParser, strip_history
+from rfq.quote_parser import QuoteParser, strip_history, validate_candidates
 from rfq.attachments import extract_text, MAX_TEXT
 _SEND_LOCK = threading.Semaphore(1)
 
@@ -53,7 +53,7 @@ class RFQService:
             inbox_configured=not zoho_missing() and cfg.RFQ_ZOHO_REGION in REGIONS and cfg.RFQ_ZOHO_ACCOUNT_ID.isdigit()
         if cfg.RFQ_MAIL_TRANSPORT not in {'smtp','zoho'}:
             missing.append('RFQ_MAIL_TRANSPORT');inbox_configured=False
-        return {'transport':cfg.RFQ_MAIL_TRANSPORT,'send_enabled': cfg.RFQ_SEND_ENABLED, 'ready': cfg.RFQ_SEND_ENABLED and (not missing), 'missing': missing, 'remaining_cap': max(0, cfg.RFQ_DAILY_SEND_LIMIT - self.repo.daily_count()), 'imap_configured':inbox_configured,'inbox_configured':inbox_configured, 'sending_needs_review': self.repo.rows('messages', "status='sending'")}
+        return {'transport':cfg.RFQ_MAIL_TRANSPORT,'quote_parser':cfg.RFQ_QUOTE_PARSER,'send_enabled': cfg.RFQ_SEND_ENABLED, 'ready': cfg.RFQ_SEND_ENABLED and (not missing), 'missing': missing, 'remaining_cap': max(0, cfg.RFQ_DAILY_SEND_LIMIT - self.repo.daily_count()), 'imap_configured':inbox_configured,'inbox_configured':inbox_configured, 'sending_needs_review': self.repo.rows('messages', "status='sending'")}
 
     def create_campaign(self, **values):
         if not values.get('title') or not values.get('product'):
@@ -238,7 +238,8 @@ class RFQService:
                 self.repo.suppress(message['recipient'], kind)
             self.repo.update('replies', reply_id, parse_status='no_quote')
             return self.repo.get('replies', reply_id)
-        if self.defer_parsing:
+        # Agent mode: leave the reply 'pending' for a Claude Code / Codex session; no OpenAI call.
+        if self.defer_parsing or cfg.RFQ_QUOTE_PARSER == 'agent':
             return self.repo.get('replies', reply_id)
         try:
             # IMAP text is already stripped; stripping again would truncate attachment text.
@@ -252,6 +253,47 @@ class RFQService:
         if parsed['quotes']:
             self._outcome(message, 'quoted')
         return self.repo.get('replies', reply_id)
+
+    def _validation_source(self, reply):
+        # IMAP text was stripped of quoted history on arrival; manual pastes were not.
+        text = reply.get('body_text') or ''
+        return text if reply.get('source') == 'imap' else strip_history(text)
+
+    def pending_replies(self, limit=20):
+        """Replies waiting to be read, with the exact text any evidence must quote."""
+        rows = self.repo.rows('replies', "parse_status IN ('pending','failed') AND COALESCE(reply_type,'') NOT IN ('bounce','opt_out')")
+        result = []
+        for reply in rows[:max(1, min(limit, 100))]:
+            message = self.repo.get('messages', reply['message_id'])
+            campaign = self.repo.get('campaigns', reply['campaign_id'])
+            supplier = self.suppliers.get_supplier(reply['supplier_id']) if reply['supplier_id'] is not None else None
+            result.append({
+                'reply_id': reply['id'], 'campaign_id': reply['campaign_id'], 'message_id': reply['message_id'],
+                'supplier_id': reply['supplier_id'], 'supplier_name': (supplier or {}).get('canonical_name'),
+                'channel': reply['channel'], 'from_address': reply['from_address'], 'subject': reply['subject'],
+                'received_at': reply['received_at'], 'parse_status': reply['parse_status'],
+                'attachments': reply['attachments'], 'reference': message['reference'],
+                'rfq': {k: campaign.get(k) for k in ('product', 'specification', 'quantity', 'unit', 'target_incoterm', 'destination')},
+                'source_text': self._validation_source(reply),
+            })
+        return {'pending': result, 'total_pending': len(rows)}
+
+    def submit_agent_quotes(self, reply_id, quotes):
+        """Store candidate quotes proposed by a Claude Code / Codex session, after the same
+        evidence validation the OpenAI parser uses. Anything ungrounded is rejected, not stored."""
+        reply = self.repo.get('replies', reply_id)
+        if reply.get('reply_type') in ('bounce', 'opt_out'):
+            raise ValueError('Bounces and opt-outs carry no quote')
+        if reply.get('parse_status') not in ('pending', 'failed'):
+            raise ValueError(f"Reply already read (parse_status={reply.get('parse_status')})")
+        accepted, rejections = validate_candidates(quotes, self._validation_source(reply))
+        for quote in accepted:
+            self.repo.insert('quotes', reply_id=reply_id, campaign_id=reply['campaign_id'], supplier_id=reply['supplier_id'], **quote)
+        self.repo.update('replies', reply_id, reply_type='quote' if accepted else 'other', parse_status='parsed' if accepted else 'no_quote')
+        if accepted:
+            self._outcome(self.repo.get('messages', reply['message_id']), 'quoted')
+        return {'reply_id': reply_id, 'accepted': accepted, 'rejections': rejections,
+                'parse_status': 'parsed' if accepted else 'no_quote'}
 
     def record_manual_reply(self, message_id, text):
         if not text.strip():

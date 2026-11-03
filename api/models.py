@@ -731,5 +731,8 @@ class RFQPollRequest(BaseModel):
 class RFQReplyRequest(BaseModel):
     text: str = Field(min_length=1,max_length=200000)
 
+class RFQAgentQuotesRequest(BaseModel):
+    quotes: list[dict] = Field(default_factory=list, max_length=20)
+
 class RFQFollowupsRequest(BaseModel):
     after_days: int = Field(default=3,ge=0,le=365)

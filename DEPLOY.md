@@ -242,6 +242,8 @@ All RFQ endpoints require the same API bearer token as other private endpoints.
 |---|---|---|
 | GET | `/rfq/status` | Readiness, remaining cap, interrupted sends |
 | POST | `/rfq/check` | SMTP and IMAP login test from the server; sends nothing |
+| GET | `/rfq/replies/pending` | Replies awaiting an agent read (`RFQ_QUOTE_PARSER=agent`) or a failed parse |
+| POST | `/rfq/replies/{id}/quotes` | Submit agent-read quote candidates; validated against the reply before storing |
 | POST | `/rfq/campaigns` | Create campaign and draft shortlisted suppliers |
 | GET | `/rfq/campaigns` | List campaigns |
 | GET | `/rfq/campaigns/{id}` | Campaign, messages and readable replies |
