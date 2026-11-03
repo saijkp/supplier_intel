@@ -99,3 +99,25 @@ def test_pause_keeps_the_selected_limits(http):
     client.post(f'/rfqs/{rid}/outreach/policy',headers=AUTH,json={'max_rounds':5,'followup_hours':48})
     view=client.post(f'/rfqs/{rid}/outreach/pause',headers=AUTH,json={}).json()
     assert view['policy']['max_rounds']==5 and view['policy']['followup_hours']==48
+
+
+def test_sync_and_send_create_their_jobs(http,monkeypatch):
+    # Regression: both routes passed job_id positionally to the keyword-only
+    # create_pipeline_job, so every call 500'd before a job existed.
+    import api.rfq_workflow as mod
+    monkeypatch.setattr(mod,'run_sync',lambda *a,**k:None)
+    monkeypatch.setattr(mod,'run_send',lambda *a,**k:None)
+    client,rid,sid,path=http
+    view=client.post(f'/rfqs/{rid}/outreach/create',headers=AUTH,json={'supplier_ids':[sid]}).json()
+    repo=SupplierRepository(path)
+    sync=client.post(f'/rfqs/{rid}/outreach/sync',headers=AUTH)
+    assert sync.status_code==202,sync.text
+    assert repo.get_pipeline_job(sync.json()['job_id'])['status']=='queued'
+    from config import settings
+    for key,value in {'SEND_ENABLED':True,'SMTP_HOST':'smtp.test','EMAIL_USER':'u@test','EMAIL_PASSWORD':'pw',
+                      'FROM_ADDRESS':'b@test.test','BUYER_COMPANY':'B','BUYER_NAME':'N','BUYER_ADDRESS':'A'}.items():
+        monkeypatch.setattr(settings,'RFQ_'+key,value)  # run_send is stubbed: nothing is sent
+    mid=RFQRepository(path).rows('messages')[0]['id']
+    send=client.post(f'/rfqs/{rid}/outreach/messages/{mid}/send',headers=AUTH,json={})
+    assert send.status_code==202,send.text
+    assert repo.get_pipeline_job(send.json()['job_id'])['status']=='queued'
