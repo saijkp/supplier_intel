@@ -2,6 +2,7 @@
 import uuid
 import hashlib
 import re
+from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt
@@ -22,6 +23,13 @@ class LinkRequest(BaseModel):
 class DraftRequest(BaseModel):
     supplier_ids:list[PositiveInt]=Field(default_factory=list,max_length=25)
     query:str=Field(default='',max_length=300)
+
+
+class ContactRequest(BaseModel):
+    name:str=Field(min_length=1,max_length=300)
+    email:str=Field(default='',max_length=300)
+    whatsapp:str=Field(default='',max_length=40)
+    channel:Literal['email','whatsapp']='whatsapp'
 
 
 class PolicyRequest(BaseModel):
@@ -71,6 +79,11 @@ def link(rid:str,body:LinkRequest,workflow=Depends(get_workflow)):
 @router.post('/{rid}/outreach/create')
 def create(rid:str,body:DraftRequest,workflow=Depends(get_workflow)):
     return call(workflow.create,rid,body.supplier_ids,body.query)
+
+
+@router.post('/{rid}/outreach/contact')
+def contact(rid:str,body:ContactRequest,workflow=Depends(get_workflow)):
+    return call(workflow.add_contact,rid,body.name.strip(),body.email,body.whatsapp,body.channel)
 
 
 @router.post('/{rid}/outreach/policy')
@@ -124,7 +137,7 @@ def import_chat(rid:str,mid:int,body:ChatImportRequest,workflow=Depends(get_work
         # Stable IDs deduplicate a reimport without ever storing buyer chat messages.
         fingerprint='whatsapp:'+hashlib.sha256((str(mid)+'\0'+entry['sender']+'\0'+entry['timestamp']+'\0'+entry['text']).encode()).hexdigest()
         media=bool(re.search(r'<Media omitted>|image omitted|audio omitted|省略的媒体|媒体已省略',entry['text'],re.I))
-        reply=workflow.outreach._reply(message,entry['text'],source='whatsapp_import',external_message_id=fingerprint,
+        reply=workflow.outreach._reply(message,entry['text'],source='whatsapp_import',external_message_id=fingerprint,from_address=entry['sender'],subject='WhatsApp export: '+entry['timestamp'],
                    attachments=[{'filename':'WhatsApp media not included','read_status':'needs_manual_review'}] if media else [])
         if not reply.get('duplicate'):
             workflow.outreach.repo.update('replies',reply['id'],channel='whatsapp')

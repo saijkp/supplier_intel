@@ -20,7 +20,7 @@ class WorkflowRepository:
             return dict(row) if row else None
 
     def policy(self, rid, **values):
-        allowed = {'poll_enabled','auto_send','interval_minutes','followup_hours','max_rounds','expires_at','next_poll_at'}
+        allowed = {'poll_enabled','auto_send','approved_supplier_ids','interval_minutes','followup_hours','max_rounds','expires_at','next_poll_at'}
         if not values or not values.keys() <= allowed:
             raise ValueError('Invalid workflow policy')
         with connection_scope(self.db_path) as c:
@@ -31,10 +31,19 @@ class WorkflowRepository:
         with connection_scope(self.db_path) as c:
             return [dict(r) for r in c.execute("SELECT * FROM rfq_workspace_outreach WHERE poll_enabled=1 AND (next_poll_at IS NULL OR next_poll_at<=CURRENT_TIMESTAMP)")]
 
+    def find_contact(self,email,whatsapp):
+        with connection_scope(self.db_path) as c:
+            rows=c.execute('SELECT id,primary_email,whatsapp,flagged FROM suppliers').fetchall()
+        import re
+        for row in rows:
+            if (email and (row['primary_email'] or '').strip().lower()==email.lower()) or (whatsapp and re.sub(r'\D','',row['whatsapp'] or '')==whatsapp):
+                return dict(row)
+        return None
+
     def claim(self, rid):
         token = str(uuid.uuid4())
         with connection_scope(self.db_path) as c:
-            changed = c.execute("UPDATE rfq_workspace_outreach SET lease_token=?,lease_until=datetime('now','+30 minutes') WHERE rfq_id=? AND (lease_until IS NULL OR lease_until<CURRENT_TIMESTAMP)", (token,rid)).rowcount
+            changed = c.execute("UPDATE rfq_workspace_outreach SET lease_token=?,lease_until=datetime('now','+2 hours') WHERE rfq_id=? AND (lease_until IS NULL OR lease_until<CURRENT_TIMESTAMP)", (token,rid)).rowcount
         return token if changed else None
 
     def finish(self, rid, token, error=None):

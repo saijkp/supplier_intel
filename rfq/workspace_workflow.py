@@ -14,6 +14,7 @@ from sourcing.workspace_review import reviewed
 from storage.quote_workspace_repository import QuoteWorkspaceRepository
 from storage.rfq_repository import RFQRepository
 from storage.rfq_workflow_repository import WorkflowRepository
+from storage.repository import SupplierRepository
 
 
 def timestamp():
@@ -29,8 +30,17 @@ def clarification_send_reason(db_path, message):
     repo=WorkflowRepository(db_path); record=repo.clarification(message['id'])
     if not record: return 'Clarification has no auditable workflow record'
     policy=repo.get(record['rfq_id'])
+    outreach=RFQRepository(db_path)
+    if outreach.get('campaigns',message['campaign_id'])['status']!='open':return 'Campaign is closed'
+    if outreach.suppressed(message['recipient']):return 'Address is suppressed'
+    supplier=SupplierRepository(db_path).get_supplier(record['supplier_id'])
+    if not supplier or supplier.get('flagged'):return 'Supplier is flagged or missing'
     if record['automatic'] and (not policy['poll_enabled'] or not policy['auto_send'] or not policy['expires_at'] or policy['expires_at']<=timestamp()):
         return 'Automatic follow-ups paused or expired'
+    if record['automatic']:
+        if record['supplier_id'] not in json.loads(policy['approved_supplier_ids']):return 'Supplier is outside the approved follow-up scope'
+        used=sum(1 for m in repo.clarifications(record['rfq_id']) if m['supplier_id']==record['supplier_id'] and m['id']!=message['id'] and m['status'] not in ('draft','approved','skipped'))
+        if used>=policy['max_rounds']:return 'Automatic follow-up limit reached'
     rfq=reviewed(QuoteWorkspaceRepository(db_path).get_rfq(record['rfq_id']))
     quote=latest_quotes(rfq).get(record['supplier_id'])
     if not quote or quote['id']!=record['quote_id']: return 'A newer quote superseded this clarification'
@@ -68,14 +78,36 @@ class WorkspaceWorkflow:
         except sqlite3.IntegrityError: raise ValueError('Campaign is already linked to another RFQ') from None
         return self.view(rid)
 
-    def create(self,rid,supplier_ids,query=None):
+    def create(self,rid,supplier_ids,query=None,channels=None):
         rfq=self.load(rid)
         if self.repo.get(rid): raise ValueError('This RFQ already has an outreach campaign')
         if not supplier_ids and not (query or '').strip(): raise ValueError('Select suppliers or enter a supplier search term')
         campaign=self.outreach.create_campaign(title=rfq['title'],product=rfq['title'],quantity=rfq['quantity'],unit=rfq['unit'],
                      specification='\n'.join(k+': '+v for k,v in rfq['mandatory_specs'].items()))
         self.repo.link(rid,campaign['id'])
-        self.outreach.draft_messages(campaign['id'],supplier_ids=supplier_ids or None,query=query,limit=25)
+        self.outreach.draft_messages(campaign['id'],supplier_ids=supplier_ids or None,query=query,limit=25,channels=channels)
+        return self.view(rid)
+
+    def add_contact(self,rid,name,email,whatsapp,channel):
+        self.load(rid)
+        if not name.strip():raise ValueError('Enter the supplier name')
+        email=email.strip().lower();whatsapp=re.sub(r'\D','',whatsapp)
+        if email and not re.fullmatch(r'[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+',email):raise ValueError('Enter a single valid supplier email address')
+        if whatsapp and not 8<=len(whatsapp)<=15:raise ValueError('Use the supplier WhatsApp number with its country code')
+        if channel=='email' and not email:raise ValueError('Email contact requires an email address')
+        if channel=='whatsapp' and not whatsapp:raise ValueError('WhatsApp contact requires a phone number')
+        existing=self.repo.find_contact(email,whatsapp)
+        if existing and existing['flagged']:raise ValueError('This contact belongs to a flagged supplier; review the existing record')
+        if existing:
+            supplier=self.outreach.suppliers.get_supplier(existing['id'])
+            if not supplier.get('primary_email' if channel=='email' else 'whatsapp'):
+                raise ValueError('The existing supplier has no confirmed contact for this channel. Review their contact record first.')
+        sid=existing['id'] if existing else self.outreach.suppliers.create_golden_record({'canonical_name':name,'primary_email':email or None,'whatsapp':whatsapp or None,'discovery_source':'manual_rfq_contact'})
+        link=self.repo.get(rid)
+        if link:
+            self.repo.policy(rid,poll_enabled=0,auto_send=0)
+            self.outreach.draft_messages(link['campaign_id'],supplier_ids=[sid],channels=[channel])
+        else:self.create(rid,[sid],channels=[channel])
         return self.view(rid)
 
     def view(self,rid):
@@ -99,8 +131,11 @@ class WorkspaceWorkflow:
         if poll_enabled and not ready['imap_configured']: raise ValueError('Configure the dedicated RFQ inbox on the server first')
         if auto_send and not ready['ready']: raise ValueError('Sending is disabled or mailbox / buyer identity configuration is incomplete')
         expiry=(datetime.now(timezone.utc)+timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+        campaign=self.outreach.show(self.repo.get(rid)['campaign_id'])
+        approved=sorted({m['supplier_id'] for m in campaign['messages'] if m['kind']=='initial' and m['channel']=='email' and m['supplier_id']})
+        if auto_send and not approved:raise ValueError('This campaign has no email suppliers. WhatsApp remains assisted.')
         self.repo.policy(rid,poll_enabled=int(poll_enabled),auto_send=int(auto_send),interval_minutes=interval_minutes,
-                         followup_hours=followup_hours,max_rounds=max_rounds,expires_at=expiry,next_poll_at=timestamp())
+                         followup_hours=followup_hours,max_rounds=max_rounds,expires_at=expiry,next_poll_at=timestamp(),approved_supplier_ids=json.dumps(approved if auto_send else []))
         if auto_send:
             latest=latest_quotes(self.load(rid))
             for draft in self.repo.clarifications(rid):
@@ -183,7 +218,7 @@ class WorkspaceWorkflow:
             # Only selected missing fields/deviations enter this message, never supplier instructions.
             mid=self.repo.draft(rid,sid,quote['id'],{'recipient':message['recipient'],
                 'subject':header('['+reference+'] 报价信息确认: '+rfq['title']),
-                'body':quote['clarification_zh']+'\nReference: '+reference,'reference':reference},bool(link['auto_send']))
+                'body':quote['clarification_zh']+'\nReference: '+reference,'reference':reference},bool(link['auto_send']) and sid in json.loads(link['approved_supplier_ids']))
             if mid: created.append(mid)
         return created
 

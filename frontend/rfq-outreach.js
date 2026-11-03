@@ -13,6 +13,14 @@ window.renderOutreach=async function(rfq){
     outreachPanel.append(node('p',`Mailbox connection: ${ready.transport==='zoho'?'Zoho Mail API':'SMTP / IMAP'} · Inbox: ${ready.imap_configured?'configured':'not configured'} · Sending: ${ready.ready?'ready':'not ready'} · Daily capacity remaining: ${ready.remaining_cap}`));
     if(!ready.imap_configured)outreachPanel.append(node('p','Zoho Free may not include IMAP. A Zoho Mail API connection is supported after server-side OAuth authorization. You can import WhatsApp chat exports or paste supplier replies now.','help'));
     if(ready.missing?.length)outreachPanel.append(node('p','Mailbox / buyer identity settings needed on the server: '+ready.missing.join(', '),'help'));
+    const contactDetails=node('details');contactDetails.append(node('summary','Add a supplier from WhatsApp or email'));
+    const contactForm=node('form'),contactFields=node('div',undefined,'fields');
+    const contactName=addInput(contactFields,'contactName','Supplier name');contactName.required=true;
+    const contactEmail=addInput(contactFields,'contactEmail','Supplier email (optional)','','email');
+    const contactPhone=addInput(contactFields,'contactPhone','Supplier WhatsApp number with country code (optional)');
+    const channelLabel=node('label','Contact channel'),channel=node('select');channel.id='contactChannel';channelLabel.htmlFor=channel.id;channel.append(new Option('WhatsApp · assisted','whatsapp'),new Option('Email','email'));
+    const addContact=node('button','Add contact & draft request');contactForm.append(contactFields,channelLabel,channel,node('p','New contacts are unverified. Adding a supplier pauses automatic follow-ups so you can approve the changed list.','help'),addContact);
+    contactForm.onsubmit=e=>{e.preventDefault();run(async()=>{await api('/rfqs/'+rfq.id+'/outreach/contact',{name:contactName.value,email:contactEmail.value,whatsapp:contactPhone.value,channel:channel.value});await reloadWorkspace();message('Supplier contact added. Review the request; the automatic workflow is paused.');},addContact);};contactDetails.append(contactForm);outreachPanel.append(contactDetails);
     if(!view.linked){
       outreachPanel.append(node('p','Connect this master RFQ to an existing campaign, or draft requests for suppliers already in your database. Initial requests are sent only when you approve them.'));
       const campaigns=await api('/rfqs/outreach/campaigns');if(current.id!==rfq.id)return;

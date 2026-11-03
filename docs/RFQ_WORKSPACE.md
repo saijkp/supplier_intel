@@ -145,6 +145,13 @@ different account is not automatically mixed into the campaign; paste relevant
 supplier replies explicitly. Switching to a new sender requires authorizing that
 mailbox and updating server configuration, not changing an address in a draft.
 
+For a contact that is not yet in the supplier database, use **Add a supplier from
+WhatsApp or email**. This stores only the name and contact details you enter,
+marks no verification claims, and creates a draft in the selected channel.
+Existing non-empty contact records are preserved. Adding a supplier pauses the
+automatic policy. Email follow-up authorization freezes the selected supplier
+IDs; adding suppliers through an older outreach route cannot silently expand it.
+
 WhatsApp `.txt` chat exports can be imported under a linked supplier message.
 Choose the exact supplier sender name. Both Android and iOS timestamp formats
 are supported; buyer/system messages are excluded and repeated imports are

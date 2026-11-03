@@ -195,3 +195,38 @@ def test_multiple_tiers_are_not_silently_combined():
             return {'offers':[{'fields':{'unit_price':v},'evidence':{'unit_price':'price '+str(v)}} for v in [18,17]]}
     parsed=WorkspaceParser(llm=Fake(),use_model=True).parse('price 18\nprice 17',{})
     assert parsed['state']=='needs_review' and len(parsed['offers'])==2
+
+
+def test_queued_automatic_send_rechecks_reduced_limit_and_closed_campaign(env):
+    mail(env,complete_without_moq());env.w.sync(env.rid)
+    for m in env.w.repo.clarifications(env.rid):env.repo.update('messages',m['id'],sent_at='2000-01-01 00:00:00')
+    env.w.make_drafts(env.rid)
+    draft=env.w.repo.clarifications(env.rid)[-1]
+    env.w.repo.policy(env.rid,max_rounds=1)
+    assert 'limit reached' in clarification_send_reason(env.path,env.repo.get('messages',draft['id']))
+    env.repo.update('campaigns',env.cid,status='closed')
+    assert clarification_send_reason(env.path,env.repo.get('messages',draft['id']))=='Campaign is closed'
+
+
+def test_adding_contact_pauses_automation_and_preserves_existing_contacts(env):
+    view=env.w.add_contact(env.rid,'WhatsApp supplier','', '+86 138 0000 0000','whatsapp')
+    assert view['policy']['auto_send']==0 and view['policy']['poll_enabled']==0
+    message=view['campaign']['messages'][-1]
+    assert message['channel']=='whatsapp' and message['action_url'].startswith('https://wa.me/8613800000000')
+    assert not env.sender.sent
+    sid=message['supplier_id']
+    env.w.add_contact(env.rid,'Renamed by mistake','','8613800000000','whatsapp')
+    assert env.suppliers.get_supplier(sid)['canonical_name']=='WhatsApp supplier'
+
+
+def test_new_suppliers_cannot_inherit_an_existing_auto_send_approval(env):
+    # Even callers of the old outreach API cannot expand an approved scope.
+    sid=env.suppliers.create_golden_record({'canonical_name':'New factory','primary_email':'other@factory.test'})
+    env.w.outreach.draft_messages(env.cid,supplier_ids=[sid])
+    mid=env.repo.rows('messages','supplier_id=?',(sid,))[0]['id']
+    env.repo.update('messages',mid,status='sent',sent_at='2000-01-01 00:00:00')
+    env.w.outreach.record_manual_reply(mid,complete_without_moq())
+    env.w.sync(env.rid,poll=False)
+    new=[m for m in env.w.repo.clarifications(env.rid) if m['supplier_id']==sid]
+    assert len(new)==1 and not new[0]['automatic'] and new[0]['status']=='draft'
+    assert not any(m['supplier_id']==sid for m in env.sender.sent)
