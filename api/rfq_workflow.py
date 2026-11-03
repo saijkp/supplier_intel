@@ -110,7 +110,7 @@ def run_sync(job_id,rid,db_path):
 def sync(rid:str,tasks:BackgroundTasks,workflow=Depends(get_workflow)):
     if not workflow.repo.get(rid): raise HTTPException(422,'Link an outreach campaign first')
     job_id=str(uuid.uuid4())
-    SupplierRepository(workflow.repo.db_path).create_pipeline_job(job_id,query='[RFQ] collect replies and validate',options={'rfq_id':rid})
+    SupplierRepository(workflow.repo.db_path).create_pipeline_job(job_id=job_id,query='[RFQ] collect replies and validate',options={'rfq_id':rid})
     tasks.add_task(run_sync,job_id,rid,workflow.repo.db_path)
     return {'job_id':job_id,'status':'queued'}
 
@@ -157,7 +157,7 @@ def send(rid:str,mid:int,tasks:BackgroundTasks,workflow=Depends(get_workflow)):
     workflow.outreach.approve(policy['campaign_id'],[mid])
     workflow.repo.approve_manual(mid)
     job_id=str(uuid.uuid4())
-    SupplierRepository(workflow.repo.db_path).create_pipeline_job(job_id,query='[RFQ] send approved message',options={'message_id':mid})
+    SupplierRepository(workflow.repo.db_path).create_pipeline_job(job_id=job_id,query='[RFQ] send approved message',options={'message_id':mid})
     tasks.add_task(run_send,job_id,policy['campaign_id'],mid,workflow.repo.db_path)
     return {'job_id':job_id,'status':'queued'}
 
