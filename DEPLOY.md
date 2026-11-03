@@ -241,6 +241,7 @@ All RFQ endpoints require the same API bearer token as other private endpoints.
 | Method | Endpoint | Purpose |
 |---|---|---|
 | GET | `/rfq/status` | Readiness, remaining cap, interrupted sends |
+| POST | `/rfq/check` | SMTP and IMAP login test from the server; sends nothing |
 | POST | `/rfq/campaigns` | Create campaign and draft shortlisted suppliers |
 | GET | `/rfq/campaigns` | List campaigns |
 | GET | `/rfq/campaigns/{id}` | Campaign, messages and readable replies |
