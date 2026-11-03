@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from decimal import Decimal, InvalidOperation
+from datetime import date
+import re
 from typing import Any, Dict, List, Optional
 
 COMMERCIAL_REQUIRED = (
@@ -77,7 +79,7 @@ def validate_quote(rfq: MasterRFQ, quote: SupplierQuote) -> QuoteReview:
     for key in rfq.required_fields:
         if _is_missing(quote.fields.get(key)):
             missing.append(key)
-        elif not quote.evidence.get(key):
+        elif not str(quote.evidence.get(key, '')).strip():
             missing.append(key + "_evidence")
 
     for key, expected in rfq.mandatory_specs.items():
@@ -86,7 +88,7 @@ def validate_quote(rfq: MasterRFQ, quote: SupplierQuote) -> QuoteReview:
             missing.append("spec:" + key)
         elif str(actual).strip().casefold() != str(expected).strip().casefold():
             deviations.append(f"{key}: requested {expected!r}, quoted {actual!r}")
-        elif not quote.evidence.get("spec:" + key):
+        elif not str(quote.evidence.get("spec:" + key, '')).strip():
             missing.append("spec:" + key + "_evidence")
 
     for key in ("unit_price", "quoted_quantity", "moq"):
@@ -105,6 +107,17 @@ def validate_quote(rfq: MasterRFQ, quote: SupplierQuote) -> QuoteReview:
             errors.append("Unsupported Incoterm")
 
     moq = _decimal(quote.fields.get("moq"))
+    currency = quote.fields.get('currency')
+    if not _is_missing(currency) and not re.fullmatch(r'[A-Z]{3}', str(currency)):
+        errors.append('currency must be a three-letter uppercase currency code')
+    validity = quote.fields.get('valid_until')
+    if not _is_missing(validity):
+        try:
+            expiry = date.fromisoformat(str(validity))
+            if expiry < date.today():
+                errors.append('Quotation validity date has expired')
+        except ValueError:
+            errors.append('valid_until must be a valid YYYY-MM-DD date')
     quoted_quantity = _decimal(quote.fields.get("quoted_quantity"))
     if moq and quoted_quantity and quoted_quantity < moq:
         errors.append("Quoted quantity falls below supplier MOQ")

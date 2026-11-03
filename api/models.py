@@ -695,3 +695,41 @@ class PublicSupplierProfile(BaseModel):
     linkedin_url: Optional[str] = None
     last_verified: Optional[str] = None
     pass_active_since: Optional[str] = None
+
+class RFQCampaignRequest(BaseModel):
+    title: str = Field(min_length=1)
+    product: str = Field(min_length=1)
+    product_zh: Optional[str] = None
+    specification: Optional[str] = None
+    quantity: Optional[str] = None
+    unit: Optional[str] = None
+    target_incoterm: Optional[str] = None
+    destination: Optional[str] = None
+    required_certifications: List[str] = Field(default_factory=list)
+    quote_deadline: Optional[str] = None
+    supplier_ids: Optional[List[int]] = None
+    query: Optional[str] = None
+    limit: int = Field(default=25, ge=1, le=500)
+    channels: Optional[List[str]] = None
+    all_channels: bool = False
+
+class RFQDraftRequest(BaseModel):
+    subject: Optional[str] = None
+    body: Optional[str] = None
+    recipient: Optional[str] = None
+
+class RFQApproveRequest(BaseModel):
+    message_ids: Optional[List[int]] = None
+
+class RFQSendRequest(BaseModel):
+    limit: Optional[int] = Field(default=None,ge=1,le=500)
+
+class RFQPollRequest(BaseModel):
+    since_days: int = Field(default=14,ge=1,le=365)
+    limit: int = Field(default=200,ge=1,le=1000)
+
+class RFQReplyRequest(BaseModel):
+    text: str = Field(min_length=1,max_length=200000)
+
+class RFQFollowupsRequest(BaseModel):
+    after_days: int = Field(default=3,ge=0,le=365)

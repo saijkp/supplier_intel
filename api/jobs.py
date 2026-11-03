@@ -599,3 +599,15 @@ def run_sourcing_job(job_id: str, options: Dict[str, Any]) -> None:
     except Exception as e:
         logger.error("Sourcing job %s failed: %s", job_id, e)
         repo.mark_pipeline_job_failed(job_id, error=str(e))
+
+def run_rfq_job(job_id: str, action: str, options: Dict[str, Any]) -> None:
+    from rfq.rfq_service import RFQService
+    repo = SupplierRepository()
+    repo.mark_pipeline_job_running(job_id)
+    try:
+        service = RFQService()
+        result = service.send_approved(**options) if action == 'send' else service.poll_inbox(**options)
+        repo.mark_pipeline_job_completed(job_id, stats=result)
+    except Exception:
+        # Transport exceptions can include credentials; do not expose their text.
+        repo.mark_pipeline_job_failed(job_id, error='RFQ job failed; check configuration and review message states')

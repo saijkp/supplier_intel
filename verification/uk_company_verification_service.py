@@ -297,7 +297,7 @@ class UKCompanyVerificationService:
             stopped_early = False
 
             for supplier_id in supplier_ids:
-                if time.monotonic() - start_time > self.job_max_seconds:
+                if time.monotonic() - start_time >= self.job_max_seconds:
                     stopped_early = True
                     break
 

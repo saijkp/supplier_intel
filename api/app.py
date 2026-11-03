@@ -42,8 +42,11 @@ from typing import Any, Dict, List, Optional
 from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
 from api.auth import require_api_token
+from api.rfq import router as rfq_router
 from api.jobs import (
     run_batch_job,
     run_collection_job,
@@ -179,11 +182,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.include_router(rfq_router)
+app.mount('/workspace', StaticFiles(directory=Path(__file__).resolve().parents[1] / 'frontend', html=True), name='workspace')
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT"],
+    allow_methods=["GET", "POST", "PUT", "PATCH"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -1570,3 +1576,78 @@ def get_public_supplier_qr_code(token: str, repo: SupplierRepository = Depends(g
     if service.get_public_profile(token) is None:
         raise HTTPException(status_code=404, detail="Not found")
     return Response(content=service.generate_qr_png(token), media_type="image/png")
+
+# RFQ routes stay thin; sending and inbox work use the shared job lifecycle.
+from api.models import (RFQCampaignRequest, RFQDraftRequest, RFQApproveRequest,
+                        RFQSendRequest, RFQPollRequest, RFQReplyRequest, RFQFollowupsRequest)
+from rfq.rfq_service import RFQService
+from api.jobs import run_rfq_job
+
+def _rfq_service():
+    from storage.rfq_repository import RFQRepository
+    return RFQService(repo=RFQRepository(get_repo().db_path))
+
+def _rfq_call(method, *args, **kwargs):
+    try:
+        return getattr(_rfq_service(), method)(*args, **kwargs)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+@app.get('/rfq/status', dependencies=[Depends(require_api_token)])
+def rfq_status():
+    return _rfq_call('status')
+
+@app.post('/rfq/campaigns', dependencies=[Depends(require_api_token)])
+def rfq_create(request: RFQCampaignRequest):
+    values = request.model_dump()
+    options = {k: values.pop(k) for k in ('supplier_ids','query','limit','channels','all_channels')}
+    campaign = _rfq_call('create_campaign', **values)
+    campaign['drafting'] = _rfq_call('draft_messages', campaign['id'], **options)
+    return campaign
+
+@app.get('/rfq/campaigns', dependencies=[Depends(require_api_token)])
+def rfq_list():
+    return _rfq_service().repo.rows('campaigns')
+
+@app.get('/rfq/campaigns/{campaign_id}', dependencies=[Depends(require_api_token)])
+def rfq_show(campaign_id: int):
+    return _rfq_call('show', campaign_id)
+
+@app.patch('/rfq/messages/{message_id}', dependencies=[Depends(require_api_token)])
+def rfq_edit(message_id: int, request: RFQDraftRequest):
+    return _rfq_call('update_draft', message_id, **request.model_dump(exclude_none=True))
+
+@app.post('/rfq/campaigns/{campaign_id}/approve', dependencies=[Depends(require_api_token)])
+def rfq_approve(campaign_id: int, request: RFQApproveRequest):
+    return _rfq_call('approve', campaign_id, request.message_ids)
+
+def _rfq_job(background_tasks, action, options):
+    job_id = str(uuid.uuid4())
+    get_repo().create_pipeline_job(job_id=job_id, query=f'[rfq] {action}', options=options)
+    background_tasks.add_task(run_rfq_job, job_id, action, options)
+    return {'job_id':job_id,'status':'queued'}
+
+@app.post('/rfq/campaigns/{campaign_id}/send', status_code=202, dependencies=[Depends(require_api_token)])
+def rfq_send(campaign_id: int, request: RFQSendRequest, background_tasks: BackgroundTasks):
+    _rfq_call('show',campaign_id)
+    return _rfq_job(background_tasks,'send',{'campaign_id':campaign_id,**request.model_dump()})
+
+@app.post('/rfq/poll', status_code=202, dependencies=[Depends(require_api_token)])
+def rfq_poll(request: RFQPollRequest, background_tasks: BackgroundTasks):
+    return _rfq_job(background_tasks,'poll',request.model_dump())
+
+@app.post('/rfq/messages/{message_id}/mark-sent', dependencies=[Depends(require_api_token)])
+def rfq_mark_sent(message_id: int):
+    return _rfq_call('mark_sent',message_id)
+
+@app.post('/rfq/messages/{message_id}/reply', dependencies=[Depends(require_api_token)])
+def rfq_reply(message_id: int, request: RFQReplyRequest):
+    return _rfq_call('record_manual_reply',message_id,request.text)
+
+@app.post('/rfq/campaigns/{campaign_id}/followups', dependencies=[Depends(require_api_token)])
+def rfq_followups(campaign_id: int, request: RFQFollowupsRequest):
+    return _rfq_call('draft_followups',campaign_id,request.after_days)
+
+@app.get('/rfq/campaigns/{campaign_id}/compare', dependencies=[Depends(require_api_token)])
+def rfq_compare(campaign_id: int):
+    return _rfq_call('compare',campaign_id)

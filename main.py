@@ -2090,5 +2090,8 @@ def coverage(gaps_only: bool, group: str, tier: str, ddp_native: bool,
         )
 
 
+from rfq.cli import rfq
+cli.add_command(rfq)
+
 if __name__ == "__main__":
     cli()
