@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 35
+SCHEMA_VERSION = 36
 
 
 # ═══════════════════════════════════════════════════════════
@@ -872,6 +872,11 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 SCHEMA_SQL += RFQ_SCHEMA_SQL
 
 MIGRATIONS: dict[int, dict] = {
+    36: {"description": "Link RFQ workspaces to outreach, reply ingestion and bounded clarification policies", "statements": [
+        "CREATE TABLE IF NOT EXISTS rfq_workspace_outreach (rfq_id TEXT PRIMARY KEY REFERENCES rfqs(id), campaign_id INTEGER NOT NULL UNIQUE REFERENCES rfq_campaigns(id), poll_enabled INTEGER NOT NULL DEFAULT 0, auto_send INTEGER NOT NULL DEFAULT 0, interval_minutes INTEGER NOT NULL DEFAULT 15, followup_hours INTEGER NOT NULL DEFAULT 24, max_rounds INTEGER NOT NULL DEFAULT 3, expires_at TEXT, next_poll_at TEXT, lease_token TEXT, lease_until TEXT, last_run_at TEXT, last_error TEXT)",
+        "CREATE TABLE IF NOT EXISTS rfq_workspace_ingestions (rfq_id TEXT NOT NULL REFERENCES rfqs(id), reply_id INTEGER NOT NULL REFERENCES rfq_replies(id), state TEXT NOT NULL, detail TEXT, PRIMARY KEY(rfq_id,reply_id))",
+        "CREATE TABLE IF NOT EXISTS rfq_workspace_clarifications (message_id INTEGER PRIMARY KEY REFERENCES rfq_messages(id), rfq_id TEXT NOT NULL REFERENCES rfqs(id), supplier_id INTEGER NOT NULL REFERENCES suppliers(id), quote_id TEXT NOT NULL REFERENCES rfq_workspace_quotes(id), round INTEGER NOT NULL, automatic INTEGER NOT NULL DEFAULT 0, UNIQUE(rfq_id,supplier_id,round))",
+    ]},
     35: {"description": "Persistent RFQ workspace and append-only supplier quotes", "statements": [
         "CREATE TABLE IF NOT EXISTS rfqs (id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS rfq_workspace_quotes (id TEXT PRIMARY KEY, rfq_id TEXT NOT NULL REFERENCES rfqs(id), payload TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",

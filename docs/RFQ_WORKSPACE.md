@@ -48,9 +48,9 @@ merging or deploying it to production.
 
 ## Scope and validation
 
-Manual quote transcription is implemented. Automated extraction from PDF/Excel,
-currency conversion, landed-cost calculations and outbound supplier messaging
-are not implemented. An evidence excerpt must occur in the saved reply; a human
+Manual entry and linked outreach reply ingestion are implemented. Currency
+conversion and landed-cost calculations are not implemented. An evidence excerpt
+must occur in the saved reply; a human
 still needs to check that it supports the entered value. A complete offer is not
 a guarantee of supplier reliability or matching commercial bases across offers.
 The table keeps original currencies, Incoterms, ports, quantities and deviations
@@ -67,3 +67,61 @@ checks missing fields and Chinese drafts, reloads saved records, checks a mobile
 viewport and verifies supplier input is rendered as text. API tests cover auth,
 fail-closed configuration, source evidence, deviations, persistence and migration
 from a database with existing supplier records.
+
+## Linked outreach and automatic clarification
+
+Link a matching existing campaign, or draft a campaign from the master RFQ for
+selected database suppliers. Linking requires confirmation that the free-form
+campaign specification matches; quantities and units must match in code.
+Initial email requests need individual approval in the dashboard. Assisted
+channels remain copy/open/paste workflows.
+
+The **Collect replies & validate now** action queues a persistent job. It reads
+matching correspondence from the configured dedicated RFQ mailbox, requires the
+sender to match the campaign recipient, and leaves unrelated mail unread and
+unstored. The existing PDF/XLSX/CSV/TXT attachment extractor is reused. Replies
+received through existing outreach routes and pasted replies enter the same
+ingestion process. Partial replies without another price are supported.
+
+Labelled `name: value` replies work without an LLM. With `OPENAI_API_KEY`, one
+grounded extraction call (20-second timeout, no retries) is used per new reply.
+Each cycle ingests up to ten replies and scans at most fifty mailbox messages.
+Evidence must occur in the supplier text and numbers must occur in evidence.
+Quoted email history is excluded. Ambiguous tiers, failed extraction, conflicting
+values or unreadable attachments stop that supplier's automatic sending and
+surface the original reply for human review. Conflicting confirmations are
+stored as candidates rather than replacing prior non-empty facts. Use **Record
+revised offer** to review and confirm those values; old snapshots remain intact.
+
+Per-RFQ settings allow background inbox collection and, separately, explicit
+approval of automatic targeted email follow-ups for the linked supplier list.
+The default is off. Set a polling interval (at least five minutes), waiting
+period (at least one hour), maximum clarification rounds (one to five), and
+authorization expiry (up to thirty days). Defaults are 15 minutes, 24 hours,
+three rounds and fourteen days. This approval covers missing-detail reminders
+only; initial messages and other campaigns are excluded. Existing drafts can
+also be approved and sent individually. The global `RFQ_SEND_ENABLED`, mailbox
+configuration, buyer identity, rolling daily limit, suppression, flagged-supplier
+and atomic message-claim checks continue to apply.
+
+A server worker checks due policies every minute, so collection continues after
+the browser closes. Database leases prevent concurrent cycles; inbox IDs and
+ingestion records prevent duplicates across restarts. Every send rechecks the
+latest quote and pending replies. Completed quotes, paused or expired policies,
+opt-outs and hard bounces stop automatic follow-ups. Failed or ambiguous sends
+are never automatically retried. Reaching the round limit requires human review.
+Each supplier's current validated offer is shown in the comparison, with older
+versions retained underneath. Complete offers still require matching commercial
+bases before a purchasing decision.
+
+Migration 36 adds campaign links, ingestion records, policies and clarification
+audit records. It preserves all v34 outreach and v35 workspace data. Mailbox
+credentials stay in server environment variables, never browser storage or
+status responses. The isolated preview still needs its dedicated mailbox
+credentials and buyer identity before it can collect or send real email.
+
+New authenticated endpoints live under `/rfqs/{id}/outreach`: `link`, `create`,
+`policy`, `sync`, `messages/{id}/reply`, and `messages/{id}/send`. GET the same
+outreach path for progress, message history, draft state and readiness. List
+existing campaigns at `/rfqs/outreach/campaigns`. Background sync/send actions
+return existing pipeline job IDs.

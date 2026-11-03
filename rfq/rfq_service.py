@@ -26,7 +26,7 @@ def now():
 
 class RFQService:
 
-    def __init__(self, repo=None, sender=None, inbox=None, parser=None, sleep_fn=None, supplier_repo=None, mx_check=None):
+    def __init__(self, repo=None, sender=None, inbox=None, parser=None, sleep_fn=None, supplier_repo=None, mx_check=None, defer_parsing=False):
         self.repo = repo if repo is not None else RFQRepository()
         self.suppliers = supplier_repo if supplier_repo is not None else SupplierRepository(self.repo.db_path)
         self.sender = sender if sender is not None else SmtpSender()
@@ -34,6 +34,7 @@ class RFQService:
         self.parser = parser if parser is not None else QuoteParser()
         self.sleep = sleep_fn if sleep_fn is not None else time.sleep
         self.mx_check = mx_check if mx_check is not None else check_email_domain
+        self.defer_parsing = defer_parsing
 
     def status(self):
         missing = [name for name in ('RFQ_SMTP_HOST', 'RFQ_EMAIL_USER', 'RFQ_EMAIL_PASSWORD', 'RFQ_FROM_ADDRESS', 'RFQ_BUYER_COMPANY', 'RFQ_BUYER_NAME', 'RFQ_BUYER_ADDRESS') if not str(getattr(cfg, name)).strip()]
@@ -114,7 +115,7 @@ class RFQService:
             return
         self.suppliers.record_procurement_outcome(supplier_id=message['supplier_id'], outcome=outcome, notes=f"RFQ campaign {message['campaign_id']}")
 
-    def send_approved(self, campaign_id, limit=None):
+    def send_approved(self, campaign_id, limit=None, message_ids=None):
         """Send only approved email rows. A conditional DB claim precedes every SMTP call; failures require human review and are never automatically retried."""
         result = {'sent': 0, 'skipped': 0, 'failed': 0, 'partial': False}
         ready = self.status()
@@ -129,6 +130,8 @@ class RFQService:
         attempted = False
         try:
             rows = self.repo.rows('messages', "campaign_id=? AND channel='email' AND status='approved'", (campaign_id,))
+            if message_ids is not None:
+                rows = [m for m in rows if m['id'] in message_ids]
             if limit is not None:
                 rows = rows[:limit]
             for message in rows:
@@ -143,6 +146,9 @@ class RFQService:
                     break
                 reason = None
                 try:
+                    if message['kind'].startswith('clarification:'):
+                        from rfq.workspace_workflow import clarification_send_reason
+                        reason = clarification_send_reason(self.repo.db_path, message)
                     supplier = self.suppliers.get_supplier(message['supplier_id'])
                     if not supplier or supplier.get('flagged'):
                         reason = 'Supplier is flagged or missing'
@@ -171,6 +177,13 @@ class RFQService:
                 body = message['body'] if footer() in message['body'] else message['body'] + '\n\n' + footer()
                 attempted = True
                 try:
+                    # Recheck cancellation/freshness after the atomic claim as well.
+                    if message['kind'].startswith('clarification:'):
+                        reason = clarification_send_reason(self.repo.db_path, message)
+                        if reason:
+                            self.repo.update('messages', message['id'], status='skipped', status_reason=reason)
+                            result['skipped'] += 1
+                            continue
                     smtp_id = self.sender.send({**message, 'subject': header(message['subject']), 'recipient': header(message['recipient']), 'body': body})
                 except Exception:
                     self.repo.update('messages', message['id'], status='failed', status_reason='SMTP send failed; check delivery before any new outreach')
@@ -210,6 +223,8 @@ class RFQService:
                 self.repo.suppress(message['recipient'], kind)
             self.repo.update('replies', reply_id, parse_status='no_quote')
             return self.repo.get('replies', reply_id)
+        if self.defer_parsing:
+            return self.repo.get('replies', reply_id)
         try:
             # IMAP text is already stripped; stripping again would truncate attachment text.
             parsed = self.parser.parse(text, strip=source != 'imap')
@@ -228,10 +243,10 @@ class RFQService:
             raise ValueError('Reply cannot be empty')
         return self._reply(self.repo.get('messages', message_id), text)
 
-    def poll_inbox(self, since_days=14, limit=200):
+    def poll_inbox(self, since_days=14, limit=200, campaign_id=None, strict_sender=False):
         """Read without marking messages read; persist only matching RFQ correspondence. Defer attachment extraction until after a match."""
         result = {'matched': 0, 'discarded': 0, 'duplicates': 0}
-        messages = self.repo.rows('messages')
+        messages = self.repo.rows('messages', 'campaign_id=?', (campaign_id,)) if campaign_id is not None else self.repo.rows('messages')
         for raw in self.inbox.fetch_recent(since_days, limit):
             mail = BytesParser(policy=policy.default).parsebytes(raw)
             external = str(mail.get('Message-ID') or '').strip() or 'sha256:' + hashlib.sha256(raw).hexdigest()
@@ -280,6 +295,9 @@ class RFQService:
             if not matched and (not bounce):
                 matched = next((m for m in reversed(messages) if m['channel'] == 'email' and m['sent_at'] and m['recipient'].strip().lower() == sender), None)
             if not matched:
+                result['discarded'] += 1
+                continue
+            if strict_sender and not bounce and sender != matched['recipient'].strip().lower():
                 result['discarded'] += 1
                 continue
             attachments = []

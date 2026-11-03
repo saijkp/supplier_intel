@@ -12,6 +12,7 @@ from playwright.sync_api import sync_playwright, expect
 
 import api.auth
 from api.rfq import router, get_rfq_repo
+from api.rfq_workflow import router as workflow_router
 from storage.database import initialise_schema
 from storage.quote_workspace_repository import QuoteWorkspaceRepository
 
@@ -22,6 +23,7 @@ def test_create_compare_clarify_and_reload(tmp_path, monkeypatch):
     initialise_schema(path)
     monkeypatch.setattr(api.auth, 'API_ACCESS_TOKEN', 'browser-test')
     app = FastAPI()
+    app.include_router(workflow_router)
     app.include_router(router)
     app.dependency_overrides[get_rfq_repo] = lambda: QuoteWorkspaceRepository(path)
     app.mount('/workspace', StaticFiles(directory=Path(__file__).resolve().parents[1] / 'frontend', html=True))
