@@ -44,7 +44,9 @@ from config.settings import (
     configure_logging,
     missing_api_keys,
     SCORING_WEIGHTS,
-    TRAILER_HS_CODES,
+    ACTIVE_HS_CODES,
+    SOURCING_DOMAIN,
+    domain_config,
 )
 from storage.database import initialise_schema, get_schema_version, table_counts
 from storage.repository import SupplierRepository
@@ -54,7 +56,7 @@ console = Console()
 
 @click.group()
 def cli() -> None:
-    """Supplier Intelligence Platform — trailer components sourcing."""
+    """Supplier Intelligence Platform — supplier sourcing (domain set by SOURCING_DOMAIN)."""
     configure_logging()
 
 
@@ -194,7 +196,8 @@ def doctor(live: bool) -> None:
 
     weight_sum = round(sum(SCORING_WEIGHTS.values()), 6)
     console.print(f"[green]OK[/green] Scoring weights sum to {weight_sum} ({SCORING_WEIGHTS})")
-    console.print(f"[green]OK[/green] Tracking {len(TRAILER_HS_CODES)} HS codes for trailer components")
+    console.print(f"[green]OK[/green] Tracking {len(ACTIVE_HS_CODES)} HS codes for "
+                  f"{domain_config()['label']} (SOURCING_DOMAIN={SOURCING_DOMAIN})")
 
     if DB_PATH.exists():
         console.print(f"[green]OK[/green] Database exists at {DB_PATH} (schema v{get_schema_version()})")
@@ -1564,7 +1567,7 @@ def search(product: str, required_capabilities: tuple, manufacturers_only: bool,
 
     Run at least one of PRODUCT or --require, or this returns your whole
     catalogue sorted by score."""
-    from config.settings import SAFETY_CRITICAL_CATEGORIES
+    from config.settings import ACTIVE_CRITICAL_CATEGORIES
 
     if not product and not required_capabilities:
         console.print("[yellow]Give a product, at least one --require, or both.[/yellow]")
@@ -1594,8 +1597,8 @@ def search(product: str, required_capabilities: tuple, manufacturers_only: bool,
 
     for s in suppliers:
         categories = s.get("primary_categories") or []
-        flagged = "  [red]! safety-critical part — verify certification evidence[/red]" if (
-            set(categories) & SAFETY_CRITICAL_CATEGORIES
+        flagged = "  [red]! compliance-critical category — verify certification evidence[/red]" if (
+            set(categories) & ACTIVE_CRITICAL_CATEGORIES
         ) else ""
 
         console.print(f"\n[bold]{s['canonical_name']}[/bold] (#{s['id']}){flagged}")
@@ -1899,11 +1902,11 @@ def review_reject(candidate_id: int) -> None:
 @click.option("--no-score", is_flag=True)
 def sweep(sources: tuple, incremental_days: int, term_limit: Optional[int], results_limit: Optional[int],
           no_verify: bool, no_score: bool) -> None:
-    """Sweep the pipeline across the full trailer-component search-term catalogue."""
-    from config.settings import TRAILER_COMPONENT_SEARCH_TERMS
+    """Sweep the pipeline across the active domain's search-term catalogue (SOURCING_DOMAIN)."""
+    from config.settings import SWEEP_SEARCH_TERMS
     from pipeline.orchestrator import SupplierIntelligencePipeline, build_limit_scraper_kwargs
 
-    queries = list(TRAILER_COMPONENT_SEARCH_TERMS)
+    queries = list(SWEEP_SEARCH_TERMS)
     if term_limit:
         queries = queries[:term_limit]
 

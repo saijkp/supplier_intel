@@ -331,8 +331,8 @@ class TestRunCampaign:
         pipeline = SupplierIntelligencePipeline(repo=repo, scrapers={}, normalizers={})
         result = pipeline.run_campaign(sources=[], enable_delays=False)
 
-        from config.settings import TRAILER_COMPONENT_SEARCH_TERMS
-        assert result["queries_total"] == len(TRAILER_COMPONENT_SEARCH_TERMS)
+        from config.settings import SWEEP_SEARCH_TERMS
+        assert result["queries_total"] == len(SWEEP_SEARCH_TERMS)
 
     def test_query_failure_is_isolated(self, repo, monkeypatch):
         pipeline = SupplierIntelligencePipeline(repo=repo, scrapers={}, normalizers={})

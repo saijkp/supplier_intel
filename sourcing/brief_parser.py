@@ -39,8 +39,8 @@ DEFAULT_TARGET_COUNT = 10
 SYSTEM_PROMPT = """You are extracting a structured supplier-sourcing brief from a buyer's free-text request. Extract ONLY what the buyer actually stated -- never invent a requirement, country, certification, specification, or quantity they didn't mention.
 
 Rules, strictly enforced:
-1. "product" is the physical thing being sourced (e.g. "winch", "LED marker light"). If no product is stated, return null for product.
-2. "application" and "key_specifications" -- only include what's explicitly stated (e.g. "for off-road trailers", "12V, 5000lb capacity"). Omit entirely if not mentioned -- do not guess typical specifications for the product.
+1. "product" is the physical thing being sourced (e.g. "kitchen cabinets", "sliding wardrobe doors"). If no product is stated, return null for product.
+2. "application" and "key_specifications" -- only include what's explicitly stated (e.g. "for UK new-build flats", "18mm MFC carcass, soft-close hinges"). Omit entirely if not mentioned -- do not guess typical specifications for the product.
 3. "countries" -- only countries/regions explicitly named, in the order the buyer stated or implied a preference (e.g. "prioritise China then India" -> ["China", "India"]). Empty list if none stated.
 4. "required_capabilities" -- certifications or capabilities explicitly required (e.g. "ISO 9001", "must have in-house tooling"), in the buyer's own words. Empty list if none stated.
 5. "target_count" -- the NUMBER of suppliers the buyer wants sourced and enriched. If not stated, return null.
