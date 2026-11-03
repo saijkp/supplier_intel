@@ -29,6 +29,8 @@ class WorkspaceParser:
         self.use_model = bool(cfg.OPENAI_API_KEY) if use_model is None else use_model
 
     def parse(self, source, specs):
+        if len(source)>50000:
+            return {'state':'needs_review','detail':'Supplier reply exceeds the extraction size limit','offers':[]}
         candidate = {'fields':{},'quoted_specs':{},'evidence':{}}
         # Deterministic labelled text works without paid integrations.
         for key in (*COMMERCIAL_REQUIRED, *('spec:'+k for k in specs)):

@@ -29,8 +29,14 @@ class RFQService:
     def __init__(self, repo=None, sender=None, inbox=None, parser=None, sleep_fn=None, supplier_repo=None, mx_check=None, defer_parsing=False):
         self.repo = repo if repo is not None else RFQRepository()
         self.suppliers = supplier_repo if supplier_repo is not None else SupplierRepository(self.repo.db_path)
-        self.sender = sender if sender is not None else SmtpSender()
-        self.inbox = inbox if inbox is not None else ImapInbox()
+        if cfg.RFQ_MAIL_TRANSPORT=='zoho':
+            from rfq.zoho_mail import ZohoClient, ZohoSender, ZohoInbox
+            zoho=ZohoClient()
+            self.sender=sender if sender is not None else ZohoSender(zoho)
+            self.inbox=inbox if inbox is not None else ZohoInbox(zoho)
+        else:
+            self.sender = sender if sender is not None else SmtpSender()
+            self.inbox = inbox if inbox is not None else ImapInbox()
         self.parser = parser if parser is not None else QuoteParser()
         self.sleep = sleep_fn if sleep_fn is not None else time.sleep
         self.mx_check = mx_check if mx_check is not None else check_email_domain
@@ -38,7 +44,16 @@ class RFQService:
 
     def status(self):
         missing = [name for name in ('RFQ_SMTP_HOST', 'RFQ_EMAIL_USER', 'RFQ_EMAIL_PASSWORD', 'RFQ_FROM_ADDRESS', 'RFQ_BUYER_COMPANY', 'RFQ_BUYER_NAME', 'RFQ_BUYER_ADDRESS') if not str(getattr(cfg, name)).strip()]
-        return {'send_enabled': cfg.RFQ_SEND_ENABLED, 'ready': cfg.RFQ_SEND_ENABLED and (not missing), 'missing': missing, 'remaining_cap': max(0, cfg.RFQ_DAILY_SEND_LIMIT - self.repo.daily_count()), 'imap_configured': bool(cfg.RFQ_IMAP_HOST and cfg.RFQ_EMAIL_USER and cfg.RFQ_EMAIL_PASSWORD), 'sending_needs_review': self.repo.rows('messages', "status='sending'")}
+        inbox_configured=bool(cfg.RFQ_IMAP_HOST and cfg.RFQ_EMAIL_USER and cfg.RFQ_EMAIL_PASSWORD)
+        if cfg.RFQ_MAIL_TRANSPORT=='zoho':
+            from rfq.zoho_mail import missing as zoho_missing, REGIONS
+            missing=[name for name in missing if name not in {'RFQ_SMTP_HOST','RFQ_EMAIL_USER','RFQ_EMAIL_PASSWORD'}]+zoho_missing()
+            if cfg.RFQ_ZOHO_REGION and cfg.RFQ_ZOHO_REGION not in REGIONS: missing.append('RFQ_ZOHO_REGION')
+            if cfg.RFQ_ZOHO_ACCOUNT_ID and not cfg.RFQ_ZOHO_ACCOUNT_ID.isdigit(): missing.append('RFQ_ZOHO_ACCOUNT_ID')
+            inbox_configured=not zoho_missing() and cfg.RFQ_ZOHO_REGION in REGIONS and cfg.RFQ_ZOHO_ACCOUNT_ID.isdigit()
+        if cfg.RFQ_MAIL_TRANSPORT not in {'smtp','zoho'}:
+            missing.append('RFQ_MAIL_TRANSPORT');inbox_configured=False
+        return {'transport':cfg.RFQ_MAIL_TRANSPORT,'send_enabled': cfg.RFQ_SEND_ENABLED, 'ready': cfg.RFQ_SEND_ENABLED and (not missing), 'missing': missing, 'remaining_cap': max(0, cfg.RFQ_DAILY_SEND_LIMIT - self.repo.daily_count()), 'imap_configured':inbox_configured,'inbox_configured':inbox_configured, 'sending_needs_review': self.repo.rows('messages', "status='sending'")}
 
     def create_campaign(self, **values):
         if not values.get('title') or not values.get('product'):
@@ -247,7 +262,8 @@ class RFQService:
         """Read without marking messages read; persist only matching RFQ correspondence. Defer attachment extraction until after a match."""
         result = {'matched': 0, 'discarded': 0, 'duplicates': 0}
         messages = self.repo.rows('messages', 'campaign_id=?', (campaign_id,)) if campaign_id is not None else self.repo.rows('messages')
-        for raw in self.inbox.fetch_recent(since_days, limit):
+        incoming=self.inbox.fetch_for_campaign(since_days,limit,messages) if hasattr(self.inbox,'fetch_for_campaign') else self.inbox.fetch_recent(since_days, limit)
+        for raw in incoming:
             mail = BytesParser(policy=policy.default).parsebytes(raw)
             external = str(mail.get('Message-ID') or '').strip() or 'sha256:' + hashlib.sha256(raw).hexdigest()
             if external and self.repo.rows('replies', 'external_message_id=?', (external,)):

@@ -1,5 +1,7 @@
 """Authenticated controls for the linked outreach workflow."""
 import uuid
+import hashlib
+import re
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt
@@ -37,6 +39,11 @@ class ReplyRequest(BaseModel):
     text:str=Field(min_length=1,max_length=50000)
 
 
+class ChatImportRequest(BaseModel):
+    text:str=Field(min_length=1,max_length=2000000)
+    supplier_sender:str=Field(min_length=1,max_length=200)
+
+
 def get_workflow(repo=Depends(get_rfq_repo)):
     return WorkspaceWorkflow(repo.db_path)
 
@@ -71,6 +78,13 @@ def policy(rid:str,body:PolicyRequest,workflow=Depends(get_workflow)):
     return call(workflow.set_policy,rid,**body.model_dump())
 
 
+@router.post('/{rid}/outreach/pause')
+def pause(rid:str,workflow=Depends(get_workflow)):
+    if not workflow.repo.get(rid): raise HTTPException(422,'Link an outreach campaign first')
+    workflow.repo.policy(rid,poll_enabled=0,auto_send=0)
+    return call(workflow.view,rid)
+
+
 def run_sync(job_id,rid,db_path):
     repo=SupplierRepository(db_path)
     repo.mark_pipeline_job_running(job_id)
@@ -95,6 +109,28 @@ def reply(rid:str,mid:int,body:ReplyRequest,workflow=Depends(get_workflow)):
     if not policy or message['campaign_id']!=policy['campaign_id']: raise HTTPException(422,'Message does not belong to this RFQ')
     call(workflow.outreach.record_manual_reply,mid,body.text)
     return call(workflow.sync,rid,poll=False)
+
+
+@router.post('/{rid}/outreach/messages/{mid}/whatsapp-import')
+def import_chat(rid:str,mid:int,body:ChatImportRequest,workflow=Depends(get_workflow)):
+    from rfq.whatsapp_import import supplier_messages
+    link=workflow.repo.get(rid); message=call(workflow.outreach.repo.get,'messages',mid)
+    if not link or message['campaign_id']!=link['campaign_id']: raise HTTPException(422,'Message does not belong to this RFQ')
+    messages=call(supplier_messages,body.text,body.supplier_sender)
+    if any(len(entry['text'])>50000 for entry in messages):
+        raise HTTPException(422,'Select supplier messages shorter than 50,000 characters')
+    count=0
+    for entry in messages:
+        # Stable IDs deduplicate a reimport without ever storing buyer chat messages.
+        fingerprint='whatsapp:'+hashlib.sha256((str(mid)+'\0'+entry['sender']+'\0'+entry['timestamp']+'\0'+entry['text']).encode()).hexdigest()
+        media=bool(re.search(r'<Media omitted>|image omitted|audio omitted|省略的媒体|媒体已省略',entry['text'],re.I))
+        reply=workflow.outreach._reply(message,entry['text'],source='whatsapp_import',external_message_id=fingerprint,
+                   attachments=[{'filename':'WhatsApp media not included','read_status':'needs_manual_review'}] if media else [])
+        if not reply.get('duplicate'):
+            workflow.outreach.repo.update('replies',reply['id'],channel='whatsapp')
+            count+=1
+    result=call(workflow.sync,rid,poll=False)
+    return {'imported':count,'duplicate_or_skipped':len(messages)-count,'workflow':result}
 
 
 @router.post('/{rid}/outreach/messages/{mid}/send',status_code=202)

@@ -120,6 +120,47 @@ credentials stay in server environment variables, never browser storage or
 status responses. The isolated preview still needs its dedicated mailbox
 credentials and buyer identity before it can collect or send real email.
 
+### Zoho Free and WhatsApp
+
+Do not assume Zoho Free includes IMAP. A native Zoho Mail REST transport is
+available via `RFQ_MAIL_TRANSPORT=zoho`. Obtain account-authorized OAuth access
+using Zoho's official process, then set these variables **on the backend only**:
+`RFQ_ZOHO_REGION` (`com`, `eu`, `in`, `com.au`, or `jp`, matching the actual
+account data center), `RFQ_ZOHO_CLIENT_ID`, `RFQ_ZOHO_CLIENT_SECRET`,
+`RFQ_ZOHO_REFRESH_TOKEN`, `RFQ_ZOHO_ACCOUNT_ID`. Keep `RFQ_FROM_ADDRESS`, buyer
+identity and the send enablement/caps configured as above. Required OAuth scopes
+are `ZohoMail.messages.READ` and, for sending, `ZohoMail.messages.CREATE`.
+The configured From address must be authorized on that Zoho account. Never put
+passwords or tokens into browser storage, chat, code or PR descriptions.
+
+The API transport refreshes its token server-side, retrieves original MIME mail
+for the existing attachment/quote pipeline, and filters unrelated senders and
+subjects from metadata before downloading message bodies. It never marks mail
+read. Sending is not retried when Zoho fails to confirm acceptance. Account
+permissions and provider limits must be checked with the real account before
+activation; tests use fake transports and do not prove a live connection.
+
+Use one authorized mailbox for active supplier outreach. Historical mail in a
+different account is not automatically mixed into the campaign; paste relevant
+supplier replies explicitly. Switching to a new sender requires authorizing that
+mailbox and updating server configuration, not changing an address in a draft.
+
+WhatsApp `.txt` chat exports can be imported under a linked supplier message.
+Choose the exact supplier sender name. Both Android and iOS timestamp formats
+are supported; buyer/system messages are excluded and repeated imports are
+deduplicated. Exports are limited to 2 MB, 100 supplier messages and 50,000
+characters per individual message. Missing media requires review. WhatsApp
+remains assisted: copy the targeted Chinese draft, open the supplier channel,
+and import/paste their next reply. Personal WhatsApp collection and sending are
+not automated.
+
+Provider contracts:
+[Zoho IMAP availability](https://www.zoho.com/mail/help/imap-access.html),
+[Zoho OAuth](https://www.zoho.com/mail/help/api/using-oauth-2.html),
+[list emails](https://www.zoho.com/mail/help/api/get-emails-list.html),
+[original MIME](https://www.zoho.com/mail/help/api/get-original-message.html),
+[send API](https://www.zoho.com/mail/help/api/getting-started-with-api.html).
+
 New authenticated endpoints live under `/rfqs/{id}/outreach`: `link`, `create`,
 `policy`, `sync`, `messages/{id}/reply`, and `messages/{id}/send`. GET the same
 outreach path for progress, message history, draft state and readiness. List

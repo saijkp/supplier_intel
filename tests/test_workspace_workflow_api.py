@@ -73,3 +73,29 @@ def test_cross_rfq_message_access_is_rejected(http):
     assert client.post(f'/rfqs/{other}/outreach/messages/{mid}/reply',headers=AUTH,json={'text':'moq: 10'}).status_code==422
     assert client.post(f'/rfqs/{other}/outreach/messages/{mid}/send',headers=AUTH,json={}).status_code==422
     assert client.post(f'/rfqs/{other}/quotes',headers=AUTH,json={'supplier_name':'Not linked','supplier_id':sid}).status_code==422
+
+
+def test_whatsapp_chat_import_keeps_only_selected_supplier_and_deduplicates(http):
+    client,rid,sid,path=http
+    view=client.post(f'/rfqs/{rid}/outreach/create',headers=AUTH,json={'supplier_ids':[sid]}).json()
+    mid=view['campaign']['messages'][0]['id']
+    body={'supplier_sender':'Factory Alice','text':'03/11/2026, 10:00 - Buyer: quoted_quantity: 999\n03/11/2026, 10:01 - Factory Alice: unit_price: 18\ncurrency: USD\n03/11/2026, 10:02 - Factory Alice: moq: 50'}
+    endpoint=f'/rfqs/{rid}/outreach/messages/{mid}/whatsapp-import'
+    result=client.post(endpoint,headers=AUTH,json=body)
+    assert result.status_code==200,result.text
+    assert result.json()['imported']==2
+    assert client.post(endpoint,headers=AUTH,json=body).json()['imported']==0
+    replies=RFQRepository(path).rows('replies')
+    assert len(replies)==2 and all(r['channel']=='whatsapp' for r in replies)
+    assert '999' not in str(replies)
+    quotes=client.get('/rfqs/'+rid,headers=AUTH).json()['quotes']
+    assert quotes[-1]['fields']['moq']=='50'
+    assert 'quoted_quantity' not in quotes[-1]['fields']
+
+
+def test_pause_keeps_the_selected_limits(http):
+    client,rid,sid,path=http
+    client.post(f'/rfqs/{rid}/outreach/create',headers=AUTH,json={'supplier_ids':[sid]})
+    client.post(f'/rfqs/{rid}/outreach/policy',headers=AUTH,json={'max_rounds':5,'followup_hours':48})
+    view=client.post(f'/rfqs/{rid}/outreach/pause',headers=AUTH,json={}).json()
+    assert view['policy']['max_rounds']==5 and view['policy']['followup_hours']==48

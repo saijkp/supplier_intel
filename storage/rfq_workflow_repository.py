@@ -74,8 +74,9 @@ class WorkflowRepository:
             c.execute('BEGIN IMMEDIATE')
             policy = c.execute('SELECT * FROM rfq_workspace_outreach WHERE rfq_id=?', (rid,)).fetchone()
             pending = c.execute("SELECT 1 FROM rfq_workspace_clarifications x JOIN rfq_messages m ON m.id=x.message_id WHERE x.rfq_id=? AND x.supplier_id=? AND m.status IN ('draft','approved','sending','failed')", (rid,supplier_id)).fetchone()
-            rounds = c.execute('SELECT count(*) FROM rfq_workspace_clarifications WHERE rfq_id=? AND supplier_id=?', (rid,supplier_id)).fetchone()[0]
-            if pending or rounds >= policy['max_rounds']:
+            used=c.execute("SELECT count(*) FROM rfq_workspace_clarifications x JOIN rfq_messages m ON m.id=x.message_id WHERE x.rfq_id=? AND x.supplier_id=? AND m.status NOT IN ('skipped','draft','approved')",(rid,supplier_id)).fetchone()[0]
+            rounds=c.execute('SELECT coalesce(max(round),0) FROM rfq_workspace_clarifications WHERE rfq_id=? AND supplier_id=?',(rid,supplier_id)).fetchone()[0]
+            if pending or used >= policy['max_rounds']:
                 return None
             status = 'approved' if automatic and policy['auto_send'] and policy['poll_enabled'] else 'draft'
             mid = c.execute("INSERT INTO rfq_messages(campaign_id,supplier_id,channel,kind,language,recipient,subject,body,reference,status,approved_at) VALUES (?,?,?,?,?,?,?,?,?,?,CASE WHEN ?='approved' THEN CURRENT_TIMESTAMP END)",
@@ -91,6 +92,11 @@ class WorkflowRepository:
     def approve_manual(self,mid):
         with connection_scope(self.db_path) as c:
             c.execute('UPDATE rfq_workspace_clarifications SET automatic=0 WHERE message_id=?',(mid,))
+
+    def approve_automatic(self,mid):
+        with connection_scope(self.db_path) as c:
+            changed=c.execute("UPDATE rfq_messages SET status='approved',approved_at=CURRENT_TIMESTAMP WHERE id=? AND status='draft'",(mid,)).rowcount
+            if changed:c.execute('UPDATE rfq_workspace_clarifications SET automatic=1 WHERE message_id=?',(mid,))
 
     def cancel_stale(self, rid, latest):
         with connection_scope(self.db_path) as c:

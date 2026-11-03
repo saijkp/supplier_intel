@@ -10,7 +10,8 @@ window.renderOutreach=async function(rfq){
     const view=await api('/rfqs/'+rfq.id+'/outreach');if(current.id!==rfq.id)return;
     outreachPanel.replaceChildren(node('h2','Supplier outreach & reply collection'));
     const ready=view.readiness;
-    outreachPanel.append(node('p',`Inbox: ${ready.imap_configured?'configured':'not configured'} · Sending: ${ready.ready?'ready':'not ready'} · Daily capacity remaining: ${ready.remaining_cap}`));
+    outreachPanel.append(node('p',`Mailbox connection: ${ready.transport==='zoho'?'Zoho Mail API':'SMTP / IMAP'} · Inbox: ${ready.imap_configured?'configured':'not configured'} · Sending: ${ready.ready?'ready':'not ready'} · Daily capacity remaining: ${ready.remaining_cap}`));
+    if(!ready.imap_configured)outreachPanel.append(node('p','Zoho Free may not include IMAP. A Zoho Mail API connection is supported after server-side OAuth authorization. You can import WhatsApp chat exports or paste supplier replies now.','help'));
     if(ready.missing?.length)outreachPanel.append(node('p','Mailbox / buyer identity settings needed on the server: '+ready.missing.join(', '),'help'));
     if(!view.linked){
       outreachPanel.append(node('p','Connect this master RFQ to an existing campaign, or draft requests for suppliers already in your database. Initial requests are sent only when you approve them.'));
@@ -38,7 +39,7 @@ window.renderOutreach=async function(rfq){
     const consent=checkbox('approveAutomation','I approve this supplier list, cadence and follow-up limit. Stop on complete quotes, opt-out, delivery failure or required human review.',false);
     policyForm.append(node('p','Automatic follow-ups use email only. Marketplace, WeChat and WhatsApp remain assisted. Conflicting values, unreadable attachments and failed extraction require review.','help'));
     const save=node('button','Save workflow settings');save.className='primary';policyForm.append(save);
-    policyForm.append(action('Pause automatic workflow',async()=>{await api('/rfqs/'+rfq.id+'/outreach/policy',{poll_enabled:false,auto_send:false});await reloadWorkspace();message('Automatic workflow paused.');}));
+    policyForm.append(action('Pause automatic workflow',async()=>{await api('/rfqs/'+rfq.id+'/outreach/pause',{});await reloadWorkspace();message('Automatic workflow paused.');}));
     policyForm.onsubmit=e=>{e.preventDefault();run(async()=>{await api('/rfqs/'+rfq.id+'/outreach/policy',{poll_enabled:poll.checked,auto_send:auto.checked,interval_minutes:Number(interval.value),followup_hours:Number(cadence.value),max_rounds:Number(rounds.value),days:Number(days.value),approve_scope:consent.checked});await reloadWorkspace();message('Workflow settings saved.');},save);};outreachPanel.append(policyForm);
     const messages=node('details');messages.open=true;messages.append(node('summary',`Outreach messages & replies (${campaign.messages.length})`));
     for(const item of campaign.messages){const card=node('div',undefined,'quote-card');card.append(node('h3',`${item.supplier_name} · ${item.channel} · ${item.status}`),node('p',item.recipient||'No recipient'));
@@ -48,11 +49,14 @@ window.renderOutreach=async function(rfq){
       if(item.channel!=='email'&&item.action_url){const link=node('a','Open supplier channel');link.href=item.action_url;link.target='_blank';link.rel='noopener noreferrer';card.append(link);}
       card.append(action('Copy message',async()=>{await navigator.clipboard.writeText(item.body);message('Message copied.');}));
       const paste=node('form'),text=node('textarea');text.placeholder='Paste this supplier’s real reply for automatic checking';text.setAttribute('aria-label','Supplier reply for '+item.supplier_name);text.maxLength=50000;const record=node('button','Record reply & check');paste.append(text,record);paste.onsubmit=e=>{e.preventDefault();run(async()=>{if(!text.value.trim())throw new Error('Paste the supplier reply first.');await api('/rfqs/'+rfq.id+'/outreach/messages/'+item.id+'/reply',{text:text.value});await reloadWorkspace();message('Supplier reply recorded and checked.');},record);};card.append(paste);
+      const chat=node('details');chat.append(node('summary','Import WhatsApp chat export (.txt)'));
+      const chatForm=node('form'),senderName=node('input'),file=node('input');senderName.placeholder='Exact supplier sender name in the export';senderName.setAttribute('aria-label','WhatsApp supplier sender for '+item.supplier_name);senderName.required=true;file.type='file';file.accept='.txt,text/plain';file.required=true;file.setAttribute('aria-label','WhatsApp chat export for '+item.supplier_name);const importButton=node('button','Import supplier messages');chatForm.append(node('p','Export the relevant chat without media. Only the supplier name you select is imported; buyer messages are excluded. Media needs separate review.','help'),senderName,file,importButton);
+      chatForm.onsubmit=e=>{e.preventDefault();run(async()=>{const upload=file.files[0];if(upload.size>2000000)throw new Error('Select a chat export smaller than 2 MB.');const result=await api('/rfqs/'+rfq.id+'/outreach/messages/'+item.id+'/whatsapp-import',{supplier_sender:senderName.value,text:await upload.text()});await reloadWorkspace();message(`${result.imported} supplier message(s) imported. Up to ten replies are checked per cycle; use Collect replies & validate now for any remaining entries.`);},importButton);};chat.append(chatForm);card.append(chat);
       const replies=campaign.replies.filter(r=>r.message_id===item.id);for(const reply of replies){const detail=node('details');detail.append(node('summary',`Reply · ${reply.parse_status} · ${reply.received_at} UTC`),node('pre',reply.body_text));card.append(detail);}messages.append(card);
     }
     outreachPanel.append(messages);
     for(const entry of view.ingestions)if(entry.state==='needs_review')outreachPanel.append(node('p','Reply '+entry.reply_id+' needs human review. '+entry.detail));
-    for(const supplier of new Set(view.clarifications.map(m=>m.supplier_id))){const sent=view.clarifications.filter(m=>m.supplier_id===supplier);if(sent.length>=policy.max_rounds)outreachPanel.append(node('p','Follow-up limit reached for supplier '+supplier+'. Review their latest reply and contact them manually if needed.'));}
+    for(const supplier of new Set(view.clarifications.map(m=>m.supplier_id))){const sent=view.clarifications.filter(m=>m.supplier_id===supplier&&!['skipped','draft','approved'].includes(m.status));if(sent.length>=policy.max_rounds)outreachPanel.append(node('p','Follow-up limit reached for supplier '+supplier+'. Review their latest reply and contact them manually if needed.'));}
   }catch(error){if(current?.id===rfq.id)outreachPanel.replaceChildren(node('h2','Supplier outreach'),node('p',error.message));}
 };
 if(current)window.renderOutreach(current);

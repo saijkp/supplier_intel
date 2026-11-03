@@ -101,6 +101,15 @@ class WorkspaceWorkflow:
         expiry=(datetime.now(timezone.utc)+timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
         self.repo.policy(rid,poll_enabled=int(poll_enabled),auto_send=int(auto_send),interval_minutes=interval_minutes,
                          followup_hours=followup_hours,max_rounds=max_rounds,expires_at=expiry,next_poll_at=timestamp())
+        if auto_send:
+            latest=latest_quotes(self.load(rid))
+            for draft in self.repo.clarifications(rid):
+                quote=latest.get(draft['supplier_id'])
+                # Only unchanged deterministic drafts fall within this policy approval.
+                if draft['status']=='draft' and quote and quote['id']==draft['quote_id'] and not quote.get('manual_review') and quote['review']['status']!='comparable':
+                    expected=quote['clarification_zh']+'\nReference: '+draft['reference']
+                    if draft['body']==expected and draft['subject']==header('['+draft['reference']+'] 报价信息确认: '+self.load(rid)['title']):
+                        self.repo.approve_automatic(draft['id'])
         return self.view(rid)
 
     def process_replies(self,rid):
