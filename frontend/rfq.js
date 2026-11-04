@@ -7,6 +7,21 @@ let current = null;
 let editingSupplierId = null;
 let base = sessionStorage.getItem('rfq.base') || (location.pathname.startsWith('/workspace/') ? location.origin : localStorage.getItem('si.base') || localStorage.getItem('si_api_url')) || '';
 let token = sessionStorage.getItem('rfq.token') || localStorage.getItem('si.token') || localStorage.getItem('si_api_token') || '';
+function normalizeApiUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) throw new Error('Enter your Railway API address.');
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : 'https://' + raw;
+  let url;
+  try { url = new URL(withScheme); } catch { throw new Error('Enter a valid API address, such as https://your-service.up.railway.app.'); }
+  if (!['https:', 'http:'].includes(url.protocol) || !url.hostname || url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) {
+    throw new Error('Enter only the API address, without a path, query, or credentials.');
+  }
+  if (url.protocol === 'http:' && !['localhost', '127.0.0.1'].includes(url.hostname)) {
+    throw new Error('Use HTTPS for a remote API.');
+  }
+  return url.origin;
+}
+try { if (base) base = normalizeApiUrl(base); } catch { base = ''; }
 $('base').value = base; $('token').value = token;
 function message(text, error=false) { $('message').textContent=text; $('message').className=error?'error':''; $('message').hidden=!text; }
 function node(tag,text,cls) { const el=document.createElement(tag); if(text!==undefined)el.textContent=text; if(cls)el.className=cls; return el; }
@@ -62,7 +77,19 @@ function openQuote(previous) {
 }
 $('new').onclick=()=>{$('create').hidden=false;$('title').focus();}; $('cancel').onclick=()=>{$('create').hidden=true;};
 $('add').onclick=()=>openQuote();$('cancelQuote').onclick=()=>{$('quoteEntry').hidden=true;};
-$('connect').onsubmit=e=>{e.preventDefault();run(async()=>{const url=new URL($('base').value);if(!['https:','http:'].includes(url.protocol)||url.username||url.password)throw new Error('Use an HTTP or HTTPS API address without credentials.');if(url.protocol==='http:'&&!['localhost','127.0.0.1'].includes(url.hostname))throw new Error('Use HTTPS for a remote API.');base=url.href.replace(/\/$/,'');token=$('token').value.trim();sessionStorage.setItem('rfq.base',base);sessionStorage.setItem('rfq.token',token);current=null;$('workspace').hidden=true;$('empty').hidden=false;await refresh();$('connection').open=false;message('Connected. Saved RFQs loaded.');},e.submitter);};
+$('connect').onsubmit=e=>{e.preventDefault();run(async()=>{
+  const newBase = normalizeApiUrl($('base').value);
+  const newToken = $('token').value.trim();
+  if (!newToken) throw new Error('Enter your API access token.');
+  base = newBase; token = newToken;
+  $('base').value = newBase;
+  current = null; $('workspace').hidden = true; $('empty').hidden = false;
+  await refresh();
+  sessionStorage.setItem('rfq.base', base);
+  sessionStorage.setItem('rfq.token', token);
+  $('connection').open = false;
+  message('Connected. Saved RFQs loaded.');
+},e.submitter);};
 $('rfqForm').onsubmit=e=>{e.preventDefault();run(async()=>{const specs={};for(const line of $('specs').value.split('\n').filter(x=>x.trim())){const pos=line.indexOf('=');if(pos<1||!line.slice(pos+1).trim())throw new Error('Use name = value for each specification.');const key=line.slice(0,pos).trim();if(Object.hasOwn(specs,key))throw new Error('Duplicate specification: '+key);specs[key]=line.slice(pos+1).trim();}show(await api('/rfqs',{title:$('title').value,customer:$('customer').value,quantity:$('quantity').value,unit:$('unit').value,mandatory_specs:specs}));$('create').hidden=true;$('rfqForm').reset();$('unit').value='pcs';await refresh();message('RFQ saved. Add the first supplier quote.');},e.submitter);};
 $('quoteForm').onsubmit=e=>{e.preventDefault();run(async()=>{const fields={},evidence={},specs={};for(const k of Object.keys(labels)){const value=$('f_'+k).value.trim();fields[k]=value?(numeric.has(k)?Number(value):value):null;const excerpt=$('e_'+k).value.trim();if(excerpt)evidence[k]=excerpt;}let i=0;for(const k of Object.keys(current.mandatory_specs)){if($('s_'+i).value.trim())specs[k]=$('s_'+i).value.trim();if($('se_'+i).value.trim())evidence['spec:'+k]=$('se_'+i).value.trim();i++;}show(await api('/rfqs/'+current.id+'/quotes',{supplier_id:editingSupplierId,supplier_name:$('supplier').value,source_text:$('source').value,fields,quoted_specs:specs,evidence,deviations:$('deviations').value.split('\n').map(x=>x.trim()).filter(Boolean)}));await refresh();message('Quote saved and validated. See comparison and clarification below.');},e.submitter);};
 if(base&&token)run(refresh);else $('connection').open=true;
