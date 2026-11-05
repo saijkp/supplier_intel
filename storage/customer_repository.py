@@ -3,7 +3,7 @@ import json
 
 from storage.database import connection_scope
 
-TABLES = {'customers', 'customer_enquiries', 'customer_activities', 'customer_messages'}
+TABLES = {'customers', 'customer_enquiries', 'customer_activities', 'customer_messages', 'customer_inbox_leads'}
 JSON_FIELDS = {'rfq_campaign_ids'}
 
 
@@ -83,6 +83,30 @@ class CustomerRepository:
             return conn.execute(
                 "SELECT COUNT(*) FROM customer_messages WHERE channel='email' AND "
                 "(sent_at >= datetime('now','-24 hours') OR status='sending')").fetchone()[0]
+
+    def is_supplier_address(self, email):
+        """True when the address belongs to a supplier we hold or have sent an RFQ to.
+        Domain matching is skipped for free-mail domains (many customers use gmail)."""
+        email = (email or '').strip().lower()
+        if '@' not in email:
+            return False
+        domain = email.rsplit('@', 1)[1]
+        with connection_scope(self.db_path) as conn:
+            if conn.execute('SELECT 1 FROM suppliers WHERE lower(primary_email)=? LIMIT 1', (email,)).fetchone():
+                return True
+            if conn.execute('SELECT 1 FROM rfq_messages WHERE lower(recipient)=? LIMIT 1', (email,)).fetchone():
+                return True
+            if domain in FREE_MAIL:
+                return False
+            return bool(conn.execute(
+                "SELECT 1 FROM suppliers WHERE lower(domain)=? OR lower(domain) LIKE ? "
+                "OR lower(primary_email) LIKE ? LIMIT 1", (domain, '%.' + domain, '%@' + domain)).fetchone())
+
+
+FREE_MAIL = {'gmail.com', 'googlemail.com', 'hotmail.com', 'hotmail.co.uk', 'outlook.com', 'live.com',
+             'live.co.uk', 'yahoo.com', 'yahoo.co.uk', 'icloud.com', 'me.com', 'aol.com', 'msn.com',
+             'btinternet.com', 'sky.com', 'protonmail.com', 'proton.me', 'qq.com', '163.com', '126.com',
+             'zoho.com', 'zohomail.eu', 'mail.com', 'gmx.com', 'virginmedia.com', 'talktalk.net'}
 
 
 def _now():

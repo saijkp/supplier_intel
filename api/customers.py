@@ -1,5 +1,5 @@
 """Customer profiles and enquiry follow-ups (IK Eng's buy side). Thin wrapper over CustomerService."""
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional  # noqa: F401
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -77,7 +77,7 @@ class LinkCampaign(BaseModel):
 
 class PollIn(BaseModel):
     since_days: int = Field(default=14, ge=1, le=90)
-    limit: int = Field(default=100, ge=1, le=200)
+    limit: int = Field(default=50, ge=1, le=200)
 
 
 def _set(model):
@@ -163,6 +163,28 @@ def poll_inbox(body: PollIn = PollIn(), service: CustomerService = Depends(get_c
         raise HTTPException(status_code=400, detail=str(exc)) from None
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
+
+
+class LeadConvert(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=300)
+    title: Optional[str] = Field(default=None, max_length=300)
+
+
+@router.get('/leads')
+def list_leads(status: Literal['new', 'added', 'dismissed'] = 'new',
+               service: CustomerService = Depends(get_customer_service)):
+    return service.list_leads(status)
+
+
+@router.post('/leads/{lead_id}/convert')
+def convert_lead(lead_id: int, body: LeadConvert = LeadConvert(),
+                 service: CustomerService = Depends(get_customer_service)):
+    return _call(service.convert_lead, lead_id, name=body.name, title=body.title)
+
+
+@router.post('/leads/{lead_id}/dismiss')
+def dismiss_lead(lead_id: int, service: CustomerService = Depends(get_customer_service)):
+    return _call(service.dismiss_lead, lead_id)
 
 
 @router.get('/{customer_id}')

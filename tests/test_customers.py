@@ -25,8 +25,7 @@ class FakeInbox:
     def __init__(self):
         self.raw, self.watched = [], None
 
-    def fetch_for_campaign(self, since_days, limit, messages):
-        self.watched = messages
+    def fetch_recent(self, since_days, limit):
         return self.raw
 
 
@@ -143,13 +142,12 @@ def test_inbox_reply_is_logged_and_stops_followups(svc):
         mail('colin@example.com', 'Automatic reply: away', 'I am away', '<b@x>'),
         mail('stranger@example.com', 'Hello', 'Unrelated', '<c@x>'),
     ]
-    assert svc.poll_inbox() == {'logged': 1, 'ignored': 2, 'duplicates': 0}
-    assert {'channel': 'email', 'recipient': 'colin@example.com', 'reference': ''} in svc._inbox.watched
+    assert svc.poll_inbox() == {'logged': 1, 'possible_new_enquiries': 1, 'ignored': 1, 'duplicates': 0}
     acts = svc.get_enquiry(svc.e['id'])['activities']
     assert acts[0]['kind'] == 'email_in' and 'Here are the drawings.' in acts[0]['summary']
     assert '> old' not in acts[0]['summary']
     assert svc.repo.get('customer_messages', m['id'])['status'] == 'cancelled'
-    assert svc.poll_inbox()['duplicates'] == 1
+    assert svc.poll_inbox()['duplicates'] == 2  # the auto-reply is re-read but never stored
 
 
 def test_reply_matched_by_reference_from_other_address(svc):
@@ -208,3 +206,91 @@ def test_api_round_trip(svc, monkeypatch):
         assert client.post('/customers', json={'name': 'Y', 'hacker': 1}).status_code == 422
     finally:
         mod.app.dependency_overrides.pop(get_customer_service, None)
+
+
+# -- not responding after 3 unanswered contacts --------------------------------------
+
+def test_three_unanswered_contacts_move_to_not_responding(svc):
+    eid = svc.e['id']
+    svc.log(eid, 'email_out', 'chase 1', occurred_at='2026-11-01 09:00:00')
+    svc.log(eid, 'call_out', 'chase 2', occurred_at='2026-11-02 09:00:00')
+    assert svc.repo.get('customer_enquiries', eid)['status'] == 'active'
+    svc.log(eid, 'whatsapp_out', 'chase 3', occurred_at='2026-11-03 09:00:00')
+    e = svc.repo.get('customer_enquiries', eid)
+    assert e['status'] == 'not responding' and e['next_action_due'] == '2026-12-03'
+    assert svc.list_enquiries(status='not responding')[0]['unanswered_contacts'] == 3
+    # Kept, never closed: not overdue until the monthly re-check date.
+    assert svc.list_enquiries(due_only=True) == []
+
+
+def test_reply_resets_count_and_restores_enquiry(svc):
+    eid = svc.e['id']
+    for i in range(3):
+        svc.log(eid, 'email_out', f'chase {i}', occurred_at=f'2026-11-0{i + 1} 09:00:00')
+    svc.log(eid, 'whatsapp_in', 'Sorry, been away', occurred_at='2026-11-05 10:00:00')
+    e = svc.repo.get('customer_enquiries', eid)
+    assert e['status'] == 'active' and e['next_action_due'] == '2026-11-05'
+    assert svc.unanswered_contacts(eid) == 0
+    svc.log(eid, 'email_out', 'thanks', occurred_at='2026-11-05 11:00:00')
+    assert svc.repo.get('customer_enquiries', eid)['status'] == 'active'
+
+
+def test_notes_and_meetings_do_not_count_as_chases(svc):
+    eid = svc.e['id']
+    for kind in ('note', 'meeting', 'note', 'meeting'):
+        svc.log(eid, kind, 'x')
+    assert svc.unanswered_contacts(eid) == 0
+
+
+def test_closed_enquiry_is_not_moved(svc):
+    eid = svc.e['id']
+    svc.update_enquiry(eid, status='won')
+    for _ in range(4):
+        svc.log(eid, 'email_out', 'x')
+    assert svc.repo.get('customer_enquiries', eid)['status'] == 'won'
+
+
+# -- possible new enquiries from the inbox --------------------------------------------
+
+def test_inbox_sorts_new_people_from_suppliers_and_newsletters(svc):
+    from storage.database import connection_scope
+    with connection_scope(svc.repo.db_path) as conn:
+        conn.execute("INSERT INTO suppliers(canonical_name, primary_email, domain) "
+                     "VALUES ('Foshan Cab', 'sales@foshancab.com', 'foshancab.com')")
+    svc._inbox.raw = [
+        mail('Priya Shah <priya@gmail.com>', 'Kitchen for our new flat', 'Hi, can you quote a handleless kitchen?', '<n1@x>'),
+        mail('Tom <tom@foshancab.com>', 'Re: catalogue', 'See attached', '<n2@x>'),
+        mail('news@deals.com', 'Weekly deals', 'Buy now', '<n3@x>', List_Unsubscribe='<mailto:u@deals.com>'),
+        mail('noreply@bank.com', 'Statement', 'Your statement', '<n4@x>'),
+        mail('agent@supplier.cn', '[RFQ-4-ABC123] Request for quotation: hinges', 'price 1.2 USD', '<n5@x>'),
+        mail('sai@ikeng.online', 'Sent by us', 'x', '<n6@x>'),
+    ]
+    assert svc.poll_inbox() == {'logged': 0, 'possible_new_enquiries': 1, 'ignored': 5, 'duplicates': 0}
+    leads = svc.list_leads()
+    assert [(l['from_address'], l['from_name']) for l in leads] == [('priya@gmail.com', 'Priya Shah')]
+    assert 'handleless kitchen' in leads[0]['excerpt']
+    assert svc.poll_inbox()['possible_new_enquiries'] == 0  # never listed twice
+
+
+def test_convert_lead_creates_customer_and_enquiry(svc):
+    svc._inbox.raw = [mail('Priya Shah <priya@gmail.com>', 'Kitchen for our new flat', 'Can you quote?', '<n1@x>')]
+    svc.poll_inbox()
+    lead = svc.list_leads()[0]
+    e = svc.convert_lead(lead['id'], title='Handleless kitchen, Salford flat')
+    assert e['customer']['email'] == 'priya@gmail.com' and e['customer']['name'] == 'Priya Shah'
+    assert e['title'] == 'Handleless kitchen, Salford flat' and e['status'] == 'new'
+    assert any(a['kind'] == 'email_in' and 'Can you quote?' in a['summary'] for a in e['activities'])
+    assert svc.list_leads() == [] and svc.list_leads('added')[0]['enquiry_id'] == e['id']
+    with pytest.raises(ValueError):
+        svc.convert_lead(lead['id'])
+    # Their next email is logged on the enquiry, not listed as a new lead.
+    svc._inbox.raw = [mail('priya@gmail.com', 'Re: kitchen', 'Here are measurements', '<n7@x>')]
+    assert svc.poll_inbox()['logged'] == 1
+
+
+def test_dismiss_lead(svc):
+    svc._inbox.raw = [mail('someone@company.co.uk', 'Partnership', 'Hello', '<n8@x>')]
+    svc.poll_inbox()
+    lead = svc.list_leads()[0]
+    assert svc.dismiss_lead(lead['id'])['status'] == 'dismissed'
+    assert svc.list_leads() == []
