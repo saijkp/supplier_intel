@@ -45,6 +45,7 @@ from fastapi.responses import PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
+from api.whatsapp import router as whatsapp_router
 from api.auth import require_api_token
 from api.rfq import router as rfq_router
 from api.rfq_workflow import router as rfq_workflow_router
@@ -190,6 +191,7 @@ app = FastAPI(
 
 app.include_router(rfq_workflow_router)
 app.include_router(rfq_router)
+app.include_router(whatsapp_router)
 app.mount('/workspace', StaticFiles(directory=Path(__file__).resolve().parents[1] / 'frontend', html=True), name='workspace')
 
 app.add_middleware(

@@ -241,3 +241,10 @@ retain incoterms, MOQ, lead time and evidence; they do not choose a winner.
 PDF, XLSX, CSV and TXT attachments are supported (10 MB/file, bounded text).
 Scanned PDFs and unreadable files require manual review. Polling is manual;
 there is no scheduled inbox access or marketplace-account automation.
+
+## Optional inbound WhatsApp test receiver
+
+The inbound-only Meta test-account receiver defaults off and includes a private
+review queue with manual enquiry/RFQ association. It makes no provider calls.
+The chat-export importer and existing assisted WhatsApp workflow remain available.
+See [setup, privacy, Coexistence gates and staged rollout](docs/WHATSAPP_INBOUND.md).

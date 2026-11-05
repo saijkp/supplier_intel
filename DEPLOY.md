@@ -272,3 +272,13 @@ the same sending enablement, buyer identity, MX, suppression and cap gates.
 Follow-ups remain drafts until separately approved. Opt-outs (`unsubscribe`,
 `退订`) and bounces suppress the recipient and bypass quote parsing.
 No automated account interactions are used for assisted channels.
+
+## Inbound WhatsApp (disabled by default)
+
+`GET/POST /webhooks/whatsapp` authenticates Meta verification/signatures;
+`GET /whatsapp/inbound` and `PATCH /whatsapp/inbound/{id}` require the admin token.
+`WHATSAPP_INBOUND_ENABLED`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN` are
+optional and must never be printed. Only the pinned test WABA/phone is accepted.
+See [isolated Railway test setup](docs/WHATSAPP_INBOUND.md), including disabling
+access logs to protect GET verification query secrets. No production setup or
+deployment is authorized by this addition.
