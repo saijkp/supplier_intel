@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 36
+SCHEMA_VERSION = 37
 
 
 # ═══════════════════════════════════════════════════════════
@@ -869,9 +869,42 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 #     a brand new table
 # ═══════════════════════════════════════════════════════════
 
+# IK Eng's own customers (the buy side of the business): profiles, enquiries,
+# an append-only activity log and approval-gated follow-up messages.
+CUSTOMER_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS customers (
+ id INTEGER PRIMARY KEY, name TEXT NOT NULL, company TEXT, email TEXT, phone TEXT, whatsapp TEXT,
+ location TEXT, source TEXT, notes TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+ updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS customer_enquiries (
+ id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL REFERENCES customers(id), reference TEXT UNIQUE NOT NULL,
+ title TEXT NOT NULL, requirements TEXT, status TEXT NOT NULL DEFAULT 'new', next_action TEXT,
+ next_action_due TEXT, blocker TEXT, estimated_value TEXT, owner TEXT, summary TEXT,
+ rfq_campaign_ids TEXT NOT NULL DEFAULT '[]', source_ref TEXT UNIQUE,
+ last_customer_contact_at TEXT, last_our_contact_at TEXT,
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS customer_activities (
+ id INTEGER PRIMARY KEY, enquiry_id INTEGER NOT NULL REFERENCES customer_enquiries(id), kind TEXT NOT NULL,
+ summary TEXT NOT NULL, external_id TEXT UNIQUE, occurred_at TEXT NOT NULL,
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS customer_messages (
+ id INTEGER PRIMARY KEY, enquiry_id INTEGER NOT NULL REFERENCES customer_enquiries(id),
+ channel TEXT NOT NULL, recipient TEXT, subject TEXT, body TEXT NOT NULL, action_url TEXT,
+ status TEXT NOT NULL DEFAULT 'draft', status_reason TEXT, provider_message_id TEXT,
+ approved_at TEXT, sent_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS idx_customer_enquiries_due ON customer_enquiries(status,next_action_due);
+CREATE INDEX IF NOT EXISTS idx_customer_activities_enquiry ON customer_activities(enquiry_id,occurred_at);
+CREATE INDEX IF NOT EXISTS idx_customer_messages_status ON customer_messages(status,sent_at);
+"""
+
 SCHEMA_SQL += RFQ_SCHEMA_SQL
+SCHEMA_SQL += CUSTOMER_SCHEMA_SQL
 
 MIGRATIONS: dict[int, dict] = {
+    37: {
+        "description": "Customer profiles, enquiries, activity log and approval-gated follow-ups",
+        "statements": [statement for statement in CUSTOMER_SCHEMA_SQL.split(";") if statement.strip()],
+    },
     36: {"description": "Link RFQ workspaces to outreach, reply ingestion and bounded clarification policies", "statements": [
         "CREATE TABLE IF NOT EXISTS rfq_workspace_outreach (rfq_id TEXT PRIMARY KEY REFERENCES rfqs(id), campaign_id INTEGER NOT NULL UNIQUE REFERENCES rfq_campaigns(id), poll_enabled INTEGER NOT NULL DEFAULT 0, auto_send INTEGER NOT NULL DEFAULT 0, approved_supplier_ids TEXT NOT NULL DEFAULT '[]', interval_minutes INTEGER NOT NULL DEFAULT 15, followup_hours INTEGER NOT NULL DEFAULT 24, max_rounds INTEGER NOT NULL DEFAULT 3, expires_at TEXT, next_poll_at TEXT, lease_token TEXT, lease_until TEXT, last_run_at TEXT, last_error TEXT)",
         "CREATE TABLE IF NOT EXISTS rfq_workspace_ingestions (rfq_id TEXT NOT NULL REFERENCES rfqs(id), reply_id INTEGER NOT NULL REFERENCES rfq_replies(id), state TEXT NOT NULL, detail TEXT, PRIMARY KEY(rfq_id,reply_id))",

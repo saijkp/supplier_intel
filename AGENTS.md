@@ -70,6 +70,15 @@ Use one `run pipeline/jobs` per search term, one at a time, with `"limit": 10, "
 **5. Compare and follow up.**
 `get rfq/campaigns/{id}/compare` for the side-by-side table with evidence. If suppliers haven't answered after 3 days, `post rfq/campaigns/{id}/followups` creates follow-up drafts. These go through the same approve and send steps.
 
+**6. Customer enquiries (IK Eng's own customers).**
+This is the record of every customer enquiry. It replaces the old Codex `enquiry-action-board.json`, so update enquiries here rather than in that file.
+- Read: `get customers/enquiries` (open), `?due_only=true` (follow-ups due today or overdue), `?include_closed=true`. Also `get customers/enquiries/{id}` (profile, timeline, messages) and `get "customers?q=name"`.
+- Update freely: `patch customers/enquiries/{id}` (status, next_action, next_action_due, blocker, requirements, summary, estimated_value) and `patch customers/{id}` (email, phone, whatsapp, notes). Log what happened with `post customers/enquiries/{id}/activities {"kind": "call_in|call_out|whatsapp_in|whatsapp_out|email_in|email_out|meeting|note", "summary": "..."}`. Any `*_in` activity cancels that enquiry's pending follow-ups.
+- Link the supplier side with `post customers/enquiries/{id}/campaigns {"campaign_id": N}`.
+- Follow-ups: `post customers/enquiries/{id}/followups {"channel": "email"|"whatsapp"}` creates a **draft**. Edit it with `patch customers/messages/{id}`. Approving (`.../approve`) and sending (`.../send`) need the buyer's explicit yes for that message. WhatsApp is sent by a human from the `action_url`, then marked with `.../mark-sent`.
+- Never put internal notes (supplier prices, margins, `next_action`, `blocker`) into a customer-facing message.
+- `post customers/poll` logs customer email replies from the mailbox. It's free.
+
 ## Known state (update this when it changes)
 - Sending is live (`RFQ_SEND_ENABLED=true`, 25/day). Quote reading is in agent mode (`RFQ_QUOTE_PARSER=agent`), so replies wait for you.
 - Campaign 1 and supplier 3505 are internal test records. Ignore them.

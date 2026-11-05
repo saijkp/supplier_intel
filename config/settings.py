@@ -899,6 +899,8 @@ def configure_logging() -> None:
 # RFQ outreach is disabled until explicitly configured.
 RFQ_SEND_ENABLED = (os.getenv("RFQ_SEND_ENABLED") or 'false').lower() in ("1", "true", "yes")
 RFQ_DAILY_SEND_LIMIT = int((os.getenv("RFQ_DAILY_SEND_LIMIT") or '25'))
+# Customer follow-ups share the RFQ mailbox and RFQ_SEND_ENABLED switch, with their own rolling cap.
+CUSTOMER_DAILY_SEND_LIMIT = int((os.getenv("CUSTOMER_DAILY_SEND_LIMIT") or '20'))
 RFQ_SEND_DELAY_SECONDS = int((os.getenv("RFQ_SEND_DELAY_SECONDS") or '45'))
 RFQ_SEND_JOB_MAX_SECONDS = int((os.getenv("RFQ_SEND_JOB_MAX_SECONDS") or '900'))
 RFQ_SMTP_HOST = (os.getenv("RFQ_SMTP_HOST") or '')
