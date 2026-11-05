@@ -23,11 +23,12 @@ from pathlib import Path
 from typing import Iterator
 
 from config.settings import DB_PATH
+from storage.whatsapp_schema import WHATSAPP_SCHEMA, WHATSAPP_INDEX
 
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 36
+SCHEMA_VERSION = 37
 
 
 # ═══════════════════════════════════════════════════════════
@@ -870,8 +871,10 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 # ═══════════════════════════════════════════════════════════
 
 SCHEMA_SQL += RFQ_SCHEMA_SQL
+SCHEMA_SQL += WHATSAPP_SCHEMA + ';' + WHATSAPP_INDEX + ';'
 
 MIGRATIONS: dict[int, dict] = {
+    37: {'description': 'Inbound-only WhatsApp test account review queue', 'statements': [WHATSAPP_SCHEMA, WHATSAPP_INDEX]},
     36: {"description": "Link RFQ workspaces to outreach, reply ingestion and bounded clarification policies", "statements": [
         "CREATE TABLE IF NOT EXISTS rfq_workspace_outreach (rfq_id TEXT PRIMARY KEY REFERENCES rfqs(id), campaign_id INTEGER NOT NULL UNIQUE REFERENCES rfq_campaigns(id), poll_enabled INTEGER NOT NULL DEFAULT 0, auto_send INTEGER NOT NULL DEFAULT 0, approved_supplier_ids TEXT NOT NULL DEFAULT '[]', interval_minutes INTEGER NOT NULL DEFAULT 15, followup_hours INTEGER NOT NULL DEFAULT 24, max_rounds INTEGER NOT NULL DEFAULT 3, expires_at TEXT, next_poll_at TEXT, lease_token TEXT, lease_until TEXT, last_run_at TEXT, last_error TEXT)",
         "CREATE TABLE IF NOT EXISTS rfq_workspace_ingestions (rfq_id TEXT NOT NULL REFERENCES rfqs(id), reply_id INTEGER NOT NULL REFERENCES rfq_replies(id), state TEXT NOT NULL, detail TEXT, PRIMARY KEY(rfq_id,reply_id))",
@@ -2170,7 +2173,7 @@ def table_counts(db_path: Path | str | None = None) -> dict[str, int]:
     """Return row counts for every core table — used by `main.py status`
     and by tests to sanity-check the schema was created correctly."""
     tables = (
-        "rfq_campaigns", "rfq_messages", "rfq_replies", "rfq_quotes", "rfq_suppressions",
+        "whatsapp_inbound", "rfq_campaigns", "rfq_messages", "rfq_replies", "rfq_quotes", "rfq_suppressions",
         "suppliers",
         "raw_source_data",
         "shipment_records",

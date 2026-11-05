@@ -923,3 +923,8 @@ RFQ_ZOHO_ACCOUNT_ID = (os.getenv('RFQ_ZOHO_ACCOUNT_ID') or '')
 # Claude Code / Codex session reads them (scripts/rfq_agent.py) and submits candidates,
 # which go through the same evidence validation in rfq.quote_parser.validate_candidates.
 RFQ_QUOTE_PARSER = (os.getenv('RFQ_QUOTE_PARSER') or 'openai').lower()
+
+# Inbound Meta test account only; never included in public readiness responses.
+WHATSAPP_INBOUND_ENABLED = (os.getenv('WHATSAPP_INBOUND_ENABLED') or 'false').lower() == 'true'
+WHATSAPP_APP_SECRET = os.getenv('WHATSAPP_APP_SECRET') or ''
+WHATSAPP_VERIFY_TOKEN = os.getenv('WHATSAPP_VERIFY_TOKEN') or ''
