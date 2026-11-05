@@ -7,6 +7,7 @@
     .cust-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:10px 0}
     .cust-grid label,.cust-detail label{display:flex;flex-direction:column;gap:4px;font-size:13px}
     .cust-wide{grid-column:1/-1}
+    .cust-leads{border:2px solid var(--orange);border-radius:10px;padding:10px 14px;margin:10px 0}
     .cust-row{cursor:pointer}.cust-row:hover td{background:var(--paper)}
     .cust-due{color:var(--danger-dark);font-weight:700}
     .cust-detail{margin-top:18px;border-top:2px solid var(--rule);padding-top:14px}
@@ -28,8 +29,14 @@
   async function loadCustomers() {
     await run(async () => {
       const filter = $('custFilter').value;
-      const qs = filter === 'due' ? '?due_only=true' : filter === 'all' ? '?include_closed=true' : '';
-      const [status, rows] = await Promise.all([api('/customers/status'), api('/customers/enquiries' + qs)]);
+      const qs = filter === 'due' ? '?due_only=true' : filter === 'all' ? '?include_closed=true' : filter === 'quiet' ? '?status=not%20responding' : '';
+      const [status, rows, leads] = await Promise.all([api('/customers/status'), api('/customers/enquiries' + qs), api('/customers/leads')]);
+      $('custLeads').innerHTML = leads.length ? `<div class="cust-leads"><h3>Possible new enquiries from email (${leads.length})</h3>
+        <p class="hint">From senders who aren't a known customer or supplier. Add each real enquiry, dismiss the rest.</p>` +
+        leads.map(l => `<div class="cust-msg"><strong>${esc(l.from_name || l.from_address)}</strong> &lt;${esc(l.from_address)}&gt; · ${esc(l.received_at)}
+          <div><strong>${esc(l.subject)}</strong></div><div class="hint" style="white-space:pre-wrap">${esc((l.excerpt || '').slice(0, 500))}</div>
+          <button class="btn btn-sm btn-primary" data-lead="convert" data-id="${Number(l.id)}">Add as customer enquiry</button>
+          <button class="btn btn-sm btn-ghost" data-lead="dismiss" data-id="${Number(l.id)}">Not an enquiry</button></div>`).join('') + '</div>' : '';
       $('custReadiness').textContent = `${status.ready ? 'Email follow-ups ready' : 'Email sending unavailable'} · customer emails left in rolling 24h: ${status.remaining_cap}` +
         (status.missing.length ? ' · Missing: ' + status.missing.join(', ') : '');
       const due = rows.filter(r => r.overdue).length;
@@ -37,7 +44,7 @@
         <div style="overflow:auto"><table class="tbl"><thead><tr><th>Customer</th><th>Enquiry</th><th>Status</th><th>Next action</th><th>Due</th><th>Last heard</th></tr></thead><tbody>` +
         rows.map(r => `<tr class="cust-row" data-enquiry="${Number(r.id)}">
           <td><strong>${esc(r.customer_name)}</strong><br><span class="hint">${esc(r.reference)}</span></td>
-          <td>${esc(r.title)}</td><td>${esc(r.status)}</td>
+          <td>${esc(r.title)}</td><td>${esc(r.status)}${r.unanswered_contacts ? `<br><span class="hint">${Number(r.unanswered_contacts)} contact${r.unanswered_contacts > 1 ? 's' : ''} without reply</span>` : ''}</td>
           <td>${esc((r.next_action || '').slice(0, 140))}${(r.next_action || '').length > 140 ? '…' : ''}</td>
           <td class="${r.overdue ? 'cust-due' : ''}">${esc(day(r.next_action_due)) || '-'}</td>
           <td>${esc(day(r.last_customer_contact_at)) || '-'}</td></tr>`).join('') + '</tbody></table></div>';
@@ -122,7 +129,16 @@
     if (b.id === 'custRefresh') { loadCustomers(); if (current) showEnquiry(current.id); return; }
     if (b.id === 'custNewToggle') { $('custCreate').classList.toggle('hidden'); return; }
     if (b.id === 'custPoll') {
-      run(async () => { const r = await post('/customers/poll'); notice(`Inbox checked: ${r.logged} customer replies logged, ${r.ignored} other emails ignored.`); await loadCustomers(); if (current) await showEnquiry(current.id); });
+      run(async () => { const r = await post('/customers/poll'); notice(`Inbox checked: ${r.logged} customer replies logged, ${r.possible_new_enquiries} possible new enquiries, ${r.ignored} supplier/automated emails ignored.`); await loadCustomers(); if (current) await showEnquiry(current.id); });
+      return;
+    }
+    if (b.dataset.lead) {
+      const id = Number(b.dataset.id);
+      run(async () => {
+        if (b.dataset.lead === 'dismiss') { await post(`/customers/leads/${id}/dismiss`); notice('Dismissed.'); await loadCustomers(); return; }
+        const e = await post(`/customers/leads/${id}/convert`, {});
+        await loadCustomers(); await showEnquiry(e.id); notice('Added ' + e.reference + '. Give it a clear title and next action.');
+      });
       return;
     }
     const act = b.dataset.cust, msg = b.dataset.custMsg; if (!current || (!act && !msg)) return;

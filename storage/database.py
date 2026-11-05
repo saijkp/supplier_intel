@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 37
+SCHEMA_VERSION = 38
 
 
 # ═══════════════════════════════════════════════════════════
@@ -897,10 +897,25 @@ CREATE INDEX IF NOT EXISTS idx_customer_activities_enquiry ON customer_activitie
 CREATE INDEX IF NOT EXISTS idx_customer_messages_status ON customer_messages(status,sent_at);
 """
 
+# Inbound email from senders who are not a known customer or supplier: possible new
+# enquiries a human adds or dismisses, so a new customer email is never silently missed.
+CUSTOMER_LEADS_SQL = """
+CREATE TABLE IF NOT EXISTS customer_inbox_leads (
+ id INTEGER PRIMARY KEY, external_id TEXT UNIQUE NOT NULL, from_address TEXT NOT NULL, from_name TEXT,
+ subject TEXT, excerpt TEXT, received_at TEXT, status TEXT NOT NULL DEFAULT 'new', enquiry_id INTEGER,
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS idx_customer_inbox_leads_status ON customer_inbox_leads(status);
+"""
+
 SCHEMA_SQL += RFQ_SCHEMA_SQL
 SCHEMA_SQL += CUSTOMER_SCHEMA_SQL
+SCHEMA_SQL += CUSTOMER_LEADS_SQL
 
 MIGRATIONS: dict[int, dict] = {
+    38: {
+        "description": "Possible new customer enquiries found in the inbox (customer_inbox_leads)",
+        "statements": [statement for statement in CUSTOMER_LEADS_SQL.split(";") if statement.strip()],
+    },
     37: {
         "description": "Customer profiles, enquiries, activity log and approval-gated follow-ups",
         "statements": [statement for statement in CUSTOMER_SCHEMA_SQL.split(";") if statement.strip()],

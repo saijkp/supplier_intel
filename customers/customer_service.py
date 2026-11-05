@@ -11,7 +11,7 @@ import hashlib
 import re
 import secrets
 import string
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email import policy
 from email.parser import BytesParser
 from email.utils import parseaddr
@@ -21,10 +21,18 @@ from config import settings as cfg
 from storage.customer_repository import CustomerRepository
 
 CLOSED_STATUSES = {'won', 'lost', 'closed', 'closed-lost', 'excluded'}
+NOT_RESPONDING = 'not responding'
 SUGGESTED_STATUSES = ['new', 'qualifying', 'active', 'quoting', 'awaiting customer', 'nurture', 'paused',
-                      'won', 'lost', 'closed']
+                      NOT_RESPONDING, 'won', 'lost', 'closed']
+# After this many of our contacts with no reply, an enquiry moves to 'not responding'
+# and comes back up for a check after NO_REPLY_RECHECK_DAYS. Any reply restores it.
+NO_REPLY_LIMIT = 3
+NO_REPLY_RECHECK_DAYS = 30
 INBOUND = {'email_in', 'whatsapp_in', 'call_in'}
 OUTBOUND = {'email_out', 'whatsapp_out', 'call_out', 'meeting'}
+CHASES = {'email_out', 'whatsapp_out', 'call_out'}  # contact attempts that count towards NO_REPLY_LIMIT
+NEWSLETTER_SENDER_RE = re.compile(r'^(no-?reply|do-?not-?reply|notifications?|newsletter|marketing|mailer|'
+                                  r'news|updates?|alerts?|billing|invoices?|support|hello@mail)\b', re.I)
 ACTIVITY_KINDS = INBOUND | OUTBOUND | {'note', 'status_change'}
 CUSTOMER_FIELDS = {'name', 'company', 'email', 'phone', 'whatsapp', 'location', 'source', 'notes'}
 ENQUIRY_FIELDS = {'title', 'requirements', 'status', 'next_action', 'next_action_due', 'blocker', 'estimated_value',
@@ -35,6 +43,14 @@ REFERENCE_RE = re.compile(r'\bIKE-[A-Z0-9]{6}\b')
 
 def now():
     return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+
+
+def _mail_time(mail):
+    try:
+        from email.utils import parsedate_to_datetime
+        return parsedate_to_datetime(str(mail.get('Date'))).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    except Exception:
+        return now()
 
 
 def new_reference():
@@ -157,8 +173,12 @@ class CustomerService:
         enquiries = self.repo.rows('customer_enquiries', order="coalesce(next_action_due,'9999') , updated_at DESC")
         customers = {c['id']: c for c in self.repo.rows('customers')}
         today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        activities = {}
+        for a in self.repo.rows('customer_activities', order='occurred_at, id'):
+            activities.setdefault(a['enquiry_id'], []).append(a)
         result = []
         for e in enquiries:
+            e['unanswered_contacts'] = self.unanswered_contacts(e['id'], activities.get(e['id'], []))
             closed = (e['status'] or '').lower() in CLOSED_STATUSES
             if status and (e['status'] or '').lower() != status.lower():
                 continue
@@ -196,9 +216,39 @@ class CustomerService:
         if kind in INBOUND:
             self.repo.update('customer_enquiries', enquiry_id, last_customer_contact_at=when)
             self._cancel_pending(enquiry_id, 'Customer replied')
+            enquiry = self.repo.get('customer_enquiries', enquiry_id)
+            if (enquiry['status'] or '').lower() == NOT_RESPONDING:
+                self.repo.update('customer_enquiries', enquiry_id, status='active', next_action_due=when[:10])
+                self.log(enquiry_id, 'status_change', f'Status: {NOT_RESPONDING} -> active (customer replied)')
         elif kind in OUTBOUND:
             self.repo.update('customer_enquiries', enquiry_id, last_our_contact_at=when)
+            self._check_not_responding(enquiry_id, when)
         return self.repo.get('customer_activities', activity_id)
+
+    def unanswered_contacts(self, enquiry_id, activities=None):
+        """Our chases (email/WhatsApp/call) since the customer last got in touch."""
+        if activities is None:
+            activities = self.repo.rows('customer_activities', 'enquiry_id=?', (enquiry_id,), order='occurred_at, id')
+        count = 0
+        for a in activities:
+            if a['kind'] in INBOUND:
+                count = 0
+            elif a['kind'] in CHASES:
+                count += 1
+        return count
+
+    def _check_not_responding(self, enquiry_id, when):
+        enquiry = self.repo.get('customer_enquiries', enquiry_id)
+        status = (enquiry['status'] or '').lower()
+        if status in CLOSED_STATUSES or status == NOT_RESPONDING:
+            return
+        if self.unanswered_contacts(enquiry_id) < NO_REPLY_LIMIT:
+            return
+        recheck = (datetime.strptime(when[:10], '%Y-%m-%d') + timedelta(days=NO_REPLY_RECHECK_DAYS)).strftime('%Y-%m-%d')
+        self.repo.update('customer_enquiries', enquiry_id, status=NOT_RESPONDING, next_action_due=recheck)
+        self.log(enquiry_id, 'status_change',
+                 f"Status: {enquiry['status']} -> {NOT_RESPONDING} (no reply after {NO_REPLY_LIMIT} contacts); "
+                 f"check again on {recheck}")
 
     def _cancel_pending(self, enquiry_id, reason):
         for m in self.repo.rows('customer_messages', "enquiry_id=? AND status IN ('draft','approved')", (enquiry_id,)):
@@ -312,11 +362,15 @@ class CustomerService:
 
     # -- inbox ----------------------------------------------------------------
     def poll_inbox(self, since_days=14, limit=200):
-        """Log customer emails against their enquiry; a reply stops pending follow-ups.
-        Matching: an IKE- reference in the subject/body, else the sender's address against
-        customer emails (most recently updated open enquiry). Everything else is ignored."""
+        """Read recent inbound mail once and sort every message:
+        - customer email (IKE- reference, or sender is a customer's address) -> logged on the
+          enquiry; a reply stops pending follow-ups and lifts 'not responding';
+        - supplier mail (RFQ- reference, known supplier address/domain), our own address,
+          auto-replies, bounces and newsletters -> ignored;
+        - anything else -> a 'possible new enquiry' lead for a human to add or dismiss, so a
+          first email from a new customer is never silently dropped."""
         from rfq.quote_parser import strip_history
-        result = {'logged': 0, 'ignored': 0, 'duplicates': 0}
+        result = {'logged': 0, 'possible_new_enquiries': 0, 'ignored': 0, 'duplicates': 0}
         customers = {c['id']: c for c in self.repo.rows('customers')}
         enquiries = self.repo.rows('customer_enquiries', order='updated_at DESC')
         by_ref = {e['reference']: e for e in enquiries}
@@ -325,25 +379,24 @@ class CustomerService:
             email = (customers.get(e['customer_id'], {}).get('email') or '').strip().lower()
             if email and (e['status'] or '').lower() not in CLOSED_STATUSES:
                 by_email.setdefault(email, e)
-        if not by_email and not by_ref:
-            return result
+        known_customer_emails = {(c.get('email') or '').strip().lower() for c in customers.values()} - {''}
+        own = (cfg.RFQ_FROM_ADDRESS or '').strip().lower()
         _, inbox = self._mail()
-        watch = [{'channel': 'email', 'recipient': email, 'reference': ''} for email in by_email] + \
-                [{'channel': 'other', 'recipient': '', 'reference': ref} for ref in by_ref]
-        raw_messages = inbox.fetch_for_campaign(since_days, limit, watch) if hasattr(inbox, 'fetch_for_campaign') \
-            else inbox.fetch_recent(since_days, limit)
-        for raw in raw_messages:
+        for raw in inbox.fetch_recent(since_days, limit):
             mail = BytesParser(policy=policy.default).parsebytes(raw)
             external = 'cust:' + (str(mail.get('Message-ID') or '').strip() or hashlib.sha256(raw).hexdigest())
-            if self.repo.rows('customer_activities', 'external_id=?', (external,)):
+            if self.repo.rows('customer_activities', 'external_id=?', (external,)) or \
+                    self.repo.rows('customer_inbox_leads', 'external_id=?', (external,)):
                 result['duplicates'] += 1
                 continue
-            sender = parseaddr(str(mail.get('From', '')))[1].lower()
+            name, sender = parseaddr(str(mail.get('From', '')))
+            sender = sender.lower()
             subject = str(mail.get('Subject', ''))
             auto = str(mail.get('Auto-Submitted', 'no')).strip().lower() != 'no' or mail.get('X-Autoreply') is not None \
                 or re.match(r'\s*(out of office|automatic reply|auto.?reply)', subject, re.I) \
-                or re.search('mailer-daemon|postmaster', sender, re.I)
-            if auto:
+                or re.search('mailer-daemon|postmaster', sender, re.I) \
+                or mail.get_content_type() == 'multipart/report'
+            if auto or not sender or sender == own:
                 result['ignored'] += 1
                 continue
             text = ''
@@ -353,15 +406,61 @@ class CustomerService:
                         text += str(part.get_content())
                     except Exception:
                         pass
+            if not text:
+                for part in mail.walk():
+                    if part.get_content_type() == 'text/html':
+                        try:
+                            from bs4 import BeautifulSoup
+                            text = BeautifulSoup(part.get_content(), 'html.parser').get_text('\n')
+                        except Exception:
+                            pass
+                        break
+            excerpt = strip_history(text).strip()[:1500]
             ref = REFERENCE_RE.search(subject + '\n' + text)
             enquiry = by_ref.get(ref.group(0)) if ref else None
             if enquiry is None:
                 enquiry = by_email.get(sender)
-            if enquiry is None or sender == (cfg.RFQ_FROM_ADDRESS or '').strip().lower():
+            if enquiry is not None:
+                self.log(enquiry['id'], 'email_in', f"Email from {sender}: {subject}\n{excerpt}".strip(),
+                         occurred_at=now(), external_id=external)
+                result['logged'] += 1
+                continue
+            bulk = mail.get('List-Unsubscribe') or mail.get('List-Id') or \
+                str(mail.get('Precedence', '')).lower() in {'bulk', 'list', 'junk'} or \
+                NEWSLETTER_SENDER_RE.match(sender.split('@')[0])
+            if bulk or sender in known_customer_emails or re.search(r'\bRFQ-\d+-[A-Z0-9]{6}\b', subject + text) \
+                    or self.repo.is_supplier_address(sender):
                 result['ignored'] += 1
                 continue
-            excerpt = strip_history(text).strip()[:1500]
-            self.log(enquiry['id'], 'email_in', f"Email from {sender}: {subject}\n{excerpt}".strip(),
-                     occurred_at=now(), external_id=external)
-            result['logged'] += 1
+            self.repo.insert('customer_inbox_leads', external_id=external, from_address=sender,
+                             from_name=(name or '').strip() or None, subject=subject[:300], excerpt=excerpt,
+                             received_at=_mail_time(mail))
+            result['possible_new_enquiries'] += 1
         return result
+
+    # -- possible new enquiries (from the inbox) -----------------------------------
+    def list_leads(self, status='new'):
+        return self.repo.rows('customer_inbox_leads', 'status=?', (status,), order='id DESC')
+
+    def dismiss_lead(self, lead_id):
+        lead = self.repo.get('customer_inbox_leads', lead_id)
+        if lead['status'] != 'new':
+            raise ValueError('Lead already handled')
+        self.repo.update('customer_inbox_leads', lead_id, status='dismissed')
+        return self.repo.get('customer_inbox_leads', lead_id)
+
+    def convert_lead(self, lead_id, name=None, title=None):
+        """Create the customer (email = the sender, which is grounded: they wrote to us) and
+        an enquiry, with the email itself as the first timeline entry."""
+        lead = self.repo.get('customer_inbox_leads', lead_id)
+        if lead['status'] != 'new':
+            raise ValueError('Lead already handled')
+        name = (name or lead['from_name'] or lead['from_address'].split('@')[0]).strip()
+        customer = self.create_customer(name=name, email=lead['from_address'], source='Email enquiry')
+        enquiry = self.create_enquiry(customer['id'], title=(title or lead['subject'] or 'Email enquiry').strip()[:300],
+                                      status='new', next_action='Reply to the first email and qualify the enquiry',
+                                      next_action_due=now()[:10])
+        self.log(enquiry['id'], 'email_in', f"Email from {lead['from_address']}: {lead['subject']}\n{lead['excerpt'] or ''}".strip(),
+                 occurred_at=lead['received_at'])
+        self.repo.update('customer_inbox_leads', lead_id, status='added', enquiry_id=enquiry['id'])
+        return self.get_enquiry(enquiry['id'])
