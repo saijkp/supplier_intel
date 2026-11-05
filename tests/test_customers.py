@@ -294,3 +294,12 @@ def test_dismiss_lead(svc):
     lead = svc.list_leads()[0]
     assert svc.dismiss_lead(lead['id'])['status'] == 'dismissed'
     assert svc.list_leads() == []
+
+
+def test_dismissed_sender_is_not_listed_again_and_one_card_per_sender(svc):
+    svc._inbox.raw = [mail('Lucy <lucy@forwarder.co.uk>', 'RE: DDP quote', 'Working on it', '<f1@x>'),
+                      mail('Lucy <lucy@forwarder.co.uk>', 'RE: DDP quote', 'Here is the price', '<f2@x>')]
+    assert svc.poll_inbox()['possible_new_enquiries'] == 1
+    svc.dismiss_lead(svc.list_leads()[0]['id'])
+    svc._inbox.raw = [mail('lucy@forwarder.co.uk', 'RE: DDP quote', 'Updated price', '<f3@x>')]
+    assert svc.poll_inbox() == {'logged': 0, 'possible_new_enquiries': 0, 'ignored': 1, 'duplicates': 0}
