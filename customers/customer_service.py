@@ -380,7 +380,10 @@ class CustomerService:
             if email and (e['status'] or '').lower() not in CLOSED_STATUSES:
                 by_email.setdefault(email, e)
         known_customer_emails = {(c.get('email') or '').strip().lower() for c in customers.values()} - {''}
-        own = (cfg.RFQ_FROM_ADDRESS or '').strip().lower()
+        # A sender dismissed once (forwarder, partner, own other mailbox) is not listed again.
+        dismissed = {l['from_address'] for l in self.repo.rows('customer_inbox_leads', "status='dismissed'")}
+        pending = {l['from_address'] for l in self.repo.rows('customer_inbox_leads', "status='new'")}
+        own =(cfg.RFQ_FROM_ADDRESS or '').strip().lower()
         _, inbox = self._mail()
         for raw in inbox.fetch_recent(since_days, limit):
             mail = BytesParser(policy=policy.default).parsebytes(raw)
@@ -428,10 +431,14 @@ class CustomerService:
             bulk = mail.get('List-Unsubscribe') or mail.get('List-Id') or \
                 str(mail.get('Precedence', '')).lower() in {'bulk', 'list', 'junk'} or \
                 NEWSLETTER_SENDER_RE.match(sender.split('@')[0])
-            if bulk or sender in known_customer_emails or re.search(r'\bRFQ-\d+-[A-Z0-9]{6}\b', subject + text) \
-                    or self.repo.is_supplier_address(sender):
+            if bulk or sender in known_customer_emails or sender in dismissed \
+                    or re.search(r'\bRFQ-\d+-[A-Z0-9]{6}\b', subject + text) or self.repo.is_supplier_address(sender):
                 result['ignored'] += 1
                 continue
+            if sender in pending:  # one card per sender; their first email is already waiting
+                result['ignored'] += 1
+                continue
+            pending.add(sender)
             self.repo.insert('customer_inbox_leads', external_id=external, from_address=sender,
                              from_name=(name or '').strip() or None, subject=subject[:300], excerpt=excerpt,
                              received_at=_mail_time(mail))

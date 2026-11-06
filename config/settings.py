@@ -901,6 +901,9 @@ RFQ_SEND_ENABLED = (os.getenv("RFQ_SEND_ENABLED") or 'false').lower() in ("1", "
 RFQ_DAILY_SEND_LIMIT = int((os.getenv("RFQ_DAILY_SEND_LIMIT") or '25'))
 # Customer follow-ups share the RFQ mailbox and RFQ_SEND_ENABLED switch, with their own rolling cap.
 CUSTOMER_DAILY_SEND_LIMIT = int((os.getenv("CUSTOMER_DAILY_SEND_LIMIT") or '20'))
+# The server checks the mailbox for customer replies / new enquiries on its own (read-only, free).
+# 0 turns the background check off; POST /customers/poll still works by hand.
+CUSTOMER_INBOX_POLL_MINUTES = int((os.getenv("CUSTOMER_INBOX_POLL_MINUTES") or '30'))
 RFQ_SEND_DELAY_SECONDS = int((os.getenv("RFQ_SEND_DELAY_SECONDS") or '45'))
 RFQ_SEND_JOB_MAX_SECONDS = int((os.getenv("RFQ_SEND_JOB_MAX_SECONDS") or '900'))
 RFQ_SMTP_HOST = (os.getenv("RFQ_SMTP_HOST") or '')
