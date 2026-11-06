@@ -303,3 +303,32 @@ def test_dismissed_sender_is_not_listed_again_and_one_card_per_sender(svc):
     svc.dismiss_lead(svc.list_leads()[0]['id'])
     svc._inbox.raw = [mail('lucy@forwarder.co.uk', 'RE: DDP quote', 'Updated price', '<f3@x>')]
     assert svc.poll_inbox() == {'logged': 0, 'possible_new_enquiries': 0, 'ignored': 1, 'duplicates': 0}
+
+
+def test_background_inbox_check_reads_mail_and_survives_failures(svc, monkeypatch):
+    import asyncio
+    from customers import inbox_worker
+
+    svc._inbox.raw = [mail('Colin <colin@example.com>', 'Re: kitchen', 'Yes please go ahead.', '<w1@x>')]
+    assert inbox_worker.tick(svc)['logged'] == 1
+
+    # interval 0 = switched off: returns at once, never touches the mailbox
+    asyncio.run(asyncio.wait_for(inbox_worker.run(lambda: 'unused', 0), 1))
+
+    calls = []
+
+    def flaky_tick(service):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError('zoho down')
+        raise asyncio.CancelledError
+
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(inbox_worker, 'tick', flaky_tick)
+    monkeypatch.setattr(inbox_worker.asyncio, 'sleep', no_sleep)
+    monkeypatch.setattr(inbox_worker, 'CustomerService', lambda repo: svc)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(inbox_worker.run(lambda: 'unused', 30))
+    assert len(calls) == 2  # a failed check is logged and retried, not fatal

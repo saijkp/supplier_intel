@@ -50,6 +50,7 @@ from api.rfq import router as rfq_router
 from api.rfq_workflow import router as rfq_workflow_router
 from api.customers import router as customers_router
 from rfq.workspace_worker import run as run_rfq_worker
+from customers.inbox_worker import run as run_customer_inbox
 from api.jobs import (
     run_batch_job,
     run_collection_job,
@@ -95,7 +96,12 @@ from api.models import (
     SupplierSearchResult,
     VerificationJobRequest,
 )
-from config.settings import ALLOWED_ORIGINS, PIPELINE_JOB_STALL_TIMEOUT_SECONDS, PIPELINE_JOB_WATCHDOG_INTERVAL_SECONDS
+from config.settings import (
+    ALLOWED_ORIGINS,
+    CUSTOMER_INBOX_POLL_MINUTES,
+    PIPELINE_JOB_STALL_TIMEOUT_SECONDS,
+    PIPELINE_JOB_WATCHDOG_INTERVAL_SECONDS,
+)
 from storage.database import initialise_schema
 from storage.repository import SupplierRepository
 
@@ -171,9 +177,13 @@ async def lifespan(app: FastAPI):
     # restart at all -- see _stalled_job_watchdog's own docstring.
     watchdog_task = asyncio.create_task(_stalled_job_watchdog())
     rfq_worker_task = asyncio.create_task(run_rfq_worker(lambda:get_repo().db_path))
+    inbox_task = asyncio.create_task(run_customer_inbox(lambda: get_repo().db_path, CUSTOMER_INBOX_POLL_MINUTES))
     try:
         yield
     finally:
+        inbox_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await inbox_task
         rfq_worker_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await rfq_worker_task
