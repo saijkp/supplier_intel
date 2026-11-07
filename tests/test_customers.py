@@ -165,6 +165,20 @@ def test_whatsapp_followup_is_human_sent(svc):
     assert svc.get_enquiry(svc.e['id'])['activities'][0]['kind'] == 'whatsapp_out'
 
 
+def test_whatsapp_messages_carry_no_reference_line_but_emails_do(svc):
+    ref = svc.e['reference']
+    wa = svc.draft_followup(svc.e['id'], channel='whatsapp')
+    assert ref not in wa['body'] and 'Ref:' not in wa['body'] and ref not in wa['action_url']
+    assert wa['body'].startswith('Hi Colin,') and 'Sai Jyothis' in wa['body']
+    custom = svc.draft_followup(svc.e['id'], channel='whatsapp', body='Hi Colin, quick check-in.\n\nThanks, Sai')
+    assert custom['body'] == 'Hi Colin, quick check-in.\n\nThanks, Sai'
+    edited = svc.edit_message(custom['id'], body='Hi Colin, updated.\n\nThanks, Sai')
+    assert edited['body'] == 'Hi Colin, updated.\n\nThanks, Sai' and ref not in edited['action_url']
+    email = svc.draft_followup(svc.e['id'], body='Hi Colin,\n\nQuick check-in.')
+    assert email['body'].endswith(f'Ref: {ref}') and ref in email['subject']
+    assert svc.edit_message(email['id'], body='Hi Colin, updated.')['body'].endswith(f'Ref: {ref}')
+
+
 def test_closed_enquiry_cannot_be_followed_up(svc):
     svc.close_enquiry(svc.e['id'], outcome='lost', close_reason='price')
     with pytest.raises(ValueError, match='closed'):
