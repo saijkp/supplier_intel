@@ -3,8 +3,8 @@ import json
 
 from storage.database import connection_scope
 
-TABLES = {'customers', 'customer_enquiries', 'customer_activities', 'customer_messages', 'customer_inbox_leads'}
-JSON_FIELDS = {'rfq_campaign_ids'}
+TABLES = {'customers', 'customer_enquiries', 'customer_activities', 'customer_messages', 'customer_inbox_leads', 'customer_quotes'}
+JSON_FIELDS = {'rfq_campaign_ids', 'qualification'}
 
 
 class CustomerRepository:
@@ -25,7 +25,7 @@ class CustomerRepository:
         for row in rows:
             item = dict(row)
             for key in JSON_FIELDS & item.keys():
-                item[key] = json.loads(item[key] or '[]')
+                item[key] = json.loads(item[key] or ('{}' if key == 'qualification' else '[]'))
             result.append(item)
         return result
 

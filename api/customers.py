@@ -37,6 +37,8 @@ class CustomerIn(BaseModel):
 class EnquiryIn(BaseModel):
     model_config = ConfigDict(extra='forbid')
     title: Optional[str] = Field(default=None, max_length=300)
+    waiting_on: Optional[str] = None
+    qualification: Optional[dict] = None
     requirements: Optional[str] = Field(default=None, max_length=20000)
     status: Optional[str] = Field(default=None, max_length=60)
     next_action: Optional[str] = Field(default=None, max_length=5000)
@@ -185,6 +187,59 @@ def convert_lead(lead_id: int, body: LeadConvert = LeadConvert(),
 @router.post('/leads/{lead_id}/dismiss')
 def dismiss_lead(lead_id: int, service: CustomerService = Depends(get_customer_service)):
     return _call(service.dismiss_lead, lead_id)
+
+
+class QuoteIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    amount: Optional[float] = None
+    currency: str = 'GBP'
+    summary: Optional[str] = None
+    sent_at: Optional[str] = None
+    valid_until: Optional[str] = None
+    status: str = 'draft'
+
+
+class CloseIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    outcome: str
+    close_reason: Optional[str] = None
+    close_note: Optional[str] = None
+    won_value: Optional[float] = None
+
+
+class ReopenIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    status: str = 'qualifying'
+
+
+@router.get('/today')
+def today(service: CustomerService = Depends(get_customer_service)):
+    return service.today()
+
+
+@router.get('/pipeline')
+def pipeline(service: CustomerService = Depends(get_customer_service)):
+    return service.pipeline()
+
+
+@router.post('/enquiries/{enquiry_id}/quotes')
+def add_quote(enquiry_id: int, body: QuoteIn, service: CustomerService = Depends(get_customer_service)):
+    return _call(service.add_quote, enquiry_id, **_set(body))
+
+
+@router.patch('/enquiries/{enquiry_id}/quotes/{quote_id}')
+def update_quote(enquiry_id: int, quote_id: int, body: QuoteIn, service: CustomerService = Depends(get_customer_service)):
+    return _call(service.update_quote, enquiry_id, quote_id, **_set(body))
+
+
+@router.post('/enquiries/{enquiry_id}/close')
+def close(enquiry_id: int, body: CloseIn, service: CustomerService = Depends(get_customer_service)):
+    return _call(service.close_enquiry, enquiry_id, **_set(body))
+
+
+@router.post('/enquiries/{enquiry_id}/reopen')
+def reopen(enquiry_id: int, body: ReopenIn = ReopenIn(), service: CustomerService = Depends(get_customer_service)):
+    return _call(service.reopen_enquiry, enquiry_id, **_set(body))
 
 
 @router.get('/{customer_id}')

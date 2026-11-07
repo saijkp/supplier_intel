@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 38
+SCHEMA_VERSION = 39
 
 
 # ═══════════════════════════════════════════════════════════
@@ -882,6 +882,7 @@ CREATE TABLE IF NOT EXISTS customer_enquiries (
  next_action_due TEXT, blocker TEXT, estimated_value TEXT, owner TEXT, summary TEXT,
  rfq_campaign_ids TEXT NOT NULL DEFAULT '[]', source_ref TEXT UNIQUE,
  last_customer_contact_at TEXT, last_our_contact_at TEXT,
+ waiting_on TEXT CHECK(waiting_on IN ('us','customer','supplier')), qualification TEXT NOT NULL DEFAULT '{}', close_reason TEXT, close_note TEXT, won_value REAL, closed_at TEXT, resume_status TEXT,
  created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS customer_activities (
  id INTEGER PRIMARY KEY, enquiry_id INTEGER NOT NULL REFERENCES customer_enquiries(id), kind TEXT NOT NULL,
@@ -909,9 +910,70 @@ CREATE INDEX IF NOT EXISTS idx_customer_inbox_leads_status ON customer_inbox_lea
 
 SCHEMA_SQL += RFQ_SCHEMA_SQL
 SCHEMA_SQL += CUSTOMER_SCHEMA_SQL
+CUSTOMER_QUOTES_SQL = """
+CREATE TABLE IF NOT EXISTS customer_quotes (
+ id INTEGER PRIMARY KEY, enquiry_id INTEGER NOT NULL REFERENCES customer_enquiries(id),
+ version INTEGER NOT NULL, amount REAL, currency TEXT NOT NULL DEFAULT 'GBP', summary TEXT,
+ sent_at TEXT, valid_until TEXT, status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','sent','accepted','rejected','superseded')),
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+ UNIQUE(enquiry_id,version));
+"""
 SCHEMA_SQL += CUSTOMER_LEADS_SQL
+SCHEMA_SQL += CUSTOMER_QUOTES_SQL
+
+# Legacy stage mapping shared by the audit log and row update in migration 39.
+_CUSTOMER_STAGE_MAP_SQL = """
+CASE lower(trim(status))
+ WHEN 'active' THEN 'qualifying'
+ WHEN 'awaiting customer' THEN 'qualifying'
+ WHEN 'awaiting reply' THEN 'qualifying'
+ WHEN 'awaiting qualification' THEN 'qualifying'
+ WHEN 'owner_handled' THEN 'paused'
+ WHEN 'deferred by owner' THEN 'paused'
+ WHEN 'unqualified supplier' THEN 'paused'
+ WHEN 'excluded' THEN 'closed'
+ WHEN 'closed-lost' THEN 'lost'
+ WHEN 'new' THEN 'new'
+ WHEN 'qualifying' THEN 'qualifying'
+ WHEN 'quoting' THEN 'quoting'
+ WHEN 'quote sent' THEN 'quote sent'
+ WHEN 'negotiating' THEN 'negotiating'
+ WHEN 'nurture' THEN 'nurture'
+ WHEN 'paused' THEN 'paused'
+ WHEN 'not responding' THEN 'not responding'
+ WHEN 'lost' THEN 'lost'
+ WHEN 'won' THEN 'won'
+ WHEN 'closed' THEN 'closed' ELSE 'qualifying' END
+"""
 
 MIGRATIONS: dict[int, dict] = {
+    39: {
+        "description": "Customer enquiry stages, outcomes and quotes",
+        "columns": [
+            ('customer_enquiries', 'waiting_on', "TEXT CHECK(waiting_on IN ('us','customer','supplier'))"),
+            ('customer_enquiries', 'qualification', "TEXT NOT NULL DEFAULT '{}'"),
+            ('customer_enquiries', 'close_reason', 'TEXT'),
+            ('customer_enquiries', 'close_note', 'TEXT'),
+            ('customer_enquiries', 'won_value', 'REAL'),
+            ('customer_enquiries', 'closed_at', 'TEXT'),
+            ('customer_enquiries', 'resume_status', 'TEXT'),
+        ],
+        "statements": [
+            CUSTOMER_QUOTES_SQL,
+            f"""INSERT INTO customer_activities(enquiry_id,kind,summary,occurred_at)
+ SELECT id,'status_change','Status: ' || status || ' -> ' || ({_CUSTOMER_STAGE_MAP_SQL}),datetime('now')
+ FROM customer_enquiries
+ WHERE status != ({_CUSTOMER_STAGE_MAP_SQL})""",
+            f"""UPDATE customer_enquiries SET waiting_on=CASE WHEN status IN ('awaiting customer','awaiting reply','awaiting qualification') THEN 'customer' WHEN status='active' THEN 'us' ELSE waiting_on END,
+ close_reason=CASE WHEN status='excluded' THEN 'not a customer' WHEN status='closed-lost' THEN 'other' ELSE close_reason END,
+ close_note=CASE WHEN status='closed-lost' THEN 'migrated from closed-lost' ELSE close_note END,
+ status={_CUSTOMER_STAGE_MAP_SQL}""",
+            """UPDATE customer_enquiries SET next_action_due=CASE WHEN status IN ('won','lost','closed') THEN NULL ELSE coalesce(nullif(trim(next_action_due),''),date('now')) END,
+ closed_at=CASE WHEN status IN ('won','lost','closed') THEN coalesce(closed_at,datetime('now')) ELSE NULL END""",
+            """UPDATE customer_enquiries SET next_action='Review enquiry and agree next step'
+ WHERE status NOT IN ('won','lost','closed') AND coalesce(trim(next_action),'')=''""",
+        ],
+    },
     38: {
         "description": "Possible new customer enquiries found in the inbox (customer_inbox_leads)",
         "statements": [statement for statement in CUSTOMER_LEADS_SQL.split(";") if statement.strip()],

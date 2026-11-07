@@ -935,7 +935,7 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
     <div id="custReadiness" class="hint"></div><div id="custNotice" role="status" style="margin:8px 0;font-weight:600"></div>
     <div class="cust-bar">
       <label>Show <select class="input" id="custFilter">
-        <option value="due">Follow-ups due</option><option value="open" selected>All open enquiries</option><option value="quiet">Not responding</option><option value="all">Including closed</option>
+        <option value="today" selected>Today</option><option value="due">Follow-ups due</option><option value="open">All open enquiries</option><option value="quiet">Not responding</option><option value="all">Including closed</option>
       </select></label>
       <button class="btn btn-ghost" id="custNewToggle">+ New customer &amp; enquiry</button>
     </div>
@@ -948,7 +948,7 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
       <label class="cust-wide">Requirements<textarea class="input" name="requirements" rows="3"></textarea></label>
       <label class="cust-wide">Next action (internal)<input class="input" name="next_action"></label>
     </div><button class="btn btn-primary" type="submit">Create</button></form>
-    <div id="custLeads"></div>
+    <div id="custPipeline"></div><div id="custLeads"></div>
     <div id="custList"></div>
     <div id="custDetail"></div>
   </div></div>
