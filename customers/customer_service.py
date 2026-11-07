@@ -477,9 +477,8 @@ class CustomerService:
             body = (f"Hi {first},\n\n" if first else "Hello,\n\n") + (
                 f"I'm following up on your {enquiry['title']} enquiry. Is there anything else you need from us "
                 "to move this forward? I'm happy to arrange a call at a time that suits you.\n\n"
-                f"Kind regards,\n{signature}\nRef: {ref}")
-        elif ref not in body:
-            body = body.rstrip() + f'\nRef: {ref}'
+                f"Kind regards,\n{signature}")
+        body = self._with_ref(body, ref, channel)
         subject = subject or f"Your {enquiry['title']} enquiry [{ref}]"
         if channel == 'email' and ref not in subject:
             subject += f' [{ref}]'
@@ -488,6 +487,14 @@ class CustomerService:
                                       subject=subject if channel == 'email' else None, body=body, action_url=action_url)
         return self.repo.get('customer_messages', message_id)
 
+    @staticmethod
+    def _with_ref(body, ref, channel):
+        # Email bodies carry the enquiry reference; the subject tag is what inbox matching uses.
+        # WhatsApp chats are already tied to the customer's number, so a ref line there only reads as robotic.
+        if channel != 'email' or ref in body:
+            return body
+        return body.rstrip() + f'\nRef: {ref}'
+
     def edit_message(self, message_id, subject=None, body=None):
         message = self.repo.get('customer_messages', message_id)
         if message['status'] != 'draft':
@@ -495,7 +502,7 @@ class CustomerService:
         ref = self.repo.get('customer_enquiries', message['enquiry_id'])['reference']
         values = {}
         if body is not None:
-            values['body'] = body if ref in body else body.rstrip() + f'\nRef: {ref}'
+            values['body'] = self._with_ref(body, ref, message['channel'])
             if message['channel'] == 'whatsapp':
                 values['action_url'] = 'https://wa.me/' + message['recipient'] + '?text=' + quote(values['body'])
         if subject is not None and message['channel'] == 'email':
