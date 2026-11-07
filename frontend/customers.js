@@ -18,6 +18,8 @@
     @media (max-width:640px){.cust-cols{grid-template-columns:1fr}}`;
   document.head.appendChild(css);
 
+  const closedStages = ['won', 'lost', 'closed'];
+  const qualificationKeys = ['scope', 'location', 'budget', 'timeline', 'plans', 'decision_maker'];
   let current = null;
   const notice = (t) => { $('custNotice').textContent = t || ''; };
   const run = async (work) => { try { notice(''); await work(); } catch (e) { notice(e.message === 'NOT_CONNECTED' ? 'Connect to your API first.' : (e.detail || e.message)); } };
@@ -39,6 +41,13 @@
           <button class="btn btn-sm btn-ghost" data-lead="dismiss" data-id="${Number(l.id)}">Not an enquiry</button></div>`).join('') + '</div>' : '';
       $('custReadiness').textContent = `${status.ready ? 'Email follow-ups ready' : 'Email sending unavailable'} · customer emails left in rolling 24h: ${status.remaining_cap}` +
         (status.missing.length ? ' · Missing: ' + status.missing.join(', ') : '');
+      const pipeline = await api('/customers/pipeline');
+      $('custPipeline').innerHTML = '<div class="cust-grid">' + Object.entries(pipeline.stages).filter(([, p]) => p.count).map(([stage, p]) => `<div class="cust-msg"><strong>${esc(stage)}</strong>: ${esc(p.count)}<br>GBP ${esc(p.estimated_value)}</div>`).join('') + '</div>';
+      if (filter === 'today') {
+        const groups = await api('/customers/today');
+        $('custList').innerHTML = Object.entries(groups).map(([group, items]) => `<h3>${esc(group.replaceAll('_', ' '))} (${esc(items.length)})</h3><table class="tbl"><tbody>` + items.map(r => `<tr class="cust-row" data-enquiry="${esc(r.id)}"><td>${esc(r.reference)}<br>${esc(r.customer)}</td><td>${esc(r.stage)}<br>Waiting on: ${esc(r.waiting_on || '')}</td><td>${esc(r.next_action)}<br>${esc(r.due)}</td><td>${esc(r.why)}</td></tr>`).join('') + '</tbody></table>').join('');
+        return;
+      }
       const due = rows.filter(r => r.overdue).length;
       $('custList').innerHTML = `<p class="hint">${rows.length} enquiries · <span class="cust-due">${due} follow-ups due</span></p>
         <div style="overflow:auto"><table class="tbl"><thead><tr><th>Customer</th><th>Enquiry</th><th>Status</th><th>Next action</th><th>Due</th><th>Last heard</th></tr></thead><tbody>` +
@@ -56,7 +65,8 @@
     await run(async () => {
       const e = await api('/customers/enquiries/' + Number(id)); current = e;
       const c = e.customer, status = await api('/customers/status');
-      const opts = [...new Set([...(status.statuses || []), e.status])].map(s => `<option ${s === e.status ? 'selected' : ''}>${esc(s)}</option>`).join('');
+      const isClosed = closedStages.includes(e.status);
+      const opts = (status.statuses || []).filter(s => !closedStages.includes(s)).map(s => `<option ${s === e.status ? 'selected' : ''}>${esc(s)}</option>`).join('');
       $('custDetail').innerHTML = `<div class="cust-detail">
         <h3>${esc(c.name)} · ${esc(e.title)} <span class="hint">${esc(e.reference)}</span></h3>
         <div class="cust-cols">
@@ -74,7 +84,8 @@
             <button class="btn btn-sm" data-cust="save-customer">Save profile</button>
             <h4>Enquiry</h4>
             <div class="cust-grid">
-              <label>Status<select class="input" id="enStatus">${opts}</select></label>
+              <label>Stage ${isClosed ? esc(e.status) : ''}<select class="input" id="enStatus" ${isClosed ? 'disabled' : ''}>${opts}</select></label>
+              <label>Waiting on<select class="input" id="enWaiting">${['', 'us', 'customer', 'supplier'].map(w => `<option value="${esc(w)}" ${w === (e.waiting_on || '') ? 'selected' : ''}>${esc(w || 'Unspecified')}</option>`).join('')}</select></label>
               <label>Next action due<input class="input" type="date" id="enDue" value="${esc(day(e.next_action_due))}"></label>
               <label>Estimated value<input class="input" id="enValue" value="${esc(e.estimated_value)}"></label>
               <label>Owner<input class="input" id="enOwner" value="${esc(e.owner)}"></label>
@@ -89,6 +100,13 @@
               <button class="btn btn-sm btn-ghost" data-cust="link">Link</button></p>
           </div>
           <div>
+            <h4>Qualification</h4><p class="hint">Use only the customer's own messages. Blank fields are gaps.</p>
+            <div class="cust-grid">${qualificationKeys.map(k => `<label class="${e.qualification_missing.includes(k) ? 'cust-due' : ''}">${esc(k.replaceAll('_', ' '))}<textarea class="input" id="qual_${esc(k)}">${esc(e.qualification[k] || '')}</textarea></label>`).join('')}</div>
+            <button class="btn btn-sm" data-cust="qualification">Save qualification</button>
+            <h4>Customer quotes</h4><p class="hint">Customer prices only. Never enter supplier costs.</p>
+            ${e.quotes.map(q => `<div class="cust-msg">v${esc(q.version)}: ${esc(q.currency)} ${esc(q.amount)} · ${esc(q.status)}<br>${esc(q.summary)}<br>Sent ${esc(q.sent_at)} · Valid until ${esc(q.valid_until)}<br>${['sent', 'accepted', 'rejected'].map(st => `<button class="btn btn-sm" data-cust="quote-status" data-id="${esc(q.id)}" data-status="${esc(st)}">${esc(st === 'sent' ? 'Mark sent' : st)}</button>`).join('')}</div>`).join('')}
+            <details><summary>Add quote</summary><div class="cust-grid"><label>Amount<input class="input" id="qAmount" type="number" step="0.01"></label><label>Currency<input class="input" id="qCurrency" value="GBP"></label><label>Summary<textarea class="input" id="qSummary"></textarea></label><label>Valid until<input class="input" id="qUntil" type="date"></label></div><button class="btn btn-sm" data-cust="add-quote">Add quote</button></details>
+            ${isClosed ? `<label>Reopen stage<select class="input" id="reopenStage">${['new','qualifying','quoting','quote sent','negotiating'].map(st => `<option>${esc(st)}</option>`).join('')}</select></label><button class="btn" data-cust="reopen">Reopen</button>` : `<button class="btn" data-cust="close-form">Close enquiry</button><div id="closeForm" class="hidden"><label>Outcome<select class="input" id="closeOutcome"><option>won</option><option>lost</option><option>closed</option></select></label><label>Won value (won only)<input class="input" id="closeValue" type="number" step="0.01"></label><label>Reason (lost/closed)<select class="input" id="closeReason">${['price','timing','went elsewhere','no project','no response','not a customer','duplicate','other'].map(r => `<option>${esc(r)}</option>`).join('')}</select></label><label>Proof of order/deposit (won), or closing note<textarea class="input" id="closeNote"></textarea></label><button class="btn" data-cust="close">Confirm close</button></div>`}
             <h4>Follow-ups</h4>
             <p class="hint">Drafts never include internal notes. Nothing sends until you approve; a customer reply cancels pending follow-ups.</p>
             <button class="btn btn-sm" data-cust="draft-email" ${c.email ? '' : 'disabled title="Add an email to the profile first"'}>Draft email follow-up</button>
@@ -145,7 +163,13 @@
     const eid = current.id, cid = current.customer.id;
     run(async () => {
       if (act === 'save-customer') await patch('/customers/' + cid, {name: val('cuName'), company: val('cuCompany'), email: val('cuEmail'), phone: val('cuPhone'), whatsapp: val('cuWhatsapp'), location: val('cuLocation'), notes: $('cuNotes').value});
-      if (act === 'save-enquiry') await patch('/customers/enquiries/' + eid, {status: val('enStatus'), next_action_due: val('enDue') || null, estimated_value: val('enValue'), owner: val('enOwner'), next_action: $('enNext').value, blocker: $('enBlocker').value, requirements: $('enReq').value, summary: $('enSummary').value});
+      if (act === 'save-enquiry') await patch('/customers/enquiries/' + eid, {...(!closedStages.includes(current.status) ? {status: val('enStatus')} : {}), waiting_on: val('enWaiting') || null, ...((val('enStatus') === current.status || val('enDue') !== day(current.next_action_due)) ? {next_action_due: val('enDue') || null} : {}), estimated_value: val('enValue'), owner: val('enOwner'), next_action: $('enNext').value, blocker: $('enBlocker').value, requirements: $('enReq').value, summary: $('enSummary').value});
+      if (act === 'close-form') { $('closeForm').classList.toggle('hidden'); return; }
+      if (act === 'qualification') await patch(`/customers/enquiries/${eid}`, {qualification: Object.fromEntries(qualificationKeys.map(k => [k, val('qual_' + k)]))});
+      if (act === 'add-quote') await post(`/customers/enquiries/${eid}/quotes`, {...(val('qAmount') ? {amount: Number(val('qAmount'))} : {}), currency: val('qCurrency'), summary: val('qSummary'), valid_until: val('qUntil') || null});
+      if (act === 'quote-status') await patch(`/customers/enquiries/${eid}/quotes/${Number(b.dataset.id)}`, {status: b.dataset.status});
+      if (act === 'close') await post(`/customers/enquiries/${eid}/close`, {outcome: val('closeOutcome'), close_reason: val('closeReason'), close_note: val('closeNote'), won_value: val('closeValue') ? Number(val('closeValue')) : null});
+      if (act === 'reopen') await post(`/customers/enquiries/${eid}/reopen`, {status: val('reopenStage')});
       if (act === 'link') await post(`/customers/enquiries/${eid}/campaigns`, {campaign_id: Number(val('enCampaign'))});
       if (act === 'draft-email') await post(`/customers/enquiries/${eid}/followups`, {channel: 'email'});
       if (act === 'draft-whatsapp') await post(`/customers/enquiries/${eid}/followups`, {channel: 'whatsapp'});

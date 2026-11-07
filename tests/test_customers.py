@@ -49,7 +49,7 @@ def svc(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, 'RFQ_FROM_ADDRESS', 'sai@ikeng.online')
     s = CustomerService(repo=CustomerRepository(db), sender=FakeSender(), inbox=FakeInbox(), readiness=lambda: [])
     customer = s.create_customer(name='Colin Fennelly', email='colin@example.com', phone='+44 7700 900123')
-    enquiry = s.create_enquiry(customer['id'], title='kitchen and wardrobes', status='active',
+    enquiry = s.create_enquiry(customer['id'], title='kitchen and wardrobes', status='qualifying',
                                next_action='INTERNAL: no customer price release', next_action_due='2026-01-01',
                                blocker='INTERNAL blocker')
     s.c, s.e = customer, enquiry
@@ -62,15 +62,15 @@ def test_enquiry_gets_reference_and_creation_logged(svc):
 
 
 def test_status_change_is_logged(svc):
-    svc.update_enquiry(svc.e['id'], status='quoting')
+    svc.update_enquiry(svc.e['id'], status='quoting', qualification={'scope': 'Kitchen', 'location': 'Salford', 'timeline': 'December'})
     kinds = [a['summary'] for a in svc.get_enquiry(svc.e['id'])['activities']]
-    assert 'Status: active -> quoting' in kinds
+    assert 'Status: qualifying -> quoting' in kinds
 
 
 def test_due_list_shows_overdue_and_hides_closed(svc):
     due = svc.list_enquiries(due_only=True)
     assert [e['id'] for e in due] == [svc.e['id']] and due[0]['customer_name'] == 'Colin Fennelly'
-    svc.update_enquiry(svc.e['id'], status='won')
+    svc.close_enquiry(svc.e['id'], outcome='won', won_value=1000, close_note='Deposit received')
     assert svc.list_enquiries(due_only=True) == []
     assert svc.list_enquiries(include_closed=True)[0]['status'] == 'won'
 
@@ -166,7 +166,7 @@ def test_whatsapp_followup_is_human_sent(svc):
 
 
 def test_closed_enquiry_cannot_be_followed_up(svc):
-    svc.update_enquiry(svc.e['id'], status='lost')
+    svc.close_enquiry(svc.e['id'], outcome='lost', close_reason='price')
     with pytest.raises(ValueError, match='closed'):
         svc.draft_followup(svc.e['id'])
 
@@ -214,7 +214,7 @@ def test_three_unanswered_contacts_move_to_not_responding(svc):
     eid = svc.e['id']
     svc.log(eid, 'email_out', 'chase 1', occurred_at='2026-11-01 09:00:00')
     svc.log(eid, 'call_out', 'chase 2', occurred_at='2026-11-02 09:00:00')
-    assert svc.repo.get('customer_enquiries', eid)['status'] == 'active'
+    assert svc.repo.get('customer_enquiries', eid)['status'] == 'qualifying'
     svc.log(eid, 'whatsapp_out', 'chase 3', occurred_at='2026-11-03 09:00:00')
     e = svc.repo.get('customer_enquiries', eid)
     assert e['status'] == 'not responding' and e['next_action_due'] == '2026-12-03'
@@ -229,10 +229,10 @@ def test_reply_resets_count_and_restores_enquiry(svc):
         svc.log(eid, 'email_out', f'chase {i}', occurred_at=f'2026-11-0{i + 1} 09:00:00')
     svc.log(eid, 'whatsapp_in', 'Sorry, been away', occurred_at='2026-11-05 10:00:00')
     e = svc.repo.get('customer_enquiries', eid)
-    assert e['status'] == 'active' and e['next_action_due'] == '2026-11-05'
+    assert e['status'] == 'qualifying' and e['next_action_due'] == __import__('customers.customer_service', fromlist=['now']).now()[:10]
     assert svc.unanswered_contacts(eid) == 0
     svc.log(eid, 'email_out', 'thanks', occurred_at='2026-11-05 11:00:00')
-    assert svc.repo.get('customer_enquiries', eid)['status'] == 'active'
+    assert svc.repo.get('customer_enquiries', eid)['status'] == 'qualifying'
 
 
 def test_notes_and_meetings_do_not_count_as_chases(svc):
@@ -244,7 +244,7 @@ def test_notes_and_meetings_do_not_count_as_chases(svc):
 
 def test_closed_enquiry_is_not_moved(svc):
     eid = svc.e['id']
-    svc.update_enquiry(eid, status='won')
+    svc.close_enquiry(eid, outcome='won', won_value=1000, close_note='Deposit received')
     for _ in range(4):
         svc.log(eid, 'email_out', 'x')
     assert svc.repo.get('customer_enquiries', eid)['status'] == 'won'
@@ -332,3 +332,221 @@ def test_background_inbox_check_reads_mail_and_survives_failures(svc, monkeypatc
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(inbox_worker.run(lambda: 'unused', 30))
     assert len(calls) == 2  # a failed check is logged and retried, not fatal
+
+# -- fixed enquiry stages and explicit outcomes --------------------------------
+from datetime import datetime, timedelta, timezone
+from customers.customer_service import now, QUALIFICATION_KEYS, SUGGESTED_STATUSES
+from storage.database import connection_scope
+
+
+@pytest.mark.parametrize('stage', ['active', 'awaiting customer', 'unknown', '', None])
+def test_fixed_stage_validation(svc, stage):
+    with pytest.raises(ValueError, match='Invalid stage'):
+        svc.create_enquiry(svc.c['id'], title='Invalid', status=stage)
+    with pytest.raises(ValueError, match='Invalid stage'):
+        svc.update_enquiry(svc.e['id'], status=stage)
+
+
+@pytest.mark.parametrize('stage,days', list(cfg.CUSTOMER_STAGE_SLA_DAYS.items()))
+def test_stage_entry_sla(svc, stage, days):
+    e = svc.create_enquiry(svc.c['id'], title='SLA')
+    if stage == 'quote sent':
+        svc.add_quote(e['id'], status='sent', amount=100)
+        e = svc.get_enquiry(e['id'])
+    else:
+        if stage == 'quoting':
+            svc.update_enquiry(e['id'], qualification={'scope': 'Kitchen', 'location': 'Salford', 'timeline': 'Jan'})
+        e = svc.update_enquiry(e['id'], status=stage) if stage != 'new' else e
+    assert e['next_action_due'] == (datetime.now(timezone.utc) + timedelta(days=days)).strftime('%Y-%m-%d')
+    assert e['next_action']
+
+
+@pytest.mark.parametrize('field,value', [('next_action_due', None), ('next_action_due', ''), ('next_action_due', 'garbage'), ('next_action', ''), ('waiting_on', 'someone')])
+def test_open_enquiry_cannot_lose_next_step(svc, field, value):
+    with pytest.raises(ValueError):
+        svc.update_enquiry(svc.e['id'], **{field: value})
+
+
+def test_explicit_due_and_qualification_merge(svc):
+    eid = svc.e['id']
+    with pytest.raises(ValueError, match='scope, location, timeline'):
+        svc.update_enquiry(eid, status='quoting')
+    svc.update_enquiry(eid, qualification={'scope': 'Kitchen', 'budget': '5000'})
+    with pytest.raises(ValueError, match='location, timeline'):
+        svc.update_enquiry(eid, status='quoting')
+    e = svc.update_enquiry(eid, status='quoting', next_action_due='2027-01-01', qualification={'location': 'Salford', 'timeline': 'December'})
+    assert e['next_action_due'] == '2027-01-01'
+    assert e['qualification']['budget'] == '5000'
+    assert e['qualification_missing'] == ['plans', 'decision_maker']
+    assert svc.list_enquiries()[0]['qualification_missing'] == e['qualification_missing']
+    with pytest.raises(ValueError, match='qualification'):
+        svc.update_enquiry(eid, qualification={'invented': 'x'})
+
+
+def test_qualification_gate_has_no_side_routes(svc):
+    e = svc.create_enquiry(svc.c['id'], title='Straight to quoting')
+    with pytest.raises(ValueError, match='Qualification missing'):
+        svc.update_enquiry(e['id'], status='quoting')  # new -> quoting
+    svc.update_enquiry(e['id'], status='paused')
+    with pytest.raises(ValueError, match='Qualification missing'):
+        svc.update_enquiry(e['id'], status='quoting')  # paused -> quoting
+    with pytest.raises(ValueError, match='Qualification missing'):
+        svc.create_enquiry(svc.c['id'], title='Created as quoting', status='quoting')
+
+
+def test_quote_sent_exit_and_superseding(svc):
+    eid = svc.e['id']
+    with pytest.raises(ValueError, match='sent quote'):
+        svc.update_enquiry(eid, status='quote sent')
+    q1 = svc.add_quote(eid, amount=1234, summary='Kitchen', status='draft')
+    with pytest.raises(ValueError, match='sent quote'):
+        svc.update_enquiry(eid, status='quote sent')
+    q1 = svc.update_quote(eid, q1['id'], status='sent')
+    e = svc.get_enquiry(eid)
+    assert e['status'] == 'quote sent' and e['waiting_on'] == 'customer'
+    assert e['next_action_due'] == (datetime.now(timezone.utc) + timedelta(days=3)).strftime('%Y-%m-%d')
+    assert q1['sent_at'] and svc.unanswered_contacts(eid) == 0
+    assert any(a['kind'] == 'note' and a['summary'] == 'Quote v1 sent: GBP 1234.0' for a in e['activities'])
+    q2 = svc.add_quote(eid, amount=1300, status='sent')
+    assert q2['version'] == 2
+    assert svc.repo.get('customer_quotes', q1['id'])['status'] == 'superseded'
+    svc.update_quote(eid, q2['id'], status='accepted')
+    assert svc.get_enquiry(eid)['status'] == 'quote sent'
+    assert svc.today()['ready_to_close'][0]['suggested_outcome'] == 'won'
+
+
+@pytest.mark.parametrize('outcome', ['won', 'lost', 'closed'])
+def test_explicit_close_and_reopen(svc, outcome):
+    eid = svc.e['id']
+    with pytest.raises(ValueError, match='/close'):
+        svc.update_enquiry(eid, status=outcome)
+    with pytest.raises(ValueError, match='/close'):
+        svc.create_enquiry(svc.c['id'], title='No automatic closing', status=outcome)
+    with pytest.raises(ValueError):
+        svc.close_enquiry(eid, outcome)
+    if outcome == 'won':
+        with pytest.raises(ValueError, match='close_note'):
+            svc.close_enquiry(eid, outcome, won_value=500)
+        e = svc.close_enquiry(eid, outcome, won_value=500, close_note='Deposit received')
+    else:
+        with pytest.raises(ValueError, match='close_note'):
+            svc.close_enquiry(eid, outcome, close_reason='other')
+        e = svc.close_enquiry(eid, outcome, close_reason='other', close_note='Project cancelled')
+    assert e['closed_at'] and e['next_action_due'] is None
+    assert e['status'] == outcome
+    with pytest.raises(ValueError, match='/reopen'):
+        svc.update_enquiry(eid, status='new')
+    e = svc.reopen_enquiry(eid, status='negotiating')
+    assert e['status'] == 'negotiating' and e['closed_at'] is None
+    assert e['next_action_due'] == (datetime.now(timezone.utc) + timedelta(days=3)).strftime('%Y-%m-%d')
+
+
+def test_not_responding_restores_negotiating(svc):
+    eid = svc.e['id']
+    svc.update_enquiry(eid, status='negotiating')
+    for _ in range(3):
+        svc.log(eid, 'call_out', 'Called')
+    e = svc.get_enquiry(eid)
+    assert e['resume_status'] == 'negotiating'
+    svc.log(eid, 'email_in', 'Please go ahead')
+    e = svc.get_enquiry(eid)
+    assert e['status'] == 'negotiating' and e['waiting_on'] == 'us' and e['next_action_due'] == now()[:10]
+
+
+def test_today_groups_are_suggestions_only(svc):
+    eid = svc.e['id']
+    today = now()[:10]
+    svc.update_enquiry(eid, next_action_due=today)
+    exp = svc.add_quote(eid, amount=100, status='sent', valid_until=today)
+    svc.update_enquiry(eid, next_action_due=today)
+    gap = svc.create_enquiry(svc.c['id'], title='Needs qualification', status='qualifying', next_action_due='2020-01-01')
+    quiet = svc.create_enquiry(svc.c['id'], title='Quiet', status='not responding', next_action_due='2020-01-01')
+    paused = svc.create_enquiry(svc.c['id'], title='Paused', status='paused')
+    svc.repo.update('customer_enquiries', paused['id'], created_at='2020-01-01 00:00:00')
+    groups = svc.today()
+    assert gap['id'] in [e['id'] for e in groups['overdue']]
+    assert eid in [e['id'] for e in groups['due_today']]
+    assert groups['quotes_expiring'][0]['quote_id'] == exp['id']
+    assert groups['qualification_gaps'][0]['id'] == gap['id']
+    assert {e['suggested_outcome'] for e in groups['ready_to_close']} == {'lost', 'closed'}
+    assert svc.get_enquiry(quiet['id'])['status'] == 'not responding'
+    assert svc.get_enquiry(paused['id'])['status'] == 'paused'
+
+
+def test_pipeline_counts_and_close_reasons(svc):
+    svc.update_enquiry(svc.e['id'], estimated_value='2500')
+    e = svc.create_enquiry(svc.c['id'], title='Lost', estimated_value='900')
+    svc.close_enquiry(e['id'], 'lost', close_reason='price')
+    p = svc.pipeline()
+    assert p['stages']['qualifying'] == {'count': 1, 'estimated_value': 2500.0}
+    assert p['outcomes']['lost'] == {'count': 1, 'close_reasons': {'price': 1}}
+    assert set(p['stages']) == set(SUGGESTED_STATUSES)
+
+
+def test_new_api_endpoints(svc, monkeypatch):
+    import api.app as mod
+    import api.auth
+    from api.customers import get_customer_service
+    monkeypatch.setattr(api.auth, 'API_ACCESS_TOKEN', 'cust-test')
+    mod.app.dependency_overrides[get_customer_service] = lambda: svc
+    try:
+        client = TestClient(mod.app, headers={'Authorization': 'Bearer cust-test'})
+        path = f"/customers/enquiries/{svc.e['id']}"
+        assert client.patch(path, json={'status': 'active'}).status_code == 400
+        assert client.patch(path, json={'waiting_on': 'unknown'}).status_code == 400
+        assert client.patch(path, json={'status': 'quoting'}).status_code == 400
+        assert client.patch(path, json={'status': 'won'}).status_code == 400
+        q = client.post(path + '/quotes', json={'amount': 500, 'status': 'sent'}).json()
+        assert q['version'] == 1
+        assert client.patch(path + f"/quotes/{q['id']}", json={'status': 'accepted'}).status_code == 200
+        assert client.get('/customers/today').json()['ready_to_close'][0]['suggested_outcome'] == 'won'
+        assert client.post(path + '/close', json={'outcome': 'won'}).status_code == 400
+        assert client.post(path + '/close', json={'outcome': 'won', 'won_value': 500, 'close_note': 'Signed PO'}).json()['status'] == 'won'
+        assert client.get('/customers/pipeline').json()['outcomes']['won']['count'] == 1
+        assert client.post(path + '/reopen', json={'status': 'qualifying'}).json()['closed_at'] is None
+    finally:
+        mod.app.dependency_overrides.pop(get_customer_service, None)
+
+
+def test_migration_39_maps_legacy_version_38(tmp_path, monkeypatch):
+    import storage.database as db
+    path = tmp_path / 'legacy.db'
+    # Build the actual v38 customer shape, without v39 columns or quote table.
+    fresh = db.SCHEMA_SQL
+    cols = db.MIGRATIONS[39]['columns']
+    legacy = fresh
+    for _, name, kind in cols:
+        legacy = legacy.replace(name + ' ' + kind + ', ', '').replace(name + ' ' + kind + ',', '')
+    legacy = legacy.replace(db.CUSTOMER_QUOTES_SQL, '')
+    with monkeypatch.context() as m:
+        m.setattr(db, 'SCHEMA_SQL', legacy)
+        m.setattr(db, 'MIGRATIONS', {k: v for k, v in db.MIGRATIONS.items() if k < 39})
+        db.initialise_schema(path)
+    with connection_scope(path) as conn:
+        assert 'qualification' not in {r['name'] for r in conn.execute('PRAGMA table_info(customer_enquiries)')}
+        conn.execute("INSERT INTO customers(id,name) VALUES(1,'Legacy')")
+        statuses = ['active', 'awaiting customer', 'awaiting reply', 'awaiting qualification', 'owner_handled', 'deferred by owner', 'unqualified supplier', 'excluded', 'closed-lost', 'mystery', 'quoting', 'nurture', 'paused', 'not responding', 'new', 'lost', 'won', 'closed', 'quote sent', 'negotiating']
+        for i, stage in enumerate(statuses, 1):
+            conn.execute('INSERT INTO customer_enquiries(id,customer_id,reference,title,status) VALUES(?,1,?,?,?)', (i, f'IKE-{i:06}', 'Legacy', stage))
+    db.initialise_schema(path)
+    repo = CustomerRepository(path)
+    expected = ['qualifying'] * 4 + ['paused'] * 3 + ['closed', 'lost', 'qualifying'] + statuses[10:]
+    for e, old, stage in zip(repo.rows('customer_enquiries'), statuses, expected):
+        assert e['status'] == stage
+        assert bool(e['next_action_due']) == (stage not in {'won', 'lost', 'closed'})
+        if stage not in {'won', 'lost', 'closed'}:
+            assert e['next_action_due'] == now()[:10] and e['next_action']
+        if old != stage:
+            assert repo.rows('customer_activities', "enquiry_id=? AND kind='status_change'", (e['id'],))
+        if old.startswith('awaiting'):
+            assert e['waiting_on'] == 'customer'
+        if old == 'active':
+            assert e['waiting_on'] == 'us'
+        if old == 'excluded':
+            assert e['close_reason'] == 'not a customer'
+        if old == 'closed-lost':
+            assert e['close_reason'] == 'other' and e['close_note'] == 'migrated from closed-lost'
+    n = len(repo.rows('customer_activities'))
+    db.initialise_schema(path)
+    assert len(repo.rows('customer_activities')) == n
+    assert db.get_schema_version(path) == 39

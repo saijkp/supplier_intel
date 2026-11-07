@@ -928,3 +928,6 @@ RFQ_ZOHO_ACCOUNT_ID = (os.getenv('RFQ_ZOHO_ACCOUNT_ID') or '')
 # Claude Code / Codex session reads them (scripts/rfq_agent.py) and submits candidates,
 # which go through the same evidence validation in rfq.quote_parser.validate_candidates.
 RFQ_QUOTE_PARSER = (os.getenv('RFQ_QUOTE_PARSER') or 'openai').lower()
+
+# Next action SLA on entering a customer stage, in days.
+CUSTOMER_STAGE_SLA_DAYS = {'new': 1, 'qualifying': 3, 'quoting': 7, 'quote sent': 3, 'negotiating': 3, 'paused': 30, 'nurture': 60, 'not responding': 30}

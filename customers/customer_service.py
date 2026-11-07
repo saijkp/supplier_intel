@@ -20,10 +20,15 @@ from urllib.parse import quote
 from config import settings as cfg
 from storage.customer_repository import CustomerRepository
 
-CLOSED_STATUSES = {'won', 'lost', 'closed', 'closed-lost', 'excluded'}
+CLOSED_STATUSES = {'won', 'lost', 'closed'}
 NOT_RESPONDING = 'not responding'
-SUGGESTED_STATUSES = ['new', 'qualifying', 'active', 'quoting', 'awaiting customer', 'nurture', 'paused',
-                      NOT_RESPONDING, 'won', 'lost', 'closed']
+OPEN_STATUSES = ['new', 'qualifying', 'quoting', 'quote sent', 'negotiating']
+HOLDING_STATUSES = ['paused', 'nurture', NOT_RESPONDING]
+SUGGESTED_STATUSES = OPEN_STATUSES + HOLDING_STATUSES + ['won', 'lost', 'closed']
+QUALIFICATION_KEYS = ['scope', 'location', 'budget', 'timeline', 'plans', 'decision_maker']
+REQUIRED_QUALIFICATION = ['scope', 'location', 'timeline']
+CLOSE_REASONS = ['price', 'timing', 'went elsewhere', 'no project', 'no response', 'not a customer', 'duplicate', 'other']
+QUOTE_STATUSES = {'draft', 'sent', 'accepted', 'rejected', 'superseded'}
 # After this many of our contacts with no reply, an enquiry moves to 'not responding'
 # and comes back up for a check after NO_REPLY_RECHECK_DAYS. Any reply restores it.
 NO_REPLY_LIMIT = 3
@@ -36,7 +41,7 @@ NEWSLETTER_SENDER_RE = re.compile(r'^(no-?reply|do-?not-?reply|notifications?|ne
 ACTIVITY_KINDS = INBOUND | OUTBOUND | {'note', 'status_change'}
 CUSTOMER_FIELDS = {'name', 'company', 'email', 'phone', 'whatsapp', 'location', 'source', 'notes'}
 ENQUIRY_FIELDS = {'title', 'requirements', 'status', 'next_action', 'next_action_due', 'blocker', 'estimated_value',
-                  'owner', 'summary', 'rfq_campaign_ids', 'last_customer_contact_at', 'last_our_contact_at'}
+                  'waiting_on', 'qualification', 'owner', 'summary', 'rfq_campaign_ids', 'last_customer_contact_at', 'last_our_contact_at'}
 EMAIL_RE = re.compile(r'[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+')
 REFERENCE_RE = re.compile(r'\bIKE-[A-Z0-9]{6}\b')
 
@@ -134,6 +139,7 @@ class CustomerService:
         customer = self.repo.get('customers', customer_id)
         customer['enquiries'] = self.repo.rows('customer_enquiries', 'customer_id=?', (customer_id,),
                                                order='updated_at DESC')
+        customer['enquiries'] = [self._decorate(e) for e in customer['enquiries']]
         return customer
 
     # -- enquiries ------------------------------------------------------------
@@ -144,6 +150,7 @@ class CustomerService:
             raise ValueError('Enquiry title is required')
         if reference and not REFERENCE_RE.fullmatch(reference):
             raise ValueError('Reference must look like IKE-ABC123')
+        values = self._stage_values({'status': 'new', **values})
         enquiry_id = self.repo.insert('customer_enquiries', customer_id=customer_id,
                                       reference=reference or new_reference(), source_ref=source_ref,
                                       **{'status': 'new', **values})
@@ -153,6 +160,7 @@ class CustomerService:
     def update_enquiry(self, enquiry_id, **values):
         values = _clean(values, ENQUIRY_FIELDS)
         enquiry = self.repo.get('customer_enquiries', enquiry_id)
+        values = self._stage_values(values, enquiry)
         if 'title' in values and not values['title']:
             raise ValueError('Enquiry title cannot be blank')
         if values:
@@ -163,6 +171,8 @@ class CustomerService:
 
     def get_enquiry(self, enquiry_id):
         enquiry = self.repo.get('customer_enquiries', enquiry_id)
+        enquiry = self._decorate(enquiry)
+        enquiry['quotes'] = self.repo.rows('customer_quotes', 'enquiry_id=?', (enquiry_id,), order='version DESC')
         enquiry['customer'] = self.repo.get('customers', enquiry['customer_id'])
         enquiry['activities'] = self.repo.rows('customer_activities', 'enquiry_id=?', (enquiry_id,),
                                                order='occurred_at DESC, id DESC')
@@ -192,8 +202,198 @@ class CustomerService:
             e['customer_name'] = c.get('name')
             e['customer_email'] = c.get('email')
             e['customer_phone'] = c.get('phone') or c.get('whatsapp')
-            result.append(e)
+            result.append(self._decorate(e))
         return result
+
+    @staticmethod
+    def _decorate(e):
+        e['qualification_missing'] = [k for k in QUALIFICATION_KEYS if not (e['qualification'].get(k) or '').strip()]
+        return e
+
+    def _stage_values(self, values, enquiry=None, reopening=False):
+        enquiry = enquiry or {}
+        stage = values.get('status', enquiry.get('status', 'new'))
+        if stage not in SUGGESTED_STATUSES:
+            raise ValueError('Invalid stage; choose: ' + ', '.join(SUGGESTED_STATUSES))
+        if 'status' in values and stage in CLOSED_STATUSES:
+            raise ValueError('Use /customers/enquiries/{id}/close to close an enquiry')
+        if enquiry.get('status') in CLOSED_STATUSES and stage != enquiry['status'] and not reopening:
+            raise ValueError('Use /customers/enquiries/{id}/reopen to reopen an enquiry')
+        if 'waiting_on' in values and values['waiting_on'] not in (None, 'us', 'customer', 'supplier'):
+            raise ValueError('waiting_on must be us, customer or supplier')
+        if 'qualification' in values:
+            q = values['qualification']
+            if not isinstance(q, dict) or set(q) - set(QUALIFICATION_KEYS) or any(not isinstance(v, str) for v in q.values()):
+                raise ValueError('qualification must contain only checklist keys with text values')
+            values['qualification'] = {**enquiry.get('qualification', {}), **{k: v.strip() for k, v in q.items()}}
+        entering = stage != enquiry.get('status') or reopening
+        if entering and stage == NOT_RESPONDING:
+            values['resume_status'] = enquiry.get('status') or 'qualifying'
+        # Any route into quoting (from new, qualifying, a holding stage, a reopen or a create)
+        # needs the required checklist; only stepping back from quote sent / negotiating is exempt.
+        if entering and stage == 'quoting' and enquiry.get('status') not in ('quote sent', 'negotiating'):
+            q = values.get('qualification', enquiry.get('qualification', {}))
+            missing = [k for k in REQUIRED_QUALIFICATION if not q.get(k)]
+            if missing:
+                raise ValueError('Qualification missing: ' + ', '.join(missing))
+        if entering and stage == 'quote sent' and not self.repo.rows('customer_quotes', "enquiry_id=? AND status='sent'", (enquiry.get('id', -1),)):
+            raise ValueError('quote sent requires at least one sent quote')
+        if stage in CLOSED_STATUSES:
+            values['next_action_due'] = None
+        else:
+            if entering and 'next_action_due' not in values:
+                values['next_action_due'] = (datetime.now(timezone.utc) + timedelta(days=cfg.CUSTOMER_STAGE_SLA_DAYS[stage])).strftime('%Y-%m-%d')
+            due = values.get('next_action_due', enquiry.get('next_action_due'))
+            if not due:
+                raise ValueError('Open or holding enquiries require next_action_due; it cannot be blank')
+            try:
+                datetime.strptime(due, '%Y-%m-%d')
+            except (ValueError, TypeError):
+                raise ValueError('next_action_due must be YYYY-MM-DD') from None
+            if 'next_action' in values and not values['next_action']:
+                raise ValueError('next_action cannot be blank')
+            if not values.get('next_action', enquiry.get('next_action')):
+                values['next_action'] = 'Review enquiry and agree next step'
+        return values
+
+    def close_enquiry(self, enquiry_id, outcome, close_reason=None, close_note=None, won_value=None):
+        e = self.repo.get('customer_enquiries', enquiry_id)
+        if e['status'] in CLOSED_STATUSES:
+            raise ValueError('Enquiry is already closed; reopen first')
+        if outcome not in CLOSED_STATUSES:
+            raise ValueError('outcome must be won, lost or closed')
+        close_note = (close_note or '').strip()
+        if outcome == 'won':
+            import math
+            if isinstance(won_value, bool) or not isinstance(won_value, (int, float)) or not math.isfinite(won_value):
+                raise ValueError('won requires a numeric won_value')
+            if not close_note:
+                raise ValueError('won requires close_note proving the order or deposit')
+            close_reason = None
+        else:
+            if close_reason not in CLOSE_REASONS:
+                raise ValueError('close_reason must be one of: ' + ', '.join(CLOSE_REASONS))
+            if close_reason == 'other' and not close_note:
+                raise ValueError('other requires close_note')
+            won_value = None
+        self.repo.update('customer_enquiries', enquiry_id, status=outcome, close_reason=close_reason,
+                         close_note=close_note, won_value=won_value, closed_at=now(), next_action_due=None)
+        self.log(enquiry_id, 'status_change', f"Closed: {outcome} ({close_reason or close_note})")
+        return self.get_enquiry(enquiry_id)
+
+    def reopen_enquiry(self, enquiry_id, status='qualifying'):
+        e = self.repo.get('customer_enquiries', enquiry_id)
+        if e['status'] not in CLOSED_STATUSES or status not in OPEN_STATUSES:
+            raise ValueError('Reopen requires a closed enquiry and an open stage')
+        values = self._stage_values({'status': status}, e, reopening=True)
+        self.repo.update('customer_enquiries', enquiry_id, **values, closed_at=None, close_reason=None,
+                         close_note=None, won_value=None, waiting_on='us', resume_status=None)
+        self.log(enquiry_id, 'status_change', f"Status: {e['status']} -> {status} (reopened)")
+        return self.get_enquiry(enquiry_id)
+
+    def add_quote(self, enquiry_id, **values):
+        self.repo.get('customer_enquiries', enquiry_id)
+        return self._save_quote(enquiry_id, None, values)
+
+    def update_quote(self, enquiry_id, quote_id, **values):
+        q = self.repo.get('customer_quotes', quote_id)
+        if q['enquiry_id'] != enquiry_id:
+            raise ValueError('Quote not found for this enquiry')
+        return self._save_quote(enquiry_id, q, values)
+
+    def _save_quote(self, enquiry_id, existing, values):
+        import math
+        from storage.database import connection_scope
+        values = _clean(values, {'amount', 'currency', 'summary', 'sent_at', 'valid_until', 'status'})
+        status = values.get('status', existing['status'] if existing else 'draft')
+        if status not in QUOTE_STATUSES:
+            raise ValueError('Invalid quote status')
+        if 'amount' in values and (isinstance(values['amount'], bool) or not isinstance(values['amount'], (float, int)) or not math.isfinite(values['amount'])):
+            raise ValueError('Quote amount must be a finite number')
+        for field in ('valid_until',):
+            if values.get(field):
+                try:
+                    datetime.strptime(values[field], '%Y-%m-%d')
+                except (ValueError, TypeError):
+                    raise ValueError(field + ' must be YYYY-MM-DD') from None
+        became_sent = status == 'sent' and (not existing or existing['status'] != 'sent')
+        if became_sent:
+            values['sent_at'] = values.get('sent_at') or now()
+        # Serialise version allocation and superseding so simultaneous edits cannot create two sent quotes.
+        with connection_scope(self.repo.db_path) as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if existing:
+                qid = existing['id']
+                if values:
+                    values['updated_at'] = now()
+                    conn.execute('UPDATE customer_quotes SET ' + ','.join(k+'=?' for k in values) + ' WHERE id=?', (*values.values(), qid))
+            else:
+                version = conn.execute('SELECT coalesce(max(version),0)+1 FROM customer_quotes WHERE enquiry_id=?', (enquiry_id,)).fetchone()[0]
+                values = {'enquiry_id': enquiry_id, 'version': version, **values}
+                qid = conn.execute('INSERT INTO customer_quotes ('+','.join(values)+') VALUES ('+','.join('?' for _ in values)+')', tuple(values.values())).lastrowid
+            if became_sent:
+                conn.execute("UPDATE customer_quotes SET status='superseded',updated_at=? WHERE enquiry_id=? AND id!=? AND status='sent'", (now(), enquiry_id, qid))
+        q = self.repo.get('customer_quotes', qid)
+        if became_sent:
+            self.log(enquiry_id, 'note', f"Quote v{q['version']} sent: {q['currency']} {q['amount'] if q['amount'] is not None else ''}")
+            e = self.repo.get('customer_enquiries', enquiry_id)
+            if e['status'] in ('new', 'qualifying', 'quoting'):
+                self.update_enquiry(enquiry_id, status='quote sent', waiting_on='customer')
+        return q
+
+    def today(self):
+        groups = {k: [] for k in ('overdue', 'due_today', 'quotes_expiring', 'ready_to_close', 'qualification_gaps')}
+        today = now()[:10]
+        soon = (datetime.strptime(today, '%Y-%m-%d') + timedelta(days=7)).strftime('%Y-%m-%d')
+        stale = (datetime.strptime(today, '%Y-%m-%d') - timedelta(days=90)).strftime('%Y-%m-%d')
+        for e in self.list_enquiries():
+            item = {k: e.get(k) for k in ('id', 'reference', 'waiting_on', 'next_action')}
+            item.update(customer=e['customer_name'], stage=e['status'], due=e['next_action_due'])
+            def add(group, why, **extra):
+                groups[group].append({**item, 'why': why, **extra})
+            due = (e['next_action_due'] or '')[:10]
+            if due and due < today:
+                add('overdue', 'Next action is overdue')
+            elif due == today:
+                add('due_today', 'Next action is due today')
+            quotes = self.repo.rows('customer_quotes', 'enquiry_id=?', (e['id'],))
+            for q in quotes:
+                if q['status'] == 'sent' and q['valid_until'] and today <= q['valid_until'][:10] <= soon:
+                    add('quotes_expiring', f"Quote v{q['version']} expires {q['valid_until']}", quote_id=q['id'])
+            if any(q['status'] == 'accepted' for q in quotes):
+                add('ready_to_close', 'Accepted quote: consider won; confirm order or deposit', suggested_outcome='won')
+            elif e['status'] == NOT_RESPONDING and due and due < today:
+                add('ready_to_close', 'No response past recheck date: consider lost / no response', suggested_outcome='lost', close_reason='no response')
+            elif e['status'] in ('paused', 'nurture'):
+                inbound = self.repo.rows('customer_activities', "enquiry_id=? AND kind IN ('email_in','whatsapp_in','call_in')", (e['id'],), order='occurred_at DESC')
+                last = inbound[0]['occurred_at'] if inbound else e['created_at']
+                if (last or '')[:10] <= stale:
+                    add('ready_to_close', 'No inbound activity in 90 days: consider closed / timing', suggested_outcome='closed', close_reason='timing')
+            if e['status'] == 'qualifying':
+                missing = [k for k in REQUIRED_QUALIFICATION if k in e['qualification_missing']]
+                if missing:
+                    add('qualification_gaps', 'Qualification missing: ' + ', '.join(missing))
+        return groups
+
+    def pipeline(self):
+        stages = {s: {'count': 0, 'estimated_value': 0.0} for s in SUGGESTED_STATUSES}
+        outcomes = {s: {'count': 0, 'close_reasons': {}} for s in ('won', 'lost', 'closed')}
+        for e in self.repo.rows('customer_enquiries'):
+            bucket = stages[e['status']]
+            bucket['count'] += 1
+            try:
+                import math
+                value = float(e['estimated_value'] or 0)
+                if math.isfinite(value):
+                    bucket['estimated_value'] += value
+            except (TypeError, ValueError):
+                pass
+            if e['status'] in outcomes:
+                o = outcomes[e['status']]
+                o['count'] += 1
+                reason = e['close_reason'] or 'unspecified'
+                o['close_reasons'][reason] = o['close_reasons'].get(reason, 0) + 1
+        return {'stages': stages, 'outcomes': outcomes}
 
     def link_campaign(self, enquiry_id, campaign_id):
         enquiry = self.repo.get('customer_enquiries', enquiry_id)
@@ -218,8 +418,8 @@ class CustomerService:
             self._cancel_pending(enquiry_id, 'Customer replied')
             enquiry = self.repo.get('customer_enquiries', enquiry_id)
             if (enquiry['status'] or '').lower() == NOT_RESPONDING:
-                self.repo.update('customer_enquiries', enquiry_id, status='active', next_action_due=when[:10])
-                self.log(enquiry_id, 'status_change', f'Status: {NOT_RESPONDING} -> active (customer replied)')
+                self.repo.update('customer_enquiries', enquiry_id, status=enquiry.get('resume_status') or 'qualifying', resume_status=None, waiting_on='us', next_action_due=now()[:10])
+                self.log(enquiry_id, 'status_change', f"Status: {NOT_RESPONDING} -> {enquiry.get('resume_status') or 'qualifying'} (customer replied)")
         elif kind in OUTBOUND:
             self.repo.update('customer_enquiries', enquiry_id, last_our_contact_at=when)
             self._check_not_responding(enquiry_id, when)
@@ -245,7 +445,7 @@ class CustomerService:
         if self.unanswered_contacts(enquiry_id) < NO_REPLY_LIMIT:
             return
         recheck = (datetime.strptime(when[:10], '%Y-%m-%d') + timedelta(days=NO_REPLY_RECHECK_DAYS)).strftime('%Y-%m-%d')
-        self.repo.update('customer_enquiries', enquiry_id, status=NOT_RESPONDING, next_action_due=recheck)
+        self.repo.update('customer_enquiries', enquiry_id, status=NOT_RESPONDING, resume_status=status, waiting_on='customer', next_action_due=recheck)
         self.log(enquiry_id, 'status_change',
                  f"Status: {enquiry['status']} -> {NOT_RESPONDING} (no reply after {NO_REPLY_LIMIT} contacts); "
                  f"check again on {recheck}")
