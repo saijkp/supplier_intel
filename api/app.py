@@ -49,6 +49,7 @@ from api.auth import require_api_token
 from api.rfq import router as rfq_router
 from api.rfq_workflow import router as rfq_workflow_router
 from api.customers import router as customers_router
+from api.form_webhook import router as form_webhook_router
 from rfq.workspace_worker import run as run_rfq_worker
 from customers.inbox_worker import run as run_customer_inbox
 from api.jobs import (
@@ -201,6 +202,7 @@ app = FastAPI(
 
 app.include_router(rfq_workflow_router)
 app.include_router(rfq_router)
+app.include_router(form_webhook_router)
 app.include_router(customers_router)
 app.mount('/workspace', StaticFiles(directory=Path(__file__).resolve().parents[1] / 'frontend', html=True), name='workspace')
 

@@ -938,3 +938,8 @@ CUSTOMER_FORM_SENDERS = tuple(x.strip().lower() for x in
     (os.getenv("CUSTOMER_FORM_SENDERS") or '').split(',') if x.strip())
 CUSTOMER_FORM_SUBJECT_PATTERN = os.getenv("CUSTOMER_FORM_SUBJECT_PATTERN") or r"(?i)(sourcing[- ]brief|form submission)"
 CUSTOMER_FORM_BODY_MARKER = os.getenv("CUSTOMER_FORM_BODY_MARKER") or 'Form submission from sourcing-brief form:'
+
+# Direct Netlify outgoing form webhook: independent of the shared API token.
+NETLIFY_FORM_WEBHOOK_SECRET = os.getenv("NETLIFY_FORM_WEBHOOK_SECRET") or ""
+NETLIFY_FORM_NAMES = tuple(x.strip() for x in
+                         (os.getenv("NETLIFY_FORM_NAMES") or "sourcing-brief").split(",") if x.strip())

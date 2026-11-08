@@ -49,3 +49,69 @@ def form_qualification(fields):
     scope = '\n'.join(x for x in [', '.join(fields.get('categories') or []), fields.get('requirement', '')] if x)
     return {k: v for k, v in dict(scope=scope, location=fields.get('location', ''),
                                 budget=fields.get('budget', ''), timeline=fields.get('required_date', '')).items() if v}
+
+
+# Exact input names verified against https://ikeng.co.uk/.
+NETLIFY_FIELDS = {
+    'name': 'name', 'email': 'email', 'phone': 'phone', 'company': 'company',
+    'location': 'location', 'cat': 'categories', 'finish_level': 'finish_level',
+    'description': 'requirement', 'design_support': 'design_support',
+    'delivery_date': 'required_date', 'budget': 'budget', 'references': 'references',
+    'materials': 'materials', 'dimensions': 'dimensions', 'notes': 'anything_else',
+    'lead_source': 'lead_source', 'project_name': 'project_name',
+}
+
+
+def netlify_data(payload):
+    """Raw names take precedence, even when blank; human_fields is a fallback."""
+    data = {}
+    human = payload.get('human_fields')
+    if isinstance(human, dict):
+        labels = {label.lower(): key for label, key in LABELS.items() if key}
+        inverse = {v: k for k, v in NETLIFY_FIELDS.items()}
+        for label, value in human.items():
+            clean = label.rstrip(':').strip().rstrip('*').strip().lower()
+            target = 'requirement' if clean.startswith('what do you need?') else labels.get(clean)
+            source = inverse.get(target) or (clean if clean in NETLIFY_FIELDS else None)
+            if clean in {'bot-field', 'leave this empty'}:
+                source = 'bot-field'
+            if source:
+                data[source] = value
+    ordered = payload.get('ordered_human_fields')
+    if isinstance(ordered, list):
+        for field in ordered:
+            if isinstance(field, dict) and isinstance(field.get('name'), str):
+                data[field['name']] = field.get('value')
+    if isinstance(payload.get('data'), dict):
+        data.update(payload['data'])
+    return data
+
+
+def parse_netlify_form(payload):
+    fields = parse_form('')
+    data = netlify_data(payload)
+    for source, target in NETLIFY_FIELDS.items():
+        value = data.get(source)
+        if target == 'categories':
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except (ValueError, RecursionError):
+                    value = [value] if value.strip() else []
+            fields[target] = [x.strip() for x in value if x.strip()] if (
+                isinstance(value, list) and all(isinstance(x, str) for x in value)) else []
+        elif isinstance(value, str):
+            fields[target] = value.strip()
+    if not EMAIL_RE.fullmatch(fields['email']):
+        fields['email'] = ''
+    return fields
+
+
+def form_fingerprint(fields):
+    """Transport-independent comparison over only the shared, explicit fields."""
+    import hashlib
+    normalized = parse_form('')
+    normalized.update({k: fields[k] for k in normalized if k in fields})
+    normalized['email'] = normalized['email'].lower()
+    normalized['categories'] = sorted(normalized['categories'])
+    return hashlib.sha256(json.dumps(normalized, sort_keys=True, ensure_ascii=False).encode()).hexdigest()

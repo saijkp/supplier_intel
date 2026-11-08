@@ -8,9 +8,11 @@ enquiry. Drafts never include internal fields (next_action, blocker, summary): t
 working notes, not customer-facing text.
 """
 import hashlib
+import json
 import re
 import secrets
 import string
+from threading import Lock
 from datetime import datetime, timedelta, timezone
 from email import policy
 from email.parser import BytesParser
@@ -19,7 +21,9 @@ from urllib.parse import quote
 
 from config import settings as cfg
 from storage.customer_repository import CustomerRepository, FREE_MAIL
-from customers.form_parser import parse_form, form_qualification
+from customers.form_parser import parse_form, form_qualification, parse_netlify_form, form_fingerprint
+
+_FORM_INTAKE_LOCK = Lock()
 
 CLOSED_STATUSES = {'won', 'lost', 'closed'}
 NOT_RESPONDING = 'not responding'
@@ -636,26 +640,12 @@ class CustomerService:
             if is_form:
                 # Redelivered notifications may have a different MIME Message-ID.
                 external = 'cust:form:' + hashlib.sha256(text.strip().encode('utf-8')).hexdigest()
-                if self.repo.rows('customer_activities', 'external_id=?', (external,)) or self.repo.rows(
-                        'customer_inbox_leads', 'external_id=?', (external,)):
-                    result['duplicates'] += 1
-                    continue
-                fields = parse_form(text)
-                customer_email = fields['email'].lower()
-                if not customer_email:
-                    # Keep malformed submissions reviewable, never attribute them to notifier.
-                    customer_email = ''
-                enquiry = by_email.get(customer_email)
-                if enquiry:
-                    self._fill_form(enquiry, fields)
-                    self.log(enquiry['id'], 'email_in', text, occurred_at=_mail_time(mail), external_id=external)
-                    result['logged'] += 1
-                else:
-                    self.repo.insert('customer_inbox_leads', external_id=external,
-                                     from_address=customer_email, from_name=fields['name'] or None,
-                                     subject=subject[:300], excerpt=text[:1500], full_text=text,
-                                     form_fields=fields, received_at=_mail_time(mail))
-                    result['possible_new_enquiries'] += 1
+                submission = re.search(r'\[netlify:([a-fA-F0-9]{24})\]', subject)
+                if submission:
+                    external = 'cust:netlify:' + submission.group(1)
+                outcome = self.store_form_submission(parse_form(text), text, external,
+                                                     subject, _mail_time(mail))
+                result[outcome] += 1
                 continue
             if auto or sender == own:
                 result['ignored'] += 1
@@ -686,6 +676,56 @@ class CustomerService:
                              received_at=_mail_time(mail), full_text=text)
             result['possible_new_enquiries'] += 1
         return result
+
+    def store_form_submission(self, fields, text, external_id, subject, received_at=None):
+        """Shared email/webhook intake. No sends or automatic enquiry creation.
+
+        Serialize the check/write on this single-instance service. Match IDs first;
+        across transports only, compare canonical parsed fields, retaining original
+        evidence on the first record. Distinct IDs on the same transport stay distinct.
+        """
+        with _FORM_INTAKE_LOCK:
+            for table in ('customer_activities', 'customer_inbox_leads'):
+                if self.repo.rows(table, 'external_id=?', (external_id,)):
+                    return 'duplicates'
+            other = 'cust:form:%' if external_id.startswith('cust:netlify:') else 'cust:netlify:%'
+            fingerprint = form_fingerprint(fields)
+            if self.repo.form_seen(external_id, fingerprint, other if fields.get('email') else ''):
+                self.repo.remember_form(external_id, fingerprint)
+                return 'duplicates'
+            if fields.get('email'):
+                for table in ('customer_inbox_leads', 'customer_activities'):
+                    for row in self.repo.rows(table, 'external_id LIKE ?', (other,)):
+                        previous = row.get('form_fields')
+                        if not previous:
+                            evidence = row.get('full_text') or row.get('summary') or ''
+                            if row['external_id'].startswith('cust:netlify:'):
+                                try:
+                                    previous = parse_netlify_form(json.loads(evidence))
+                                except (ValueError, TypeError):
+                                    continue
+                            else:
+                                previous = parse_form(evidence)
+                        if form_fingerprint(previous) == fingerprint:
+                            self.repo.remember_form(external_id, fingerprint)
+                            return 'duplicates'
+            email = fields.get('email', '').lower()
+            customers = self.repo.rows('customers', 'lower(email)=?', (email,)) if email else []
+            for customer in customers:
+                enquiries = self.repo.rows('customer_enquiries', 'customer_id=?',
+                                           (customer['id'],), order='updated_at DESC')
+                enquiry = next((e for e in enquiries if e['status'] not in CLOSED_STATUSES), None)
+                if enquiry:
+                    self._fill_form(enquiry, fields)
+                    self.log(enquiry['id'], 'email_in', text, occurred_at=received_at, external_id=external_id)
+                    self.repo.remember_form(external_id, fingerprint)
+                    return 'logged'
+            self.repo.insert('customer_inbox_leads', external_id=external_id,
+                             from_address=email, from_name=fields.get('name') or None,
+                             subject=subject[:300], excerpt=text[:1500], full_text=text,
+                             form_fields=fields, received_at=received_at or now())
+            self.repo.remember_form(external_id, fingerprint)
+            return 'possible_new_enquiries'
 
     # -- possible new enquiries (from the inbox) -----------------------------------
     def list_leads(self, status='new'):
