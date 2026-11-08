@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 39
+SCHEMA_VERSION = 40
 
 
 # ═══════════════════════════════════════════════════════════
@@ -903,7 +903,7 @@ CREATE INDEX IF NOT EXISTS idx_customer_messages_status ON customer_messages(sta
 CUSTOMER_LEADS_SQL = """
 CREATE TABLE IF NOT EXISTS customer_inbox_leads (
  id INTEGER PRIMARY KEY, external_id TEXT UNIQUE NOT NULL, from_address TEXT NOT NULL, from_name TEXT,
- subject TEXT, excerpt TEXT, received_at TEXT, status TEXT NOT NULL DEFAULT 'new', enquiry_id INTEGER,
+ subject TEXT, excerpt TEXT, form_fields TEXT NOT NULL DEFAULT '{}', full_text TEXT, received_at TEXT, status TEXT NOT NULL DEFAULT 'new', enquiry_id INTEGER,
  created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE INDEX IF NOT EXISTS idx_customer_inbox_leads_status ON customer_inbox_leads(status);
 """
@@ -947,6 +947,11 @@ CASE lower(trim(status))
 """
 
 MIGRATIONS: dict[int, dict] = {
+    40: {
+        "description": "Grounded website form details and full inbound text on review cards",
+        "columns": [('customer_inbox_leads', 'form_fields', "TEXT NOT NULL DEFAULT '{}'"),
+                    ('customer_inbox_leads', 'full_text', 'TEXT')],
+    },
     39: {
         "description": "Customer enquiry stages, outcomes and quotes",
         "columns": [

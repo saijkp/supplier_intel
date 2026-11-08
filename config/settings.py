@@ -931,3 +931,10 @@ RFQ_QUOTE_PARSER = (os.getenv('RFQ_QUOTE_PARSER') or 'openai').lower()
 
 # Next action SLA on entering a customer stage, in days.
 CUSTOMER_STAGE_SLA_DAYS = {'new': 1, 'qualifying': 3, 'quoting': 7, 'quote sent': 3, 'negotiating': 3, 'paused': 30, 'nurture': 60, 'not responding': 30}
+
+# Sourcing-brief email intake. Sender allowlist is optional until the live notifier
+# is confirmed; both the subject and body marker must always match.
+CUSTOMER_FORM_SENDERS = tuple(x.strip().lower() for x in
+    (os.getenv("CUSTOMER_FORM_SENDERS") or '').split(',') if x.strip())
+CUSTOMER_FORM_SUBJECT_PATTERN = os.getenv("CUSTOMER_FORM_SUBJECT_PATTERN") or r"(?i)(sourcing[- ]brief|form submission)"
+CUSTOMER_FORM_BODY_MARKER = os.getenv("CUSTOMER_FORM_BODY_MARKER") or 'Form submission from sourcing-brief form:'

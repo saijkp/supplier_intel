@@ -563,4 +563,159 @@ def test_migration_39_maps_legacy_version_38(tmp_path, monkeypatch):
     n = len(repo.rows('customer_activities'))
     db.initialise_schema(path)
     assert len(repo.rows('customer_activities')) == n
-    assert db.get_schema_version(path) == 39
+    assert db.get_schema_version(path) == db.SCHEMA_VERSION
+
+
+from customers.form_parser import parse_form
+
+MAHMOOD_FORM = """Form submission from sourcing-brief form: — Lead Source: direct/organic
+Full name *: Mahmood Akbar Company (optional): Example Ltd Email *: mahmood@example.com
+Phone / WhatsApp: +44 7700 900111 Property developer: Homeowner / self-builder
+Project name: House Refurbishment Location *: Leicester Number of units: 1
+Finish level: Premium — high-end residential New build: Single property
+Cat: ["Kitchen cabinets", "Wardrobes & storage", "Not sure"]
+What do you need? Be as loose or precise as you like.: Cabinets for the kitchen
+Design Support: Yes Materials / finishes: Specific dimensions:
+Required on-site date: 2027-01-08 Approximate budget: £5,000 – £15,000
+Reference images / links: https://example.com/plans Anything else:"""
+
+
+def test_form_parser_mahmood():
+    f = parse_form(MAHMOOD_FORM)
+    assert f['name'] == 'Mahmood Akbar'
+    assert f['email'] == 'mahmood@example.com'
+    assert f['company'] == 'Example Ltd'
+    assert f['phone'] == '+44 7700 900111'
+    assert f['location'] == 'Leicester'
+    assert f['categories'] == ['Kitchen cabinets', 'Wardrobes & storage', 'Not sure']
+    assert f['finish_level'] == 'Premium — high-end residential'
+    assert f['requirement'] == 'Cabinets for the kitchen'
+    assert f['design_support'] == 'Yes'
+    assert f['required_date'] == '2027-01-08'
+    assert f['budget'] == '£5,000 – £15,000'
+    assert f['references'] == 'https://example.com/plans'
+    assert f['lead_source'] == 'direct/organic'
+    assert f['materials'] == f['dimensions'] == ''
+
+
+def test_form_parser_minimal_and_malformed():
+    assert parse_form('Full name *: Ann Email *: ann@gmail.com')['email'] == 'ann@gmail.com'
+    for bad in [None, {}, 7, '', 'broken', 'Email *: invalid Cat: [bad', 'Cat: ' + '[' * 2000]:
+        f = parse_form(bad)
+        assert f['email'] == '' and f['categories'] == [] and f['budget'] == ''
+
+
+def test_form_poll_before_filters_and_convert(svc):
+    svc._inbox.raw = [mail('no-reply@forms.example', 'Form submission: sourcing-brief', MAHMOOD_FORM,
+                           '<form-1>', Auto_Submitted='auto-generated', Precedence='bulk')]
+    assert svc.poll_inbox()['possible_new_enquiries'] == 1
+    lead = svc.list_leads()[0]
+    assert lead['from_address'] == 'mahmood@example.com'
+    assert lead['form_fields']['location'] == 'Leicester'
+    assert len(svc.repo.rows('customer_enquiries')) == 1  # human click required
+    assert svc.poll_inbox()['duplicates'] == 1
+    e = svc.convert_lead(lead['id'])
+    c = svc.repo.get('customers', e['customer_id'])
+    assert c['name'] == 'Mahmood Akbar' and c['phone'] == '+44 7700 900111'
+    assert e['qualification']['timeline'] == '2027-01-08'
+    assert e['qualification']['location'] == 'Leicester'
+    assert 'Kitchen cabinets' in e['qualification']['scope']
+    assert next(a for a in e['activities'] if a['kind'] == 'email_in')['summary'] == MAHMOOD_FORM
+    assert not svc._sender.sent
+
+
+def test_form_netlify_marker_in_subject_only(svc):
+    # Real notifier (29 Oct 2026): sender formresponses@netlify.com, the marker is the
+    # subject, and the body starts straight at the fields, one label per line.
+    body = ('Lead Source:\ndirect/organic\nFull name *:\nNia Patel\nEmail *:\nnia@example.com\n'
+            'Phone / WhatsApp:\n+44 7700 900222\nLocation *:\nLeicester\n'
+            'Approximate budget:\n£5,000 – £15,000\nAnything else:\n')
+    svc._inbox.raw = [mail('formresponses@netlify.com', 'Form submission from sourcing-brief form:', body, '<netlify-1>')]
+    assert svc.poll_inbox()['possible_new_enquiries'] == 1
+    lead = svc.list_leads()[0]
+    assert lead['from_address'] == 'nia@example.com'
+    assert lead['form_fields']['name'] == 'Nia Patel'
+    assert lead['form_fields']['budget'] == '£5,000 – £15,000'
+
+
+def test_form_existing_open_enquiry_fills_only_blanks(svc):
+    svc.update_enquiry(svc.e['id'], qualification={'location': 'Manchester', 'budget': 'Owner budget'})
+    body = MAHMOOD_FORM.replace('mahmood@example.com', 'colin@example.com')
+    svc._inbox.raw = [mail('no-reply@forms.example', 'Form submission', body, '<form-known>')]
+    assert svc.poll_inbox()['logged'] == 1
+    assert svc.list_leads() == []
+    e = svc.get_enquiry(svc.e['id'])
+    assert e['qualification']['location'] == 'Manchester'
+    assert e['qualification']['budget'] == 'Owner budget'
+    assert e['qualification']['timeline'] == '2027-01-08'
+    assert svc.get_customer(svc.c['id'])['phone'] == '+44 7700 900123'
+    assert svc.poll_inbox()['duplicates'] == 1
+
+
+def test_form_malformed_is_reviewable_not_notifier_customer(svc):
+    svc._inbox.raw = [mail('no-reply@forms.example', 'Form submission',
+        'Form submission from sourcing-brief form: Full name *: Ann Email *: invalid', '<bad-form>')]
+    assert svc.poll_inbox()['possible_new_enquiries'] == 1
+    lead = svc.list_leads()[0]
+    assert lead['from_address'] == ''
+    with pytest.raises(ValueError, match='valid customer email'):
+        svc.convert_lead(lead['id'])
+
+
+@pytest.mark.parametrize('address', ['news.smith@gmail.com', 'support.jones@outlook.com'])
+def test_personal_email_not_dropped_by_localpart(svc, address):
+    svc._inbox.raw = [mail(address, 'Kitchen enquiry', 'Please quote cabinets', '<' + address + '>')]
+    assert svc.poll_inbox()['possible_new_enquiries'] == 1
+
+
+def test_form_sender_allowlist_and_plain_newsletter(svc, monkeypatch):
+    monkeypatch.setattr(cfg, 'CUSTOMER_FORM_SENDERS', ('trusted@forms.example',))
+    svc._inbox.raw = [mail('no-reply@other.example', 'Form submission', MAHMOOD_FORM, '<wrong>'),
+                      mail('news.person@gmail.com', 'Newsletter', 'offers', '<bulk>', List_Unsubscribe='<https://example.com>')]
+    assert svc.poll_inbox()['ignored'] == 2
+    assert not svc.list_leads()
+
+
+def test_form_redelivery_new_message_id_and_conversion_reuses_customer(svc):
+    svc._inbox.raw = [mail('no-reply@forms.example', 'Form submission', MAHMOOD_FORM, '<first>'),
+                      mail('no-reply@forms.example', 'Form submission', MAHMOOD_FORM, '<redelivery>')]
+    result = svc.poll_inbox()
+    assert result['possible_new_enquiries'] == result['duplicates'] == 1
+    existing = svc.create_customer(name='Existing name', email='mahmood@example.com', phone='trusted')
+    enquiry = svc.create_enquiry(existing['id'], title='Existing project', qualification={'location': 'Salford'})
+    converted = svc.convert_lead(svc.list_leads()[0]['id'])
+    assert converted['id'] == enquiry['id']
+    assert converted['qualification']['location'] == 'Salford'
+    assert svc.get_customer(existing['id'])['name'] == 'Existing name'
+    assert svc.get_customer(existing['id'])['phone'] == 'trusted'
+    assert len(svc.repo.rows('customers')) == 2
+
+
+def test_form_html_only_and_multiple_submissions_preserve_first_values(svc):
+    from html import escape
+    body = MAHMOOD_FORM.replace('mahmood@example.com', 'colin@example.com')
+    m = EmailMessage()
+    m['From'], m['Subject'], m['Message-ID'] = 'no-reply@forms.example', 'Form submission', '<html-form>'
+    m.set_content('<html><body>' + ''.join('<p>' + escape(line) + '</p>' for line in body.splitlines()) + '</body></html>', subtype='html')
+    svc._inbox.raw = [m.as_bytes(), mail('no-reply@forms.example', 'Form submission',
+        body.replace('Leicester', 'London'), '<later-form>')]
+    assert svc.poll_inbox()['logged'] == 2
+    assert svc.get_enquiry(svc.e['id'])['qualification']['location'] == 'Leicester'
+    assert svc.poll_inbox()['duplicates'] == 2
+
+
+def test_migration_40_preserves_existing_lead(tmp_path, monkeypatch):
+    import storage.database as db
+    path = tmp_path / 'v39.db'
+    legacy = db.SCHEMA_SQL.replace("form_fields TEXT NOT NULL DEFAULT '{}', full_text TEXT, ", '')
+    with monkeypatch.context() as m:
+        m.setattr(db, 'SCHEMA_SQL', legacy)
+        m.setattr(db, 'MIGRATIONS', {k: v for k, v in db.MIGRATIONS.items() if k < 40})
+        db.initialise_schema(path)
+    repo = CustomerRepository(path)
+    lead_id = repo.insert('customer_inbox_leads', external_id='legacy', from_address='person@gmail.com', excerpt='Original')
+    db.initialise_schema(path)
+    db.initialise_schema(path)
+    lead = repo.get('customer_inbox_leads', lead_id)
+    assert lead['excerpt'] == 'Original'
+    assert lead['form_fields'] == {} and lead['full_text'] is None

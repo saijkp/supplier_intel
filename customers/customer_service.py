@@ -18,7 +18,8 @@ from email.utils import parseaddr
 from urllib.parse import quote
 
 from config import settings as cfg
-from storage.customer_repository import CustomerRepository
+from storage.customer_repository import CustomerRepository, FREE_MAIL
+from customers.form_parser import parse_form, form_qualification
 
 CLOSED_STATUSES = {'won', 'lost', 'closed'}
 NOT_RESPONDING = 'not responding'
@@ -606,7 +607,7 @@ class CustomerService:
                 or re.match(r'\s*(out of office|automatic reply|auto.?reply)', subject, re.I) \
                 or re.search('mailer-daemon|postmaster', sender, re.I) \
                 or mail.get_content_type() == 'multipart/report'
-            if auto or not sender or sender == own:
+            if not sender:
                 result['ignored'] += 1
                 continue
             text = ''
@@ -625,6 +626,40 @@ class CustomerService:
                         except Exception:
                             pass
                         break
+            try:
+                is_form = (bool(re.search(cfg.CUSTOMER_FORM_SUBJECT_PATTERN, subject))
+                           # Netlify puts the marker in the subject; the body starts at the fields.
+                           and cfg.CUSTOMER_FORM_BODY_MARKER in subject + '\n' + text
+                           and (not cfg.CUSTOMER_FORM_SENDERS or sender in cfg.CUSTOMER_FORM_SENDERS))
+            except re.error:
+                is_form = False  # invalid deployment config must not stop ordinary email
+            if is_form:
+                # Redelivered notifications may have a different MIME Message-ID.
+                external = 'cust:form:' + hashlib.sha256(text.strip().encode('utf-8')).hexdigest()
+                if self.repo.rows('customer_activities', 'external_id=?', (external,)) or self.repo.rows(
+                        'customer_inbox_leads', 'external_id=?', (external,)):
+                    result['duplicates'] += 1
+                    continue
+                fields = parse_form(text)
+                customer_email = fields['email'].lower()
+                if not customer_email:
+                    # Keep malformed submissions reviewable, never attribute them to notifier.
+                    customer_email = ''
+                enquiry = by_email.get(customer_email)
+                if enquiry:
+                    self._fill_form(enquiry, fields)
+                    self.log(enquiry['id'], 'email_in', text, occurred_at=_mail_time(mail), external_id=external)
+                    result['logged'] += 1
+                else:
+                    self.repo.insert('customer_inbox_leads', external_id=external,
+                                     from_address=customer_email, from_name=fields['name'] or None,
+                                     subject=subject[:300], excerpt=text[:1500], full_text=text,
+                                     form_fields=fields, received_at=_mail_time(mail))
+                    result['possible_new_enquiries'] += 1
+                continue
+            if auto or sender == own:
+                result['ignored'] += 1
+                continue
             excerpt = strip_history(text).strip()[:1500]
             ref = REFERENCE_RE.search(subject + '\n' + text)
             enquiry = by_ref.get(ref.group(0)) if ref else None
@@ -637,7 +672,7 @@ class CustomerService:
                 continue
             bulk = mail.get('List-Unsubscribe') or mail.get('List-Id') or \
                 str(mail.get('Precedence', '')).lower() in {'bulk', 'list', 'junk'} or \
-                NEWSLETTER_SENDER_RE.match(sender.split('@')[0])
+                (sender.rsplit('@', 1)[-1] not in FREE_MAIL and NEWSLETTER_SENDER_RE.match(sender.split('@')[0]))
             if bulk or sender in known_customer_emails or sender in dismissed \
                     or re.search(r'\bRFQ-\d+-[A-Z0-9]{6}\b', subject + text) or self.repo.is_supplier_address(sender):
                 result['ignored'] += 1
@@ -648,7 +683,7 @@ class CustomerService:
             pending.add(sender)
             self.repo.insert('customer_inbox_leads', external_id=external, from_address=sender,
                              from_name=(name or '').strip() or None, subject=subject[:300], excerpt=excerpt,
-                             received_at=_mail_time(mail))
+                             received_at=_mail_time(mail), full_text=text)
             result['possible_new_enquiries'] += 1
         return result
 
@@ -669,12 +704,41 @@ class CustomerService:
         lead = self.repo.get('customer_inbox_leads', lead_id)
         if lead['status'] != 'new':
             raise ValueError('Lead already handled')
-        name = (name or lead['from_name'] or lead['from_address'].split('@')[0]).strip()
-        customer = self.create_customer(name=name, email=lead['from_address'], source='Email enquiry')
-        enquiry = self.create_enquiry(customer['id'], title=(title or lead['subject'] or 'Email enquiry').strip()[:300],
-                                      status='new', next_action='Reply to the first email and qualify the enquiry',
-                                      next_action_due=now()[:10])
-        self.log(enquiry['id'], 'email_in', f"Email from {lead['from_address']}: {lead['subject']}\n{lead['excerpt'] or ''}".strip(),
-                 occurred_at=lead['received_at'])
+        fields = lead.get('form_fields') or {}
+        if fields and not EMAIL_RE.fullmatch(lead['from_address'] or ''):
+            raise ValueError('Form has no valid customer email; review the original submission')
+        name = (name or lead['from_name'] or ('' if fields else lead['from_address'].split('@')[0])).strip()
+        if not name:
+            raise ValueError('Customer name is required to add this submission')
+        existing = self.repo.rows('customers', 'lower(email)=?', (lead['from_address'].lower(),))
+        customer = existing[0] if existing else self.create_customer(
+            name=name, email=lead['from_address'], source='Website form' if fields else 'Email enquiry',
+            **{k: fields[k] for k in ('phone', 'company', 'location') if fields.get(k)})
+        open_enquiries = self.repo.rows('customer_enquiries', 'customer_id=?', (customer['id'],), order='updated_at DESC')
+        enquiry = next((e for e in open_enquiries if e['status'] not in CLOSED_STATUSES), None)
+        if enquiry is None:
+            enquiry = self.create_enquiry(customer['id'], title=(title or fields.get('project_name') or lead['subject'] or 'Email enquiry').strip()[:300],
+                                          status='new', next_action='Reply to the first email and qualify the enquiry',
+                                          next_action_due=now()[:10])
+        if fields:
+            self._fill_form(enquiry, fields)
+        self.log(enquiry['id'], 'email_in', lead.get('full_text') or lead['excerpt'] or '',
+                 occurred_at=lead['received_at'], external_id=lead['external_id'])
         self.repo.update('customer_inbox_leads', lead_id, status='added', enquiry_id=enquiry['id'])
         return self.get_enquiry(enquiry['id'])
+
+    def _fill_form(self, enquiry, fields):
+        """Only fill empty values; retain conflicting evidence in the email timeline."""
+        enquiry = self.repo.get('customer_enquiries', enquiry['id'])
+        customer = self.repo.get('customers', enquiry['customer_id'])
+        updates = {k: fields[k] for k in ('name', 'phone', 'company', 'location')
+                   if fields.get(k) and not customer.get(k)}
+        if updates:
+            self.update_customer(customer['id'], **updates)
+        qualification = {k: v for k, v in form_qualification(fields).items()
+                         if not (enquiry.get('qualification') or {}).get(k)}
+        updates = {'qualification': qualification} if qualification else {}
+        if not enquiry.get('requirements') and fields.get('requirement'):
+            updates['requirements'] = fields['requirement']
+        if updates:
+            self.update_enquiry(enquiry['id'], **updates)
