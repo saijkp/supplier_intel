@@ -287,3 +287,14 @@ def test_human_fields_honeypot_is_rejected(setup, payload):
                                'Leave this empty': 'robot'}
     assert post(client, payload).json()['status'] == 'ignored'
     assert service.list_leads() == []
+
+
+def test_netlify_double_encoded_text_is_repaired():
+    # Real webhook body on 8 Nov 2026 carried 'Under Â£5,000' for a stored 'Under £5,000'.
+    fields = parse_netlify_form({'data': {'budget': 'Under Â£5,000', 'location': 'Café – Leeds'.encode('utf-8').decode('latin-1'),
+                                          'name': 'Ann', 'cat': ['Kitchen cabinets']}})
+    assert fields['budget'] == 'Under £5,000'
+    assert fields['location'] == 'Café – Leeds'
+    # Correct text and text that only looks similar stay unchanged.
+    assert parse_netlify_form({'data': {'budget': '£5,000 – £15,000'}})['budget'] == '£5,000 – £15,000'
+    assert parse_netlify_form({'data': {'name': 'Âlex'}})['name'] == 'Âlex'

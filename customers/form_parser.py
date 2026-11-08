@@ -87,6 +87,18 @@ def netlify_data(payload):
     return data
 
 
+def fix_mojibake(value):
+    """Netlify's outgoing webhook body double-encodes non-ASCII (seen 8 Nov 2026: the
+    stored submission had '£', the webhook sent 'Â£'). Undo it only when the text
+    round-trips cleanly as UTF-8 read as Latin-1; anything else is left unchanged."""
+    if not isinstance(value, str) or not any(c in value for c in 'ÂÃâ'):
+        return value
+    try:
+        return value.encode('latin-1').decode('utf-8')
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return value
+
+
 def parse_netlify_form(payload):
     fields = parse_form('')
     data = netlify_data(payload)
@@ -98,10 +110,10 @@ def parse_netlify_form(payload):
                     value = json.loads(value)
                 except (ValueError, RecursionError):
                     value = [value] if value.strip() else []
-            fields[target] = [x.strip() for x in value if x.strip()] if (
+            fields[target] = [fix_mojibake(x).strip() for x in value if x.strip()] if (
                 isinstance(value, list) and all(isinstance(x, str) for x in value)) else []
         elif isinstance(value, str):
-            fields[target] = value.strip()
+            fields[target] = fix_mojibake(value).strip()
     if not EMAIL_RE.fullmatch(fields['email']):
         fields['email'] = ''
     return fields
