@@ -1,0 +1,51 @@
+"""Pure, conservative extraction of labelled sourcing-brief notification text."""
+import json
+import re
+
+# Include unused labels as boundaries so their values never leak into another field.
+LABELS = {
+    'Lead Source': 'lead_source', 'Full name': 'name', 'Company (optional)': 'company',
+    'Email': 'email', 'Phone / WhatsApp': 'phone', 'Property developer': None,
+    'Project name': 'project_name', 'Location': 'location', 'Number of units': None,
+    'Finish level': 'finish_level', 'New build': None, 'Cat': 'categories',
+    'Design Support': 'design_support', 'Materials / finishes': 'materials',
+    'Specific dimensions': 'dimensions', 'Required on-site date': 'required_date',
+    'Approximate budget': 'budget', 'Reference images / links': 'references',
+    'Anything else': 'anything_else',
+}
+_parts = [re.escape(x) + r"\s*\*?\s*:" for x in LABELS]
+_parts.append(r"What do you need\?[^:\n]*:")
+FIELD_RE = re.compile(r"(?<!\w)(" + '|'.join(_parts) + ')', re.I)
+EMAIL_RE = re.compile(r"[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+")
+
+
+def parse_form(text):
+    """Return only explicit label values; missing or malformed input stays blank."""
+    result = {k: '' for k in LABELS.values() if k}
+    result.update(requirement='', categories=[])
+    if not isinstance(text, str):
+        return result
+    matches = list(FIELD_RE.finditer(text))
+    for i, match in enumerate(matches):
+        label = match.group().rstrip(':').strip().rstrip('*').strip()
+        key = 'requirement' if label.lower().startswith('what do you need?') else next(
+            (v for k, v in LABELS.items() if k.lower() == label.lower()), None)
+        if not key or result.get(key):
+            continue
+        value = text[match.end():matches[i + 1].start() if i + 1 < len(matches) else len(text)].strip()
+        if key == 'email':
+            value = value if EMAIL_RE.fullmatch(value) else ''
+        if key == 'categories':
+            try:
+                value = json.loads(value)
+                value = value if isinstance(value, list) and all(isinstance(x, str) for x in value) else []
+            except (ValueError, TypeError, RecursionError):
+                value = []
+        result[key] = value
+    return result
+
+
+def form_qualification(fields):
+    scope = '\n'.join(x for x in [', '.join(fields.get('categories') or []), fields.get('requirement', '')] if x)
+    return {k: v for k, v in dict(scope=scope, location=fields.get('location', ''),
+                                budget=fields.get('budget', ''), timeline=fields.get('required_date', '')).items() if v}

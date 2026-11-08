@@ -56,11 +56,11 @@ def mail(env,text='Here is our reply',subject=None,sender='sales@factory.test',m
     msg.set_content(text);return msg
 
 def test_schema_migration_and_uniqueness(env):
-    assert get_schema_version(env.path)==39
+    assert get_schema_version(env.path)==40
     assert all('rfq_'+t in table_counts(env.path) for t in ('campaigns','messages','replies','quotes','suppressions'))
     with connection_scope(env.path) as conn: conn.execute('DELETE FROM schema_migrations WHERE version=34')
     initialise_schema(env.path);initialise_schema(env.path)
-    assert get_schema_version(env.path)==39
+    assert get_schema_version(env.path)==40
     row=env.repo.get('messages',env.mid)
     with pytest.raises(sqlite3.IntegrityError):
         env.repo.insert('messages',campaign_id=env.cid,supplier_id=env.sid,channel='email',kind='initial',reference='different')

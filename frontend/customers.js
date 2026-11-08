@@ -34,9 +34,10 @@
       const qs = filter === 'due' ? '?due_only=true' : filter === 'all' ? '?include_closed=true' : filter === 'quiet' ? '?status=not%20responding' : '';
       const [status, rows, leads] = await Promise.all([api('/customers/status'), api('/customers/enquiries' + qs), api('/customers/leads')]);
       $('custLeads').innerHTML = leads.length ? `<div class="cust-leads"><h3>Possible new enquiries from email (${leads.length})</h3>
-        <p class="hint">From senders who aren't a known customer or supplier. Add each real enquiry, dismiss the rest.</p>` +
+        <p class="hint">Review website submissions and first emails. Add each real enquiry, dismiss the rest.</p>` +
         leads.map(l => `<div class="cust-msg"><strong>${esc(l.from_name || l.from_address)}</strong> &lt;${esc(l.from_address)}&gt; · ${esc(l.received_at)}
-          <div><strong>${esc(l.subject)}</strong></div><div class="hint" style="white-space:pre-wrap">${esc((l.excerpt || '').slice(0, 500))}</div>
+          <div><strong>${esc(l.subject)}</strong></div>
+          ${l.form_fields && Object.keys(l.form_fields).length ? `<div>${['phone', 'location', 'budget', 'requirement'].map(k => l.form_fields[k] ? `<div><strong>${esc(k)}:</strong> ${esc(l.form_fields[k])}</div>` : '').join('')}<div>${esc((l.form_fields.categories || []).join(', '))}</div>${!l.from_address ? '<strong>Missing valid customer email: review original submission</strong>' : ''}</div>` : ''}<div class="hint" style="white-space:pre-wrap">${esc((l.excerpt || '').slice(0, 500))}</div>
           <button class="btn btn-sm btn-primary" data-lead="convert" data-id="${Number(l.id)}">Add as customer enquiry</button>
           <button class="btn btn-sm btn-ghost" data-lead="dismiss" data-id="${Number(l.id)}">Not an enquiry</button></div>`).join('') + '</div>' : '';
       $('custReadiness').textContent = `${status.ready ? 'Email follow-ups ready' : 'Email sending unavailable'} · customer emails left in rolling 24h: ${status.remaining_cap}` +
