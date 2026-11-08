@@ -161,6 +161,13 @@ itself never runs any of this Python code. Every request needs:
 Authorization: Bearer <API_ACCESS_TOKEN>
 ```
 
+Production API: `https://supplierintel-production.up.railway.app`.
+The direct form webhook below uses its own Netlify JWS authentication instead of
+Authorization. Configure `NETLIFY_FORM_WEBHOOK_SECRET` (mandatory) and optionally
+`NETLIFY_FORM_NAMES` (comma-separated; default `sourcing-brief`) on Railway after merge.
+See [form intake setup](docs/FORM_EMAIL_INTAKE.md#post-merge-setup-saiclaude-applies-not-performed-by-this-pr)
+for the exact outgoing hook body and rollout steps.
+
 Core endpoints:
 
 | Method | Path | Purpose |
@@ -178,6 +185,7 @@ Core endpoints:
 | GET | `/pipeline/jobs/{id}` | Poll job status (`queued` -> `running` -> `completed`/`failed`) — shared by every job type above |
 | GET | `/export/csv` | Download results as CSV |
 | GET | `/export/excel` | Download results as `.xlsx`, with contact/address enrichment columns CSV omits |
+| POST | `/customers/form-webhook` | Public Netlify outgoing submission intake; HS256 JWS required, no API bearer token; review cards or blank-only existing-enquiry updates |
 | GET | `/health` | No auth — for uptime checks |
 | POST | `/suppliers/{id}/public-pass` | Issue (or, with `regenerate: true`, reissue) a supplier's public "Verified" pass token |
 | GET | `/suppliers/{id}/public-pass` | Current pass status for one supplier — token, share URL, created/revoked timestamps |

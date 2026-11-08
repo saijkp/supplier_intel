@@ -84,6 +84,18 @@ class CustomerRepository:
                 "SELECT COUNT(*) FROM customer_messages WHERE channel='email' AND "
                 "(sent_at >= datetime('now','-24 hours') OR status='sending')").fetchone()[0]
 
+    def form_seen(self, external_id, fingerprint, other_transport):
+        with connection_scope(self.db_path) as conn:
+            return bool(conn.execute(
+                "SELECT 1 FROM customer_form_receipts WHERE external_id=? OR "
+                "(external_id LIKE ? AND fingerprint=?) LIMIT 1",
+                (external_id, other_transport, fingerprint)).fetchone())
+
+    def remember_form(self, external_id, fingerprint):
+        with connection_scope(self.db_path) as conn:
+            conn.execute("INSERT OR IGNORE INTO customer_form_receipts VALUES (?, ?)",
+                         (external_id, fingerprint))
+
     def is_supplier_address(self, email):
         """True when the address belongs to a supplier we hold or have sent an RFQ to.
         Domain matching is skipped for free-mail domains (many customers use gmail)."""

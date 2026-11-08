@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 40
+SCHEMA_VERSION = 41
 
 
 # ═══════════════════════════════════════════════════════════
@@ -901,6 +901,7 @@ CREATE INDEX IF NOT EXISTS idx_customer_messages_status ON customer_messages(sta
 # Inbound email from senders who are not a known customer or supplier: possible new
 # enquiries a human adds or dismisses, so a new customer email is never silently missed.
 CUSTOMER_LEADS_SQL = """
+CREATE TABLE IF NOT EXISTS customer_form_receipts (external_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS customer_inbox_leads (
  id INTEGER PRIMARY KEY, external_id TEXT UNIQUE NOT NULL, from_address TEXT NOT NULL, from_name TEXT,
  subject TEXT, excerpt TEXT, form_fields TEXT NOT NULL DEFAULT '{}', full_text TEXT, received_at TEXT, status TEXT NOT NULL DEFAULT 'new', enquiry_id INTEGER,
@@ -947,6 +948,10 @@ CASE lower(trim(status))
 """
 
 MIGRATIONS: dict[int, dict] = {
+    41: {
+        "description": "Remember form delivery IDs including cross-transport duplicates",
+        "statements": ["CREATE TABLE IF NOT EXISTS customer_form_receipts (external_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)"],
+    },
     40: {
         "description": "Grounded website form details and full inbound text on review cards",
         "columns": [('customer_inbox_leads', 'form_fields', "TEXT NOT NULL DEFAULT '{}'"),
