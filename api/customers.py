@@ -184,6 +184,15 @@ def convert_lead(lead_id: int, body: LeadConvert = LeadConvert(),
     return _call(service.convert_lead, lead_id, name=body.name, title=body.title)
 
 
+class LeadReply(BaseModel):
+    body: str = Field(min_length=1, max_length=20000)
+
+
+@router.post('/leads/{lead_id}/reply')
+def draft_lead_reply(lead_id: int, body: LeadReply, service: CustomerService = Depends(get_customer_service)):
+    return _call(service.draft_lead_reply, lead_id, body.body)
+
+
 @router.post('/leads/{lead_id}/dismiss')
 def dismiss_lead(lead_id: int, service: CustomerService = Depends(get_customer_service)):
     return _call(service.dismiss_lead, lead_id)

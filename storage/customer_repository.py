@@ -2,6 +2,7 @@
 import json
 
 from storage.database import connection_scope
+from config import settings as cfg
 
 TABLES = {'customers', 'customer_enquiries', 'customer_activities', 'customer_messages', 'customer_inbox_leads', 'customer_quotes'}
 JSON_FIELDS = {'rfq_campaign_ids', 'qualification', 'form_fields'}
@@ -65,18 +66,32 @@ class CustomerRepository:
             return conn.execute(f"UPDATE customer_messages SET {','.join(sets)} WHERE id=? AND status=?",
                                 (to_status, *values.values(), message_id, from_status)).rowcount == 1
 
-    def claim_send(self, message_id, cap):
+    def claim_send(self, message_id, cap, mailbox=None):
         """approved -> sending inside one write transaction, honouring the rolling 24h cap."""
         with connection_scope(self.db_path) as conn:
             conn.execute('BEGIN IMMEDIATE')
             count = conn.execute(
                 "SELECT COUNT(*) FROM customer_messages WHERE channel='email' AND "
-                "(sent_at >= datetime('now','-24 hours') OR status='sending')").fetchone()[0]
-            if count >= cap:
+                "(sent_at >= datetime('now','-24 hours') OR status='sending') AND coalesce(mailbox,?)=?", (cfg.RFQ_FROM_ADDRESS, mailbox)).fetchone()[0]
+            if cap is not None and count >= cap:
                 return False
             return conn.execute(
-                "UPDATE customer_messages SET status='sending' WHERE id=? AND status='approved' AND channel='email'",
-                (message_id,)).rowcount == 1
+                "UPDATE customer_messages SET status='sending',mailbox=? WHERE id=? AND status='approved' AND channel='email'",
+                (mailbox, message_id)).rowcount == 1
+
+    def check_mailbox_ledger(self, message, mailbox, sent):
+        from datetime import datetime, timezone
+        from customers.mailboxes import UK
+        start = datetime.now(UK).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        rows = self.rows('customer_messages', "channel='email' AND coalesce(mailbox,?)=? AND ((coalesce(sent_at,created_at)>=? AND status IN ('sent','failed')) OR status='sending')", (cfg.RFQ_FROM_ADDRESS, mailbox, start))
+        visible = {str(m.get('messageId', '')) for m in sent}
+        unseen = [r for r in rows if (r.get('provider_message_id') or '').removeprefix('zoho:') not in visible]
+        from customers.mailboxes import sent_time
+        today_count = sum(sent_time(m).astimezone(UK).date() == datetime.now(UK).date() for m in sent)
+        if today_count + len(unseen) >= 30:
+            raise ValueError('Daily cap of 30 reached for this mailbox (UK calendar day)')
+        if any(r['recipient'].lower() == message['recipient'].lower() and r['subject'] == message['subject'] for r in rows):
+            raise ValueError('Duplicate refused: same recipient and subject already sent today')
 
     def daily_count(self):
         with connection_scope(self.db_path) as conn:

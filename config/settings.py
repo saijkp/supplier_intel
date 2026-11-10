@@ -943,3 +943,11 @@ CUSTOMER_FORM_BODY_MARKER = os.getenv("CUSTOMER_FORM_BODY_MARKER") or 'Form subm
 NETLIFY_FORM_WEBHOOK_SECRET = os.getenv("NETLIFY_FORM_WEBHOOK_SECRET") or ""
 NETLIFY_FORM_NAMES = tuple(x.strip() for x in
                          (os.getenv("NETLIFY_FORM_NAMES") or "sourcing-brief").split(",") if x.strip())
+
+# Optional second Zoho account. No connection or validation at startup.
+CUSTOMER_ZOHO_REGION = os.getenv('CUSTOMER_ZOHO_REGION') or 'eu'
+CUSTOMER_ZOHO_ADDRESS = os.getenv('CUSTOMER_ZOHO_ADDRESS') or 'sai@ikeng.co.uk'
+CUSTOMER_ZOHO_CLIENT_ID = os.getenv('CUSTOMER_ZOHO_CLIENT_ID') or ''
+CUSTOMER_ZOHO_CLIENT_SECRET = os.getenv('CUSTOMER_ZOHO_CLIENT_SECRET') or ''
+CUSTOMER_ZOHO_REFRESH_TOKEN = os.getenv('CUSTOMER_ZOHO_REFRESH_TOKEN') or ''
+CUSTOMER_ZOHO_ACCOUNT_ID = os.getenv('CUSTOMER_ZOHO_ACCOUNT_ID') or ''

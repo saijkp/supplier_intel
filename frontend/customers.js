@@ -37,10 +37,12 @@
         <p class="hint">Review website submissions and first emails. Add each real enquiry, dismiss the rest.</p>` +
         leads.map(l => `<div class="cust-msg"><strong>${esc(l.from_name || l.from_address)}</strong> &lt;${esc(l.from_address)}&gt; · ${esc(l.received_at)}
           <div><strong>${esc(l.subject)}</strong></div>
+          <div class="hint">Mailbox: ${esc(l.mailbox || 'sai@ikeng.online')} | ${l.reply_checked_at ? (l.already_replied ? 'Already replied' : 'No later reply found') : 'Reply status not checked'}</div>
           ${l.form_fields && Object.keys(l.form_fields).length ? `<div>${['phone', 'location', 'budget', 'requirement'].map(k => l.form_fields[k] ? `<div><strong>${esc(k)}:</strong> ${esc(l.form_fields[k])}</div>` : '').join('')}<div>${esc((l.form_fields.categories || []).join(', '))}</div>${!l.from_address ? '<strong>Missing valid customer email: review original submission</strong>' : ''}</div>` : ''}<div class="hint" style="white-space:pre-wrap">${esc((l.excerpt || '').slice(0, 500))}</div>
+          <button class="btn btn-sm" data-lead="reply" data-id="${Number(l.id)}">Draft reply</button>
           <button class="btn btn-sm btn-primary" data-lead="convert" data-id="${Number(l.id)}">Add as customer enquiry</button>
           <button class="btn btn-sm btn-ghost" data-lead="dismiss" data-id="${Number(l.id)}">Not an enquiry</button></div>`).join('') + '</div>' : '';
-      $('custReadiness').textContent = `${status.ready ? 'Email follow-ups ready' : 'Email sending unavailable'} · customer emails left in rolling 24h: ${status.remaining_cap}` +
+      $('custReadiness').textContent = `${status.send_enabled ? 'Email sending enabled for configured mailboxes' : 'Email sending disabled'} · 30 emails per mailbox per UK day; Sent checked before each send` +
         (status.missing.length ? ' · Missing: ' + status.missing.join(', ') : '');
       const pipeline = await api('/customers/pipeline');
       $('custPipeline').innerHTML = '<div class="cust-grid">' + Object.entries(pipeline.stages).filter(([, p]) => p.count).map(([stage, p]) => `<div class="cust-msg"><strong>${esc(stage)}</strong>: ${esc(p.count)}<br>GBP ${esc(p.estimated_value)}</div>`).join('') + '</div>';
@@ -148,13 +150,19 @@
     if (b.id === 'custRefresh') { loadCustomers(); if (current) showEnquiry(current.id); return; }
     if (b.id === 'custNewToggle') { $('custCreate').classList.toggle('hidden'); return; }
     if (b.id === 'custPoll') {
-      run(async () => { const r = await post('/customers/poll'); notice(`Inbox checked: ${r.logged} customer replies logged, ${r.possible_new_enquiries} possible new enquiries, ${r.ignored} supplier/automated emails ignored.`); await loadCustomers(); if (current) await showEnquiry(current.id); });
+      run(async () => { const r = await post('/customers/poll'); notice(`Inbox checked: ${r.logged} customer replies logged, ${r.possible_new_enquiries} possible new enquiries, ${r.ignored} supplier/automated emails ignored.${r.mailbox_errors?.length ? ' Could not check: '+r.mailbox_errors.join(', ') : ''}`); await loadCustomers(); if (current) await showEnquiry(current.id); });
       return;
     }
     if (b.dataset.lead) {
       const id = Number(b.dataset.id);
       run(async () => {
         if (b.dataset.lead === 'dismiss') { await post(`/customers/leads/${id}/dismiss`); notice('Dismissed.'); await loadCustomers(); return; }
+        if (b.dataset.lead === 'reply') {
+          const body = prompt('Write your reply. This creates a draft to review and approve; it does not send.');
+          if (!body) return;
+          const m = await post(`/customers/leads/${id}/reply`, {body});
+          await loadCustomers(); await showEnquiry(m.enquiry_id); notice('Reply drafted. Review it below, then approve and send.'); return;
+        }
         const e = await post(`/customers/leads/${id}/convert`, {});
         await loadCustomers(); await showEnquiry(e.id); notice('Added ' + e.reference + '. Give it a clear title and next action.');
       });

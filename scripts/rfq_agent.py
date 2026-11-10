@@ -5,7 +5,7 @@ the OpenAI API (RFQ_QUOTE_PARSER=agent). See docs/AGENT_QUOTE_READING.md.
     python scripts/rfq_agent.py submit REPLY_ID FILE     # submit candidate quotes from a JSON file
     python scripts/rfq_agent.py status                   # /rfq/status
 
-The API token comes from SUPPLIER_INTEL_API_TOKEN, else from the linked Railway
+The API token comes from SUPPLIER_INTEL_API_TOKEN or API_ACCESS_TOKEN, else from the linked Railway
 service's API_ACCESS_TOKEN. It is never printed. The base URL comes from
 SUPPLIER_INTEL_API_URL (default: production).
 """
@@ -22,7 +22,7 @@ BASE = (os.getenv("SUPPLIER_INTEL_API_URL") or "https://supplierintel-production
 
 
 def token():
-    value = os.getenv("SUPPLIER_INTEL_API_TOKEN")
+    value = (os.getenv("SUPPLIER_INTEL_API_TOKEN") or os.getenv("API_ACCESS_TOKEN"))
     if value:
         return value
     railway = shutil.which("railway")

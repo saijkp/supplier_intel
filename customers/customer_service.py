@@ -2,7 +2,7 @@
 
 Follow-ups follow the same safety model as supplier RFQs: drafted, edited and approved
 by a human, then sent through the shared mailbox (Zoho or SMTP) under RFQ_SEND_ENABLED,
-with an atomic approved->sending claim and a rolling 24h cap. A customer reply (email
+with an atomic approved->sending claim and a Sent-based cap of 30 per mailbox per UK day. A customer reply (email
 picked up by poll_inbox, or logged by hand) cancels every pending follow-up for that
 enquiry. Drafts never include internal fields (next_action, blocker, summary): those are
 working notes, not customer-facing text.
@@ -21,6 +21,7 @@ from urllib.parse import quote
 
 from config import settings as cfg
 from storage.customer_repository import CustomerRepository, FREE_MAIL
+from customers.mailboxes import Mailbox, customer_mailbox, replied, SEND_LOCK
 from customers.form_parser import parse_form, form_qualification, parse_netlify_form, form_fingerprint
 
 _FORM_INTAKE_LOCK = Lock()
@@ -76,9 +77,10 @@ def _clean(values, allowed):
 
 class CustomerService:
 
-    def __init__(self, repo=None, sender=None, inbox=None, readiness=None):
+    def __init__(self, repo=None, sender=None, inbox=None, readiness=None, mailboxes=None):
         self.repo = repo if repo is not None else CustomerRepository()
         self._sender, self._inbox, self._readiness = sender, inbox, readiness
+        self._mailboxes = mailboxes
 
     # -- mail plumbing (lazy: nothing is constructed until a send or poll) ------
     def _mail(self):
@@ -94,6 +96,24 @@ class CustomerService:
                 self._inbox = self._inbox or ImapInbox()
         return self._sender, self._inbox
 
+    def mailboxes(self):
+        if self._mailboxes is not None:
+            return self._mailboxes
+        sender, inbox = self._mail()
+        primary = (cfg.RFQ_FROM_ADDRESS or '').strip().lower()
+        boxes = {primary: Mailbox(primary, sender, inbox)}
+        second = customer_mailbox()
+        if second:
+            boxes[second.address] = second
+        return boxes
+
+    def _message_mailbox(self, message):
+        address = message.get('mailbox') or self.repo.get('customer_enquiries', message['enquiry_id']).get('mailbox') or cfg.RFQ_FROM_ADDRESS
+        box = self.mailboxes().get(address.strip().lower())
+        if box is None:
+            raise ValueError('Original mailbox is not configured; sending is blocked')
+        return box
+
     def status(self):
         if self._readiness is not None:
             missing = self._readiness()
@@ -103,7 +123,7 @@ class CustomerService:
             missing = RFQService(repo=RFQRepository(self.repo.db_path)).status()['missing']
         return {'send_enabled': cfg.RFQ_SEND_ENABLED, 'ready': cfg.RFQ_SEND_ENABLED and not missing,
                 'missing': missing, 'remaining_cap': max(0, cfg.CUSTOMER_DAILY_SEND_LIMIT - self.repo.daily_count()),
-                'statuses': SUGGESTED_STATUSES}
+                'mailbox_daily_cap': 30, 'statuses': SUGGESTED_STATUSES}
 
     # -- customers ------------------------------------------------------------
     def create_customer(self, **values):
@@ -488,7 +508,7 @@ class CustomerService:
         if channel == 'email' and ref not in subject:
             subject += f' [{ref}]'
         action_url = 'https://wa.me/' + recipient + '?text=' + quote(body) if channel == 'whatsapp' else None
-        message_id = self.repo.insert('customer_messages', enquiry_id=enquiry_id, channel=channel, recipient=recipient,
+        message_id = self.repo.insert('customer_messages', enquiry_id=enquiry_id, mailbox=enquiry.get('mailbox') or cfg.RFQ_FROM_ADDRESS, channel=channel, recipient=recipient,
                                       subject=subject if channel == 'email' else None, body=body, action_url=action_url)
         return self.repo.get('customer_messages', message_id)
 
@@ -540,13 +560,19 @@ class CustomerService:
         return self.repo.get('customer_messages', message_id)
 
     def send(self, message_id):
+        with SEND_LOCK:
+            return self._send(message_id)
+
+    def _send(self, message_id):
         """Send one approved email. The customer must not have replied since it was drafted."""
         message = self.repo.get('customer_messages', message_id)
         if message['channel'] != 'email':
             raise ValueError('WhatsApp messages are sent by hand, then marked sent')
         if message['status'] != 'approved':
             raise ValueError('Only approved messages can be sent')
-        ready = self.status()
+        box = self._message_mailbox(message)
+        # The second account is independent of the primary account's readiness.
+        ready = self.status() if box.address == cfg.RFQ_FROM_ADDRESS.strip().lower() else {'ready': cfg.RFQ_SEND_ENABLED, 'missing': []}
         if not ready['ready']:
             raise ValueError('Sending is not ready: ' + ('RFQ_SEND_ENABLED is false' if not cfg.RFQ_SEND_ENABLED
                                                          else 'missing ' + ', '.join(ready['missing'])))
@@ -557,9 +583,21 @@ class CustomerService:
         if not EMAIL_RE.fullmatch(message['recipient'] or ''):
             self.repo.transition(message_id, 'approved', 'skipped', status_reason='Invalid recipient')
             raise ValueError('Recipient is not a single valid email address')
-        if not self.repo.claim_send(message_id, cfg.CUSTOMER_DAILY_SEND_LIMIT):
+        # Production Zoho (and injected mailbox registries) always check real Sent.
+        checked = self._mailboxes is not None or cfg.RFQ_MAIL_TRANSPORT == 'zoho' or box.address == cfg.CUSTOMER_ZOHO_ADDRESS.lower()
+        if checked:
+            try:
+                sent = box.sent(2)
+                box.check_send(message, sent=sent)
+            except ValueError:
+                raise
+            except Exception:
+                raise ValueError('Cannot verify Sent folder; sending is blocked') from None
+            # Also cover accepted sends not yet visible in the provider's Sent index.
+            self.repo.check_mailbox_ledger(message, box.address, sent)
+        if not self.repo.claim_send(message_id, None if checked else cfg.CUSTOMER_DAILY_SEND_LIMIT, mailbox=box.address):
             raise ValueError('Daily customer send cap reached, or the message is already being sent')
-        sender, _ = self._mail()
+        sender = box.sender
         try:
             provider_id = sender.send({'recipient': message['recipient'], 'subject': message['subject'],
                                        'body': message['body']})
@@ -574,6 +612,21 @@ class CustomerService:
 
     # -- inbox ----------------------------------------------------------------
     def poll_inbox(self, since_days=14, limit=200):
+        total = {'logged': 0, 'possible_new_enquiries': 0, 'ignored': 0, 'duplicates': 0}
+        errors = []
+        for address, box in self.mailboxes().items():
+            try:
+                counts = self._poll_mailbox(box, since_days, limit)
+                for key in total:
+                    total[key] += counts[key]
+            except Exception:
+                # Never expose provider errors (may contain credentials); continue other account.
+                errors.append(address)
+        if errors:
+            total['mailbox_errors'] = errors
+        return total
+
+    def _poll_mailbox(self, box, since_days=14, limit=200):
         """Read recent inbound mail once and sort every message:
         - customer email (IKE- reference, or sender is a customer's address) -> logged on the
           enquiry; a reply stops pending follow-ups and lifts 'not responding';
@@ -594,12 +647,24 @@ class CustomerService:
         known_customer_emails = {(c.get('email') or '').strip().lower() for c in customers.values()} - {''}
         # A sender dismissed once (forwarder, partner, own other mailbox) is not listed again.
         dismissed = {l['from_address'] for l in self.repo.rows('customer_inbox_leads', "status='dismissed'")}
-        pending = {l['from_address'] for l in self.repo.rows('customer_inbox_leads', "status='new'")}
+        pending = {l['from_address'] for l in self.repo.rows('customer_inbox_leads', "status='new' AND coalesce(mailbox,?)=?", (cfg.RFQ_FROM_ADDRESS, box.address))}
         own =(cfg.RFQ_FROM_ADDRESS or '').strip().lower()
-        _, inbox = self._mail()
+        inbox = box.inbox
+        try:
+            sent = box.sent(since_days)
+            checked_at = now()
+        except Exception:
+            sent, checked_at = [], None
+        # Refresh existing cards, including previously answered supplier emails.
+        for lead in self.repo.rows('customer_inbox_leads', "status='new' AND coalesce(mailbox,?)=?", (cfg.RFQ_FROM_ADDRESS, box.address)):
+            self.repo.update('customer_inbox_leads', lead['id'], mailbox=box.address,
+                already_replied=int(bool(lead['already_replied']) or replied(sent, lead['from_address'], lead['subject'], lead['received_at'] or now(), lead.get('thread_id'))) if checked_at else lead['already_replied'],
+                reply_checked_at=checked_at)
         for raw in inbox.fetch_recent(since_days, limit):
             mail = BytesParser(policy=policy.default).parsebytes(raw)
-            external = 'cust:' + (str(mail.get('Message-ID') or '').strip() or hashlib.sha256(raw).hexdigest())
+            # Transport metadata must not change legacy hash dedup for ID-less MIME.
+            original = re.sub(br'^X-SupplierIntel-Thread:[^\r\n]*\r?\n', b'', raw, count=1, flags=re.I)
+            external = 'cust:' + (str(mail.get('Message-ID') or '').strip() or hashlib.sha256(original).hexdigest())
             if self.repo.rows('customer_activities', 'external_id=?', (external,)) or \
                     self.repo.rows('customer_inbox_leads', 'external_id=?', (external,)):
                 result['duplicates'] += 1
@@ -645,9 +710,12 @@ class CustomerService:
                     external = 'cust:netlify:' + submission.group(1)
                 outcome = self.store_form_submission(parse_form(text), text, external,
                                                      subject, _mail_time(mail))
+                leads = self.repo.rows('customer_inbox_leads', 'external_id=?', (external,))
+                if leads:
+                    self.repo.update('customer_inbox_leads', leads[0]['id'], mailbox=box.address)
                 result[outcome] += 1
                 continue
-            if auto or sender == own:
+            if auto or sender in {own, box.address, cfg.CUSTOMER_ZOHO_ADDRESS.lower()}:
                 result['ignored'] += 1
                 continue
             excerpt = strip_history(text).strip()[:1500]
@@ -658,6 +726,10 @@ class CustomerService:
             if enquiry is not None:
                 self.log(enquiry['id'], 'email_in', f"Email from {sender}: {subject}\n{excerpt}".strip(),
                          occurred_at=now(), external_id=external)
+                self.repo.update('customer_enquiries', enquiry['id'], mailbox=box.address)
+                activities = self.repo.rows('customer_activities', 'external_id=?', (external,))
+                if activities:
+                    self.repo.update('customer_activities', activities[0]['id'], mailbox=box.address)
                 result['logged'] += 1
                 continue
             bulk = mail.get('List-Unsubscribe') or mail.get('List-Id') or \
@@ -671,7 +743,9 @@ class CustomerService:
                 result['ignored'] += 1
                 continue
             pending.add(sender)
-            self.repo.insert('customer_inbox_leads', external_id=external, from_address=sender,
+            self.repo.insert('customer_inbox_leads', external_id=external, mailbox=box.address,
+                             already_replied=int(replied(sent, sender, subject, _mail_time(mail), str(mail.get('X-SupplierIntel-Thread') or ''))) if checked_at else 0,
+                             reply_checked_at=checked_at, thread_id=str(mail.get('X-SupplierIntel-Thread') or ''), from_address=sender,
                              from_name=(name or '').strip() or None, subject=subject[:300], excerpt=excerpt,
                              received_at=_mail_time(mail), full_text=text)
             result['possible_new_enquiries'] += 1
@@ -731,6 +805,20 @@ class CustomerService:
     def list_leads(self, status='new'):
         return self.repo.rows('customer_inbox_leads', 'status=?', (status,), order='id DESC')
 
+    def draft_lead_reply(self, lead_id, body):
+        if not body.strip():
+            raise ValueError('Reply body is required')
+        lead = self.repo.get('customer_inbox_leads', lead_id)
+        enquiry = self.convert_lead(lead_id) if lead['status'] == 'new' else self.get_enquiry(lead['enquiry_id'])
+        subject = lead.get('subject') or 'Your enquiry'
+        if not subject.lower().startswith('re:'):
+            subject = 'Re: ' + subject
+        message = self.draft_followup(enquiry['id'], body=body, subject=subject)
+        # Preserve the reply subject for provider exact-duplicate checks.
+        self.repo.update('customer_messages', message['id'], subject=subject,
+                         mailbox=lead.get('mailbox') or cfg.RFQ_FROM_ADDRESS)
+        return self.repo.get('customer_messages', message['id'])
+
     def dismiss_lead(self, lead_id):
         lead = self.repo.get('customer_inbox_leads', lead_id)
         if lead['status'] != 'new':
@@ -764,6 +852,10 @@ class CustomerService:
             self._fill_form(enquiry, fields)
         self.log(enquiry['id'], 'email_in', lead.get('full_text') or lead['excerpt'] or '',
                  occurred_at=lead['received_at'], external_id=lead['external_id'])
+        activities = self.repo.rows('customer_activities', 'external_id=?', (lead['external_id'],))
+        if activities:
+            self.repo.update('customer_activities', activities[0]['id'], mailbox=lead.get('mailbox') or cfg.RFQ_FROM_ADDRESS)
+        self.repo.update('customer_enquiries', enquiry['id'], mailbox=lead.get('mailbox') or cfg.RFQ_FROM_ADDRESS)
         self.repo.update('customer_inbox_leads', lead_id, status='added', enquiry_id=enquiry['id'])
         return self.get_enquiry(enquiry['id'])
 

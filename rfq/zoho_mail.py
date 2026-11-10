@@ -19,13 +19,13 @@ REGIONS={'com':('mail.zoho.com','accounts.zoho.com'),
          'jp':('mail.zoho.jp','accounts.zoho.jp')}
 
 
-def missing():
-    return [name for name in ('RFQ_ZOHO_REGION','RFQ_ZOHO_CLIENT_ID','RFQ_ZOHO_CLIENT_SECRET',
-                              'RFQ_ZOHO_REFRESH_TOKEN','RFQ_ZOHO_ACCOUNT_ID') if not getattr(cfg,name).strip()]
+def missing(prefix='RFQ_ZOHO_'):
+    return [prefix + key for key in ('REGION','CLIENT_ID','CLIENT_SECRET','REFRESH_TOKEN','ACCOUNT_ID') if not getattr(cfg, prefix + key, '').strip()]
 
 
 class ZohoClient:
-    def __init__(self,client=None):
+    def __init__(self,client=None, prefix='RFQ_ZOHO_'):
+        self.prefix = prefix
         self.client=client
         self.token=None;self.expires=0
 
@@ -45,26 +45,30 @@ class ZohoClient:
             raise RuntimeError('Zoho Mail connection failed; check OAuth authorization and account region') from None
 
     def request(self,method,path,**kwargs):
-        if missing() or cfg.RFQ_ZOHO_REGION not in REGIONS or not cfg.RFQ_ZOHO_ACCOUNT_ID.isdigit():
+        values = {k: getattr(cfg, self.prefix + k, '') for k in ('REGION','CLIENT_ID','CLIENT_SECRET','REFRESH_TOKEN','ACCOUNT_ID')}
+        if missing(self.prefix) or values['REGION'] not in REGIONS or not values['ACCOUNT_ID'].isdigit():
             raise RuntimeError('Zoho Mail server configuration is incomplete')
-        mail,accounts=REGIONS[cfg.RFQ_ZOHO_REGION]
+        mail,accounts=REGIONS[values['REGION']]
         if not self.token or self.expires<=time.monotonic():
             result=self._request('POST','https://'+accounts+'/oauth/v2/token',data={
-                'grant_type':'refresh_token','refresh_token':cfg.RFQ_ZOHO_REFRESH_TOKEN,
-                'client_id':cfg.RFQ_ZOHO_CLIENT_ID,'client_secret':cfg.RFQ_ZOHO_CLIENT_SECRET})
+                'grant_type':'refresh_token','refresh_token':values['REFRESH_TOKEN'],
+                'client_id':values['CLIENT_ID'],'client_secret':values['CLIENT_SECRET']})
             if not result.get('access_token'): raise RuntimeError('Zoho Mail authorization failed')
             self.token=result['access_token'];self.expires=time.monotonic()+max(0,int(result.get('expires_in',3600))-60)
-        return self._request(method,'https://'+mail+'/api/accounts/'+cfg.RFQ_ZOHO_ACCOUNT_ID+path,
+        return self._request(method,'https://'+mail+'/api/accounts/'+values['ACCOUNT_ID']+path,
                              headers={'Authorization':'Zoho-oauthtoken '+self.token},**kwargs).get('data')
 
 
+
 class ZohoSender:
-    def __init__(self,client=None): self.client=client if client is not None else ZohoClient()
+    def __init__(self,client=None, address=None):
+        self.client=client if client is not None else ZohoClient()
+        self.address=address
     def check(self):
         self.client.request('GET','')
         return True
     def send(self,message):
-        data=self.client.request('POST','/messages',json={'fromAddress':header(cfg.RFQ_FROM_ADDRESS),
+        data=self.client.request('POST','/messages',json={'fromAddress':header(self.address or cfg.RFQ_FROM_ADDRESS),
               'toAddress':header(message['recipient']),'subject':header(message['subject']),
               'content':message['body'],'mailFormat':'plaintext'})
         # Missing confirmation is ambiguous: existing send ledger marks failed,
@@ -79,6 +83,32 @@ class ZohoInbox:
     def check(self):
         self.client.request('GET','/messages/view',params={'limit':1})
         return True
+    def fetch_sent(self, since_days=14):
+        """Paginate Sent; an incomplete or malformed count blocks sending.
+
+        Contract: https://www.zoho.com/mail/help/api/get-emails-list.html
+        """
+        from customers.mailboxes import sent_time
+        folders = self.client.request('GET', '/folders')
+        sent = next((f for f in folders or [] if f.get('folderType') == 'Sent'), None)
+        if not sent or not str(sent.get('folderId', '')).isdigit():
+            raise ValueError('Cannot locate Sent folder; sending is blocked')
+        cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+        result = []
+        for start in range(1, 20001, 200):
+            page = self.client.request('GET', '/messages/view', params={
+                'folderId': sent['folderId'], 'start': start, 'limit': 200,
+                'sortBy': 'date', 'sortorder': 'false', 'status': 'all',
+                'includeto': 'true', 'includesent': 'true', 'threadedMails': 'false'})
+            if not isinstance(page, list):
+                raise ValueError('Cannot read Sent folder; sending is blocked')
+            for item in page:
+                if sent_time(item) >= cutoff:
+                    result.append(item)
+            if len(page) < 200 or (page and all(sent_time(m) < cutoff for m in page)):
+                return result
+        raise ValueError('Sent folder scan incomplete; sending is blocked')
+
     def fetch_recent(self,since_days=14,limit=50):
         # Standalone legacy poll remains available; filtering is tighter when
         # the linked workflow provides its exact campaign recipient list.
@@ -103,5 +133,6 @@ class ZohoInbox:
             if not isinstance(content,str) or not content: continue
             if len(content)>12000000:
                 raise RuntimeError('Zoho message exceeds the supported import size; review it manually')
+            content = 'X-SupplierIntel-Thread: ' + str(item.get('threadId', '')).replace('\r','').replace('\n','') + '\r\n' + content
             result.append(content.encode('utf-8'))
         return result

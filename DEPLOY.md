@@ -280,3 +280,99 @@ the same sending enablement, buyer identity, MX, suppression and cap gates.
 Follow-ups remain drafts until separately approved. Opt-outs (`unsubscribe`,
 `退订`) and bounces suppress the recipient and bypass quote parsing.
 No automated account interactions are used for assisted channels.
+
+
+## Phone status and the optional second customer mailbox
+
+The production frontend remains `frontend/index.html` (Netlify, no build step).
+Railway stores the Status tab content; it remains available with the laptop off.
+Schema migrations 42 and 43 run idempotently on startup, on both new and existing
+SQLite databases. The Status endpoints use the existing fail-closed bearer token:
+
+- `GET /status/{doc_id}`: current Markdown, author and timestamp; 404 when absent.
+- `PUT /status/{doc_id}`: `content_md`, `updated_by`, `expected_updated_at` (explicit
+  null on first creation). A stale timestamp returns 409; UTF-8 content is bounded
+  to 200 KiB. Each successful save appends a full snapshot atomically.
+- `GET /status/{doc_id}/versions`: latest 20 timestamps and authors, newest first.
+  Full snapshots remain in SQLite for recovery; no deletion or pruning occurs.
+
+After deployment, Sai or Claude should seed the document once from PowerShell:
+
+```powershell
+python scripts/push_status.py "C:\Users\HP\OneDrive\IK ENG Status\IK ENG - Live status.md" --doc live --by Sai
+```
+
+The script uses `SUPPLIER_INTEL_API_URL` (production by default) and
+`SUPPLIER_INTEL_API_TOKEN` / `API_ACCESS_TOKEN`, or the linked Railway CLI token
+lookup, just like `si.py`. It reads the current version before PUT and refuses a
+concurrent edit. It never prints the token. The phone tab reads `live`, escapes
+all HTML, offers raw Markdown copying and keeps a conflicting edit in the
+textarea until the user chooses Reload or Cancel.
+
+The existing `RFQ_ZOHO_*` configuration and `RFQ_FROM_ADDRESS` still select
+`sai@ikeng.online`. The independent second account uses:
+
+| Variable | Value / purpose |
+|---|---|
+| `CUSTOMER_ZOHO_REGION` | `eu` (default), the account's Zoho data centre |
+| `CUSTOMER_ZOHO_ADDRESS` | `sai@ikeng.co.uk` (default) |
+| `CUSTOMER_ZOHO_ACCOUNT_ID` | Numeric ID verified against that Zoho account |
+| `CUSTOMER_ZOHO_CLIENT_ID` | Second account's OAuth Self Client ID |
+| `CUSTOMER_ZOHO_CLIENT_SECRET` | Second account's OAuth client secret |
+| `CUSTOMER_ZOHO_REFRESH_TOKEN` | Second account's refresh token |
+
+Missing/incomplete second-account credentials skip that mailbox without a
+startup error. A failed poll for one account does not prevent the other account
+from being read; `/customers/poll` reports `mailbox_errors` by address only.
+Both manual polling and the existing background worker use the same service.
+Inbound Message-ID / fallback hash deduplication is shared across accounts.
+Cards and customer activity retain mailbox attribution. Old rows with no mailbox
+continue to mean the original `RFQ_FROM_ADDRESS` account.
+
+No connect helper was present in the tracked repository at implementation time;
+`scripts/zoho_connect.py` provides the interactive Self Client flow for both
+accounts. **Sai must run it himself; it has not been run as part of this change.**
+First run `railway login` and `railway link` in the checkout, selecting the correct
+production project/service/environment, then:
+
+```powershell
+python scripts/zoho_connect.py --mailbox customer --region eu
+```
+
+Follow the numbered instructions in the terminal. Sign into the **ikeng.co.uk**
+Zoho account, create/open a Self Client in the EU API Console and generate a
+fresh code with these scopes:
+
+```text
+ZohoMail.accounts.READ,ZohoMail.folders.READ,ZohoMail.messages.READ,ZohoMail.messages.CREATE
+```
+
+The helper hides credential input, verifies the primary email/account ID, and
+asks for `SAVE` before writing only the selected variable namespace. Values go
+to the Railway CLI through stdin, never command arguments or logs. Writes use
+`--skip-deploys`; redeploy once after all variables are saved. It sends no email.
+If the existing online account's grant lacks `ZohoMail.folders.READ`, run the
+same helper with `--mailbox rfq --region <its-current-region>` to reauthorize it;
+without Sent access its customer sends are blocked and reply status is unknown.
+
+Cards show the source mailbox and whether a later Sent message matches the
+thread ID, or recipient plus normalized reply subject. These flags refresh on
+each poll, including existing pending cards. A failed Sent check is shown as
+unknown rather than claiming there has been no reply. Incoming supplier/bulk
+filtering is unchanged; existing supplier cards still get their Sent check.
+
+`Draft reply` creates a customer/enquiry if necessary and a draft tied to the
+card's mailbox. The user must review, approve, then explicitly Send through the
+existing `/customers/messages/{id}/approve` and `/send` endpoints. Nothing sends
+from polling, draft creation, conversion, authorization or background work.
+An unavailable original account never falls back to another sender.
+
+Before each Zoho customer send, the application paginates that mailbox's Sent
+folder, counts all messages sent during the current Europe/London calendar day
+(including other tools), refuses at 30 and refuses an exact recipient + subject
+already in Sent today. Local accepted sends cover provider indexing delay; a
+process lock serializes check/claim/send, with the existing atomic claim and
+no automatic retry after ambiguous failures. Sent lookup failures block sends.
+This retains the application's documented single-instance limitation. Other
+tools can send concurrently after the check; no app can lock an external tool's
+mailbox send. The legacy SMTP transport retains its existing local ledger cap.

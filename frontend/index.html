@@ -70,7 +70,7 @@ a{color:var(--tier-stated)}
   font-size:22px;letter-spacing:.06em;text-transform:uppercase;
 }
 
-.nav{display:flex;gap:2px}
+.nav{display:flex;gap:2px;min-width:0;overflow-x:auto}
 .nav button{
   font-family:'Barlow Condensed',sans-serif;font-weight:600;
   font-size:15px;letter-spacing:.08em;text-transform:uppercase;
@@ -78,6 +78,15 @@ a{color:var(--tier-stated)}
 }
 .nav button:hover{color:#fff}
 .nav button[aria-current="page"]{color:#fff;border-bottom-color:var(--orange)}
+.nav button,.nav a{flex:none;white-space:nowrap}
+#view-status .btn{min-height:44px}
+@media(max-width:1000px){
+  .topbar-in{height:auto;flex-wrap:wrap;padding:10px 16px;gap:8px}
+  .brand{order:0;flex:1}
+  .conn{order:1;flex:none}
+  .nav{order:2;flex-basis:100%;max-width:100%;padding-bottom:2px}
+  .nav button,.nav a{min-height:44px}
+}
 
 .conn{
   display:flex;align-items:center;gap:8px;
@@ -646,6 +655,7 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
       <button data-view="audit">Audit</button>
       <button data-view="quotes">Quotes</button>
       <button data-view="customers">Customers</button>
+      <button data-view="status">Status</button>
     </nav>
     <div class="conn">
       <span class="dot" id="connDot"></span>
@@ -928,6 +938,24 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
   <div id="rfqCampaigns"></div><div id="rfqCampaign"></div><div id="rfqComparison"></div></div></div>
 </section>
 
+<section id="view-status" class="hidden">
+  <div class="panel" style="padding:18px;max-width:900px;margin:auto">
+    <h2>Live status</h2><p id="statusMeta"></p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
+      <button class="btn btn-primary" id="statusCopy" style="min-height:48px;font-size:17px" disabled>Copy for Claude</button>
+      <button class="btn" id="statusEdit" disabled>Edit</button>
+      <button class="btn" id="statusReload">Reload</button>
+    </div>
+    <p id="statusNotice" role="status" aria-live="polite"></p>
+    <article id="statusRead" style="line-height:1.7;overflow-wrap:anywhere"></article>
+    <div id="statusEditor" class="hidden">
+      <label for="statusAuthor">Your name</label><input id="statusAuthor" value="Sai" maxlength="120" style="font-size:16px;min-height:44px">
+      <label for="statusText">Markdown</label><textarea id="statusText" style="width:100%;min-height:55vh;font-size:16px;line-height:1.5;padding:12px;box-sizing:border-box"></textarea>
+      <button class="btn btn-primary" id="statusSave" style="min-height:48px">Save</button>
+      <button class="btn" id="statusCancel" style="min-height:48px">Cancel</button>
+    </div>
+  </div>
+</section>
 <section id="view-customers" class="hidden">
   <div class="panel"><div class="panel-head"><h2 class="panel-title">Customers &amp; enquiries</h2>
     <button class="btn btn-ghost" id="custRefresh">Refresh</button><button class="btn" id="custPoll">Check inbox for replies</button></div>
@@ -1075,6 +1103,63 @@ async function api(path, opts = {}) {
   return data;
 }
 
+// Tiny Markdown subset: escape before adding our own fixed markup. No raw HTML or URLs.
+function statusMarkdown(raw) {
+  const inline = t => esc(t).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  let list = false, out = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
+    if (bullet) { if (!list) out.push('<ul>'); list = true; out.push('<li>'+inline(bullet[1])+'</li>'); continue; }
+    if (list) { out.push('</ul>'); list = false; }
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) out.push('<h'+heading[1].length+'>'+inline(heading[2])+'</h'+heading[1].length+'>');
+    else if (line.trim()) out.push('<p>'+inline(line)+'</p>');
+  }
+  if (list) out.push('</ul>');
+  return out.join('');
+}
+let statusDoc = null, statusEditing = false;
+function statusEditMode(edit) {
+  statusEditing = edit;
+  $('statusEditor').classList.toggle('hidden', !edit);
+  $('statusRead').classList.toggle('hidden', edit);
+  $('statusEdit').disabled = edit || !statusDoc;
+}
+async function loadStatus(force = false) {
+  if (statusEditing && !force) return;
+  try {
+    const doc = await api('/status/live');
+    statusDoc = doc;
+    $('statusRead').innerHTML = statusMarkdown(doc.content_md);
+    $('statusMeta').textContent = 'Last updated '+new Date(doc.updated_at).toLocaleString()+' by '+doc.updated_by;
+    $('statusCopy').disabled = false;
+    $('statusText').value = doc.content_md;
+    $('statusNotice').textContent = '';
+    statusEditMode(false);
+  } catch (e) {
+    $('statusNotice').textContent = e.status === 404 ? 'No status document yet. Upload the first document after deployment.' : e.message;
+  }
+}
+$('statusEdit').onclick = () => { $('statusText').value = statusDoc.content_md; statusEditMode(true); };
+$('statusCancel').onclick = () => { statusEditMode(false); $('statusNotice').textContent = ''; };
+$('statusReload').onclick = () => { if (!statusEditing || confirm('Reload and discard your unsaved edit?')) loadStatus(true); };
+$('statusCopy').onclick = async () => {
+  try { await navigator.clipboard.writeText(statusDoc.content_md); $('statusNotice').textContent = 'Copied'; }
+  catch { $('statusNotice').textContent = 'Copy unavailable. Tap Edit, select the text, then copy.'; }
+};
+$('statusSave').onclick = async () => {
+  $('statusSave').disabled = true;
+  try {
+    const saved = await api('/status/live', {method:'PUT', body:JSON.stringify({content_md:$('statusText').value,updated_by:$('statusAuthor').value,expected_updated_at:statusDoc.updated_at})});
+    statusDoc = saved;
+    statusEditMode(false);
+    await loadStatus(true);
+    $('statusNotice').textContent = 'Saved';
+  } catch(e) {
+    $('statusNotice').textContent = e.status === 409 ? 'Someone else updated it. Your edit is still here; copy it if needed, then tap Reload.' : e.message;
+  } finally { $('statusSave').disabled = false; }
+};
+
 function alertBox(host, kind, title, body) {
   if (!kind) { host.innerHTML = ""; return; }
   host.innerHTML = `<div class="alert"><div class="alert-title">${esc(title)}</div><div>${body}</div></div>`;
@@ -1146,9 +1231,10 @@ $("nav").addEventListener("click", (e) => {
   const view = btn.dataset.view;
   document.querySelectorAll("#nav button").forEach(b =>
     b.setAttribute("aria-current", b === btn ? "page" : "false"));
-  ["find","search","bulk","jobs","compare","audit","quotes","customers"].forEach(v =>
+  ["find","search","bulk","jobs","compare","audit","quotes","customers","status"].forEach(v =>
     $("view-" + v).classList.toggle("hidden", v !== view));
   if (view === "customers" && window.loadCustomers) window.loadCustomers();
+  if (view === "status") loadStatus();
   if (view === "find") initFindView();
   if (view === "jobs") loadJobs();
   if (view === "compare") initCompareView();

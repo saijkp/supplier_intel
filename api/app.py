@@ -49,6 +49,8 @@ from api.auth import require_api_token
 from api.rfq import router as rfq_router
 from api.rfq_workflow import router as rfq_workflow_router
 from api.customers import router as customers_router
+from storage.status_repository import StatusRepository, StatusConflict
+from pydantic import BaseModel, Field
 from api.form_webhook import router as form_webhook_router
 from rfq.workspace_worker import run as run_rfq_worker
 from customers.inbox_worker import run as run_customer_inbox
@@ -217,6 +219,36 @@ app.add_middleware(
 
 def get_repo() -> SupplierRepository:
     return SupplierRepository()
+
+
+# Status uses the same injectable database path and fail-closed shared auth.
+class StatusEdit(BaseModel):
+    content_md: str = Field(max_length=204800)
+    updated_by: str = Field(min_length=1, max_length=120)
+    expected_updated_at: str | None
+
+@app.get('/status/{doc_id}', dependencies=[Depends(require_api_token)])
+def read_status(doc_id: str, repo: SupplierRepository = Depends(get_repo)):
+    try:
+        return StatusRepository(repo.db_path).get(doc_id)
+    except KeyError:
+        raise HTTPException(404, 'Status document not found') from None
+
+@app.put('/status/{doc_id}', dependencies=[Depends(require_api_token)])
+def save_status(doc_id: str, edit: StatusEdit, repo: SupplierRepository = Depends(get_repo)):
+    try:
+        return StatusRepository(repo.db_path).save(doc_id, **edit.model_dump())
+    except StatusConflict as exc:
+        raise HTTPException(409, str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(413 if '200 KB' in str(exc) else 400, str(exc)) from None
+
+@app.get('/status/{doc_id}/versions', dependencies=[Depends(require_api_token)])
+def status_versions(doc_id: str, repo: SupplierRepository = Depends(get_repo)):
+    try:
+        return StatusRepository(repo.db_path).versions(doc_id)
+    except KeyError:
+        raise HTTPException(404, 'Status document not found') from None
 
 
 def _to_search_result(row: Dict[str, Any]) -> SupplierSearchResult:

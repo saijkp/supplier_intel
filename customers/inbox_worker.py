@@ -29,6 +29,8 @@ async def run(get_db_path, interval_minutes):
         await asyncio.sleep(interval_minutes * 60)
         try:
             result = await asyncio.to_thread(tick, CustomerService(CustomerRepository(get_db_path())))
+            for address in result.get('mailbox_errors', []):
+                logger.warning('customer inbox check failed for mailbox %s; will retry', address)
             if result['logged'] or result['possible_new_enquiries']:
                 logger.info('customer inbox: %d replies logged, %d possible new enquiries',
                             result['logged'], result['possible_new_enquiries'])
