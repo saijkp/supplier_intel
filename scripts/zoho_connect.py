@@ -16,6 +16,8 @@ REGIONS = ('eu', 'com', 'in', 'com.au', 'jp')
 
 def authorize(region, address, client_id, client_secret, code, client):
     """Injectable HTTP client; never include provider responses in exceptions."""
+    step = 'Step A (exchanging the grant code)'
+    hint = ''
     try:
         response = client.post(f'https://accounts.zoho.{region}/oauth/v2/token', data={
             'grant_type': 'authorization_code', 'client_id': client_id,
@@ -23,19 +25,28 @@ def authorize(region, address, client_id, client_secret, code, client):
         response.raise_for_status()
         tokens = response.json()
         if not tokens.get('refresh_token') or not tokens.get('access_token'):
+            # Zoho returns HTTP 200 with an error code (e.g. invalid_code, invalid_client).
+            # The code itself is safe to show; it contains no credential.
+            hint = f" Zoho said: {str(tokens.get('error') or 'no refresh token returned')[:60]}."
             raise ValueError()
+        step = 'Step B (reading the mailbox list)'
         response = client.get(f'https://mail.zoho.{region}/api/accounts', headers={
             'Authorization': 'Zoho-oauthtoken ' + tokens['access_token']})
         response.raise_for_status()
         accounts = response.json().get('data', [])
-        account = next(a for a in accounts if a.get('primaryEmailAddress', '').lower() == address.lower())
+        step = f'Step C (finding {address} in this Zoho login)'
+        def addresses(a):
+            found = {str(a.get('primaryEmailAddress', '')).lower(), str(a.get('mailboxAddress', '')).lower()}
+            found |= {str(e.get('mailId', '')).lower() for e in a.get('emailAddress', []) if isinstance(e, dict)}
+            return found
+        account = next(a for a in accounts if address.lower() in addresses(a))
         if not str(account['accountId']).isdigit():
             raise ValueError()
         return {'REGION': region, 'ACCOUNT_ID': str(account['accountId']),
                 'CLIENT_ID': client_id, 'CLIENT_SECRET': client_secret,
                 'REFRESH_TOKEN': tokens['refresh_token']}
     except Exception:
-        raise ValueError('Authorization failed. Check the selected account, region, scopes and fresh grant code. No Railway variables were changed.') from None
+        raise ValueError(f'Authorization failed at {step}.{hint} Check the selected account, region, scopes and fresh grant code. No Railway variables were changed.') from None
 
 
 def save_variables(railway, values, run=subprocess.run):
@@ -61,7 +72,10 @@ def main():
     print(f'2. Open https://api-console.zoho.{args.region}/ in your browser. Sign in as {address}.')
     print('3. Create or open a Self Client. Copy its client ID and client secret. Paste them below (input is hidden).')
     client_id = getpass('Client ID: ').strip()
+    print(f'   Client ID received: {len(client_id)} characters, starts with "{client_id[:5]}"'
+          ' (a Zoho client ID is usually 35 characters starting "1000.").')
     secret = getpass('Client secret: ').strip()
+    print(f'   Client secret received: {len(secret)} characters (usually 42).')
     print('4. In Generate Code, use these scopes (including folders.READ for the Sent checks):')
     print(SCOPES)
     print('Choose a 10-minute duration, enter Supplier Intel as the description, then generate the code.')
