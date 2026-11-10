@@ -104,5 +104,5 @@ def test_upgrade_from_v41_preserves_existing_customer_cards(tmp_path):
     with db.connection_scope(path) as c:
         row = dict(c.execute('SELECT * FROM customer_inbox_leads').fetchone())
         assert row['subject'] == 'Existing' and row['mailbox'] is None and row['already_replied'] == 0
-    assert db.get_schema_version(path) == 43
+    assert db.get_schema_version(path) == db.SCHEMA_VERSION
     assert StatusRepository(path).save('live', 'new document', 'Sai', None)['content_md'] == 'new document'

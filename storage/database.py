@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 43
+SCHEMA_VERSION = 44
 
 
 # ═══════════════════════════════════════════════════════════
@@ -930,6 +930,8 @@ CREATE TABLE IF NOT EXISTS status_document_versions (
  id INTEGER PRIMARY KEY, doc_id TEXT NOT NULL REFERENCES status_documents(id),
  content_md TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_status_versions ON status_document_versions(doc_id,id);
+CREATE TABLE IF NOT EXISTS whatsapp_cards (id INTEGER PRIMARY KEY, mailbox TEXT NOT NULL DEFAULT 'whatsapp', text TEXT NOT NULL DEFAULT '', enquiry_id INTEGER REFERENCES customer_enquiries(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS whatsapp_images (id INTEGER PRIMARY KEY, card_id INTEGER NOT NULL REFERENCES whatsapp_cards(id), filename TEXT NOT NULL UNIQUE, media_type TEXT NOT NULL);
 """
 SCHEMA_SQL += STATUS_SCHEMA_SQL
 
@@ -959,6 +961,13 @@ CASE lower(trim(status))
 """
 
 MIGRATIONS: dict[int, dict] = {
+    44: {
+        "description": "Manual WhatsApp inbox cards and private screenshot attachments (no OCR)",
+        "statements": [
+            "CREATE TABLE IF NOT EXISTS whatsapp_cards (id INTEGER PRIMARY KEY, mailbox TEXT NOT NULL DEFAULT 'whatsapp', text TEXT NOT NULL DEFAULT '', enquiry_id INTEGER REFERENCES customer_enquiries(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+            "CREATE TABLE IF NOT EXISTS whatsapp_images (id INTEGER PRIMARY KEY, card_id INTEGER NOT NULL REFERENCES whatsapp_cards(id), filename TEXT NOT NULL UNIQUE, media_type TEXT NOT NULL)",
+        ],
+    },
     43: {
         "description": "Mailbox attribution and replied evidence for customer review",
         "columns": [(t, 'mailbox', 'TEXT') for t in ('customer_inbox_leads', 'customer_enquiries', 'customer_messages', 'customer_activities')] + [

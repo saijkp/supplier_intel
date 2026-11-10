@@ -205,6 +205,8 @@ app = FastAPI(
 app.include_router(rfq_workflow_router)
 app.include_router(rfq_router)
 app.include_router(form_webhook_router)
+from api.whatsapp import router as whatsapp_router
+app.include_router(whatsapp_router)
 app.include_router(customers_router)
 app.mount('/workspace', StaticFiles(directory=Path(__file__).resolve().parents[1] / 'frontend', html=True), name='workspace')
 

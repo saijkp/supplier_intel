@@ -48,13 +48,13 @@
       $('custPipeline').innerHTML = '<div class="cust-grid">' + Object.entries(pipeline.stages).filter(([, p]) => p.count).map(([stage, p]) => `<div class="cust-msg"><strong>${esc(stage)}</strong>: ${esc(p.count)}<br>GBP ${esc(p.estimated_value)}</div>`).join('') + '</div>';
       if (filter === 'today') {
         const groups = await api('/customers/today');
-        $('custList').innerHTML = Object.entries(groups).map(([group, items]) => `<h3>${esc(group.replaceAll('_', ' '))} (${esc(items.length)})</h3><table class="tbl"><tbody>` + items.map(r => `<tr class="cust-row" data-enquiry="${esc(r.id)}"><td>${esc(r.reference)}<br>${esc(r.customer)}</td><td>${esc(r.stage)}<br>Waiting on: ${esc(r.waiting_on || '')}</td><td>${esc(r.next_action)}<br>${esc(r.due)}</td><td>${esc(r.why)}</td></tr>`).join('') + '</tbody></table>').join('');
+        $('custList').innerHTML = Object.entries(groups).map(([group, items]) => `<h3>${esc(group.replaceAll('_', ' '))} (${esc(items.length)})</h3><table class="tbl"><tbody>` + items.map(r => `<tr class="cust-row" tabindex="0" role="button" data-enquiry="${esc(r.id)}"><td>${esc(r.reference)}<br>${esc(r.customer)}</td><td>${esc(r.stage)}<br>Waiting on: ${esc(r.waiting_on || '')}</td><td>${esc(r.next_action)}<br>${esc(r.due)}</td><td>${esc(r.why)}</td></tr>`).join('') + '</tbody></table>').join('');
         return;
       }
       const due = rows.filter(r => r.overdue).length;
       $('custList').innerHTML = `<p class="hint">${rows.length} enquiries · <span class="cust-due">${due} follow-ups due</span></p>
         <div style="overflow:auto"><table class="tbl"><thead><tr><th>Customer</th><th>Enquiry</th><th>Status</th><th>Next action</th><th>Due</th><th>Last heard</th></tr></thead><tbody>` +
-        rows.map(r => `<tr class="cust-row" data-enquiry="${Number(r.id)}">
+        rows.map(r => `<tr class="cust-row" tabindex="0" role="button" data-enquiry="${Number(r.id)}">
           <td><strong>${esc(r.customer_name)}</strong><br><span class="hint">${esc(r.reference)}</span></td>
           <td>${esc(r.title)}</td><td>${esc(r.status)}${r.unanswered_contacts ? `<br><span class="hint">${Number(r.unanswered_contacts)} contact${r.unanswered_contacts > 1 ? 's' : ''} without reply</span>` : ''}</td>
           <td>${esc((r.next_action || '').slice(0, 140))}${(r.next_action || '').length > 140 ? '…' : ''}</td>
@@ -124,7 +124,7 @@
               ${m.channel === 'whatsapp' && ['draft', 'approved'].includes(m.status) && /^https:\/\/wa\.me\//.test(m.action_url || '') ? `<a class="btn btn-sm" href="${esc(m.action_url)}" target="_blank" rel="noopener noreferrer">Open WhatsApp</a> <button class="btn btn-sm" data-cust-msg="mark-sent" data-id="${Number(m.id)}">Mark sent</button>` : ''}
               ${['draft', 'approved'].includes(m.status) ? `<button class="btn btn-sm btn-ghost" data-cust-msg="cancel" data-id="${Number(m.id)}">Cancel</button>` : ''}
             </div>`).join('')}
-            <h4>Log activity</h4>
+            <button class="btn btn-primary" data-wa-enquiry="${Number(e.id)}">Add WhatsApp message</button><h4>Log activity</h4>
             <div class="cust-grid">
               <label>Type<select class="input" id="acKind">
                 <option value="note">Note</option><option value="call_out">Call (we called)</option><option value="call_in">Call (they called)</option>
@@ -143,10 +143,14 @@
   }
 
   const val = (id) => $(id).value.trim();
+  $('view-customers').addEventListener('keydown', ev => {
+    if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.matches('tr[data-enquiry]')) { ev.preventDefault(); ev.target.click(); }
+  });
   $('view-customers').addEventListener('click', (ev) => {
     const row = ev.target.closest('tr[data-enquiry]');
     if (row) { showEnquiry(row.dataset.enquiry); return; }
     const b = ev.target.closest('button'); if (!b) return;
+    if (b.dataset.waEnquiry) { window.openWhatsApp(b.dataset.waEnquiry); return; }
     if (b.id === 'custRefresh') { loadCustomers(); if (current) showEnquiry(current.id); return; }
     if (b.id === 'custNewToggle') { $('custCreate').classList.toggle('hidden'); return; }
     if (b.id === 'custPoll') {
