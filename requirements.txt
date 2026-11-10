@@ -24,3 +24,7 @@ playwright
 qrcode[pil]
 
 pypdf>=5.0
+
+tzdata
+
+Pillow>=10.4

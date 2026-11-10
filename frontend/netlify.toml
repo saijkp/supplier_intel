@@ -107,3 +107,14 @@
     # to make a long-lived max-age + versioned-URL scheme safe instead
     # (see module docstring: "no build step, no bundler to run").
     Cache-Control = "no-cache, must-revalidate"
+
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Content-Type = "application/manifest+json"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-store, max-age=0"
+    Netlify-CDN-Cache-Control = "no-store"

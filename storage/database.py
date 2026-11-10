@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 41
+SCHEMA_VERSION = 44
 
 
 # ═══════════════════════════════════════════════════════════
@@ -878,7 +878,7 @@ CREATE TABLE IF NOT EXISTS customers (
  updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS customer_enquiries (
  id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL REFERENCES customers(id), reference TEXT UNIQUE NOT NULL,
- title TEXT NOT NULL, requirements TEXT, status TEXT NOT NULL DEFAULT 'new', next_action TEXT,
+ mailbox TEXT, title TEXT NOT NULL, requirements TEXT, status TEXT NOT NULL DEFAULT 'new', next_action TEXT,
  next_action_due TEXT, blocker TEXT, estimated_value TEXT, owner TEXT, summary TEXT,
  rfq_campaign_ids TEXT NOT NULL DEFAULT '[]', source_ref TEXT UNIQUE,
  last_customer_contact_at TEXT, last_our_contact_at TEXT,
@@ -886,11 +886,11 @@ CREATE TABLE IF NOT EXISTS customer_enquiries (
  created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS customer_activities (
  id INTEGER PRIMARY KEY, enquiry_id INTEGER NOT NULL REFERENCES customer_enquiries(id), kind TEXT NOT NULL,
- summary TEXT NOT NULL, external_id TEXT UNIQUE, occurred_at TEXT NOT NULL,
+ mailbox TEXT, summary TEXT NOT NULL, external_id TEXT UNIQUE, occurred_at TEXT NOT NULL,
  created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS customer_messages (
  id INTEGER PRIMARY KEY, enquiry_id INTEGER NOT NULL REFERENCES customer_enquiries(id),
- channel TEXT NOT NULL, recipient TEXT, subject TEXT, body TEXT NOT NULL, action_url TEXT,
+ mailbox TEXT, channel TEXT NOT NULL, recipient TEXT, subject TEXT, body TEXT NOT NULL, action_url TEXT,
  status TEXT NOT NULL DEFAULT 'draft', status_reason TEXT, provider_message_id TEXT,
  approved_at TEXT, sent_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE INDEX IF NOT EXISTS idx_customer_enquiries_due ON customer_enquiries(status,next_action_due);
@@ -904,7 +904,7 @@ CUSTOMER_LEADS_SQL = """
 CREATE TABLE IF NOT EXISTS customer_form_receipts (external_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS customer_inbox_leads (
  id INTEGER PRIMARY KEY, external_id TEXT UNIQUE NOT NULL, from_address TEXT NOT NULL, from_name TEXT,
- subject TEXT, excerpt TEXT, form_fields TEXT NOT NULL DEFAULT '{}', full_text TEXT, received_at TEXT, status TEXT NOT NULL DEFAULT 'new', enquiry_id INTEGER,
+ mailbox TEXT, already_replied INTEGER NOT NULL DEFAULT 0, reply_checked_at TEXT, thread_id TEXT, subject TEXT, excerpt TEXT, form_fields TEXT NOT NULL DEFAULT '{}', full_text TEXT, received_at TEXT, status TEXT NOT NULL DEFAULT 'new', enquiry_id INTEGER,
  created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE INDEX IF NOT EXISTS idx_customer_inbox_leads_status ON customer_inbox_leads(status);
 """
@@ -921,6 +921,19 @@ CREATE TABLE IF NOT EXISTS customer_quotes (
 """
 SCHEMA_SQL += CUSTOMER_LEADS_SQL
 SCHEMA_SQL += CUSTOMER_QUOTES_SQL
+
+
+STATUS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS status_documents (
+ id TEXT PRIMARY KEY, content_md TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS status_document_versions (
+ id INTEGER PRIMARY KEY, doc_id TEXT NOT NULL REFERENCES status_documents(id),
+ content_md TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_status_versions ON status_document_versions(doc_id,id);
+CREATE TABLE IF NOT EXISTS whatsapp_cards (id INTEGER PRIMARY KEY, mailbox TEXT NOT NULL DEFAULT 'whatsapp', text TEXT NOT NULL DEFAULT '', enquiry_id INTEGER REFERENCES customer_enquiries(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS whatsapp_images (id INTEGER PRIMARY KEY, card_id INTEGER NOT NULL REFERENCES whatsapp_cards(id), filename TEXT NOT NULL UNIQUE, media_type TEXT NOT NULL);
+"""
+SCHEMA_SQL += STATUS_SCHEMA_SQL
 
 # Legacy stage mapping shared by the audit log and row update in migration 39.
 _CUSTOMER_STAGE_MAP_SQL = """
@@ -948,6 +961,24 @@ CASE lower(trim(status))
 """
 
 MIGRATIONS: dict[int, dict] = {
+    44: {
+        "description": "Manual WhatsApp inbox cards and private screenshot attachments (no OCR)",
+        "statements": [
+            "CREATE TABLE IF NOT EXISTS whatsapp_cards (id INTEGER PRIMARY KEY, mailbox TEXT NOT NULL DEFAULT 'whatsapp', text TEXT NOT NULL DEFAULT '', enquiry_id INTEGER REFERENCES customer_enquiries(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+            "CREATE TABLE IF NOT EXISTS whatsapp_images (id INTEGER PRIMARY KEY, card_id INTEGER NOT NULL REFERENCES whatsapp_cards(id), filename TEXT NOT NULL UNIQUE, media_type TEXT NOT NULL)",
+        ],
+    },
+    43: {
+        "description": "Mailbox attribution and replied evidence for customer review",
+        "columns": [(t, 'mailbox', 'TEXT') for t in ('customer_inbox_leads', 'customer_enquiries', 'customer_messages', 'customer_activities')] + [
+            ('customer_inbox_leads', 'already_replied', 'INTEGER NOT NULL DEFAULT 0'),
+            ('customer_inbox_leads', 'reply_checked_at', 'TEXT'),
+            ('customer_inbox_leads', 'thread_id', 'TEXT')],
+    },
+    42: {
+        "description": "Versioned live Markdown status documents",
+        "statements": [s for s in STATUS_SCHEMA_SQL.split(';') if s.strip()],
+    },
     41: {
         "description": "Remember form delivery IDs including cross-transport duplicates",
         "statements": ["CREATE TABLE IF NOT EXISTS customer_form_receipts (external_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)"],

@@ -2,8 +2,15 @@
 <html lang="en-GB">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Supplier Intel</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="IK ENG">
+<meta name="theme-color" content="#0f1b2d">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -70,7 +77,7 @@ a{color:var(--tier-stated)}
   font-size:22px;letter-spacing:.06em;text-transform:uppercase;
 }
 
-.nav{display:flex;gap:2px}
+.nav{display:flex;gap:2px;min-width:0;overflow-x:auto}
 .nav button{
   font-family:'Barlow Condensed',sans-serif;font-weight:600;
   font-size:15px;letter-spacing:.08em;text-transform:uppercase;
@@ -78,6 +85,15 @@ a{color:var(--tier-stated)}
 }
 .nav button:hover{color:#fff}
 .nav button[aria-current="page"]{color:#fff;border-bottom-color:var(--orange)}
+.nav button,.nav a{flex:none;white-space:nowrap}
+#view-status .btn{min-height:44px}
+@media(max-width:1000px){
+  .topbar-in{height:auto;flex-wrap:wrap;padding:10px 16px;gap:8px}
+  .brand{order:0;flex:1}
+  .conn{order:1;flex:none}
+  .nav{order:2;flex-basis:100%;max-width:100%;padding-bottom:2px}
+  .nav button,.nav a{min-height:44px}
+}
 
 .conn{
   display:flex;align-items:center;gap:8px;
@@ -102,7 +118,7 @@ a{color:var(--tier-stated)}
    redesign (every tab sits inside .wrap) -- no tab's own content
    styling (panels, cards, forms) is touched here, only the frame
    around all of them. */
-body{background:var(--steel-900)}
+body{background:var(--paper)}
 .wrap{
   max-width:1200px;margin:20px auto 32px;padding:24px 20px 56px;
   background:var(--paper);border-radius:20px;
@@ -626,6 +642,42 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
 }
 .hidden{display:none!important}
+
+/* Installed app shell: safe areas apply in Safari and standalone. */
+.input:focus-visible,:focus-visible{outline:3px solid var(--orange);outline-offset:3px}
+input,select,textarea{font-size:16px!important;max-width:100%}
+button,.btn,summary{min-height:44px;min-width:44px}
+input:not([type=checkbox]):not([type=radio]),select{min-height:44px}
+.label{font-size:12px;color:var(--steel-700)}
+.input::placeholder{color:var(--steel-500)}
+#view-status h2{font-size:28px}
+#view-status article{font-size:17px}
+.topbar{padding-top:env(safe-area-inset-top)}
+#liveStrip{background:var(--paper);max-width:1200px;margin:auto;padding:8px 20px;color:var(--steel-700);display:flex;align-items:center;gap:8px;font-size:14px}
+#liveRefresh{margin-left:auto}#liveState::before{content:"\2022";margin-right:6px}#liveState[data-health=offline]{color:var(--danger-dark)}#liveState{font-weight:700;color:var(--tier-verified)}
+#offlineNote{background:var(--danger-bg);color:var(--danger-dark);padding:16px;text-align:center}
+#phoneTabs{display:none}.inbox-card{background:var(--surface);border:1px solid var(--rule);border-radius:16px;padding:20px;margin:14px 0;box-shadow:var(--shadow);overflow-wrap:anywhere}
+.inbox-card h2{font-size:21px;margin:8px 0}.inbox-preview{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:12px 0}
+.inbox-card .btn-primary{width:100%;margin-top:12px}.inbox-images{display:flex;gap:8px;flex-wrap:wrap}.inbox-images img{max-width:100%;max-height:300px;object-fit:contain;border-radius:10px}
+.skeleton{height:160px;border-radius:16px;margin:14px 0;background:linear-gradient(90deg,var(--rule-soft),var(--surface),var(--rule-soft));background-size:200%;animation:shimmer 1.5s infinite}
+@keyframes shimmer{to{background-position:-200% 0}}
+#waDialog{width:min(540px,94vw);max-height:85dvh;overflow:auto;padding:24px;border:1px solid var(--rule);border-radius:20px;background:var(--surface);color:var(--steel-900)}
+#waDialog label{display:grid;gap:8px;margin:16px 0}#waDialog::backdrop{background:#0f1b2d99}
+@media(max-width:760px){
+ body{font-size:16px;padding-bottom:calc(84px + env(safe-area-inset-bottom));padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)}
+ .topbar-in{height:auto;min-height:60px;padding:8px 16px;gap:8px;flex-wrap:wrap}.brand-name{font-size:22px}.nav{display:none}.conn{margin-left:auto}.conn button{font-size:14px}
+ .wrap{padding:12px!important;width:100%;min-width:0}.panel{border-radius:16px;overflow:hidden}.panel-head{flex-wrap:wrap;padding:16px;gap:12px}.panel-body{padding:16px!important}
+ .panel-title,h1{font-size:26px}.label{font-size:12px!important}.check{min-height:44px;align-items:center}.card a{display:inline-flex;align-items:center;min-height:44px}:is(#view-search,#view-jobs) .btn-primary{color:#0a0e14}.hint{font-size:14px}.field,.cust-grid,.cust-cols{min-width:0}.cust-grid{grid-template-columns:1fr!important}
+ .form-grid,.grid,.grid-2{grid-template-columns:1fr!important} .row{flex-wrap:wrap}pre{white-space:pre-wrap;overflow-wrap:anywhere}
+ #phoneTabs{position:fixed;bottom:0;left:0;right:0;z-index:80;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));padding:8px env(safe-area-inset-right) calc(8px + env(safe-area-inset-bottom)) env(safe-area-inset-left);background:var(--surface);border-top:1px solid var(--rule);box-shadow:0 -4px 24px #0f1b2d12}
+ #phoneTabs button{font-size:13px;font-weight:600;border-radius:10px;min-height:48px;padding:4px 2px;color:var(--steel-700)}#phoneTabs button[aria-current=page]{background:var(--rule-soft);color:var(--orange-dark)}
+ #phoneTabs span:not(:empty){background:var(--orange-dark);color:white;border-radius:12px;padding:1px 5px;font-size:11px}
+ .tbl,.tbl tbody,.tbl tr,.tbl td{display:block;width:100%!important;min-width:0!important}.tbl thead{display:none}.tbl tr{padding:12px;border:1px solid var(--rule);border-radius:12px;margin:12px 0}.tbl td{border:0;padding:5px 8px;overflow-wrap:anywhere}
+ .cust-row{min-height:44px}.cust-cols{grid-template-columns:1fr!important}#liveStrip{padding:8px 16px;font-size:13px}.inbox-card{padding:16px}
+}
+@media(prefers-color-scheme:dark){:root{--steel-900:#e8f0fc;--steel-700:#c5d5eb;--steel-500:#a7bdd9;--steel-300:#c5d5eb;--rule:#3a4d67;--rule-soft:#24364f;--paper:#0e1726;--surface:#182639;--orange:#80adff;--orange-dark:#9bc0ff;--tier-stated:#9bc0ff;--tier-verified:#7ddbb8;--danger-bg:#422520;--danger-dark:#ffb4a7;--ai-bg:#302640}.topbar{background:#0f1b2d}.btn-primary{background:#2563eb;color:white}.input,input,select,textarea{background:var(--surface);color:var(--steel-900)}dialog{background:var(--surface);color:var(--steel-900)}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
 </style>
 </head>
 <body>
@@ -646,6 +698,7 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
       <button data-view="audit">Audit</button>
       <button data-view="quotes">Quotes</button>
       <button data-view="customers">Customers</button>
+      <button data-view="status">Status</button>
     </nav>
     <div class="conn">
       <span class="dot" id="connDot"></span>
@@ -654,7 +707,11 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
   </div>
 </header>
 
+<div id="liveStrip" role="status"><span id="liveState">Connecting</span> ? <span id="liveAge">Waiting for update</span><button class="btn btn-ghost" id="liveRefresh">Refresh</button></div>
+<div id="offlineNote" class="hidden" role="status">You're offline. Connect to see your latest messages and status. Your private data is never cached.</div>
 <main class="wrap">
+<section id="view-inbox" class="hidden"><div class="panel"><div class="panel-head"><h1>Inbox</h1><button class="btn btn-primary" id="addWhatsApp">Add WhatsApp message</button></div><div class="panel-body"><p class="hint">Your latest conversations, ready to take to Claude.</p><div id="inboxCards"></div></div></div></section>
+<section id="view-more" class="hidden"><div class="panel panel-body"><h1>More tools</h1><div id="moreLinks" class="cust-grid"></div></div></section>
 
   <!-- ══ FIND SUPPLIERS (unified search/enrichment) ═════════ -->
   <section id="view-find">
@@ -928,6 +985,24 @@ dialog#auditDetailDialog .verdict-status.err{color:var(--accent)}
   <div id="rfqCampaigns"></div><div id="rfqCampaign"></div><div id="rfqComparison"></div></div></div>
 </section>
 
+<section id="view-status" class="hidden">
+  <div class="panel" style="padding:18px;max-width:900px;margin:auto">
+    <h2>Live status</h2><p id="statusMeta"></p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0">
+      <button class="btn btn-primary" id="statusCopy" style="min-height:48px;font-size:17px" disabled>Copy for Claude</button>
+      <button class="btn" id="statusEdit" disabled>Edit</button>
+      <button class="btn" id="statusReload">Reload</button>
+    </div>
+    <p id="statusNotice" role="status" aria-live="polite"></p>
+    <article id="statusRead" style="line-height:1.7;overflow-wrap:anywhere"></article>
+    <div id="statusEditor" class="hidden">
+      <label for="statusAuthor">Your name</label><input id="statusAuthor" value="Sai" maxlength="120" style="font-size:16px;min-height:44px">
+      <label for="statusText">Markdown</label><textarea id="statusText" style="width:100%;min-height:55vh;font-size:16px;line-height:1.5;padding:12px;box-sizing:border-box"></textarea>
+      <button class="btn btn-primary" id="statusSave" style="min-height:48px">Save</button>
+      <button class="btn" id="statusCancel" style="min-height:48px">Cancel</button>
+    </div>
+  </div>
+</section>
 <section id="view-customers" class="hidden">
   <div class="panel"><div class="panel-head"><h2 class="panel-title">Customers &amp; enquiries</h2>
     <button class="btn btn-ghost" id="custRefresh">Refresh</button><button class="btn" id="custPoll">Check inbox for replies</button></div>
@@ -1041,6 +1116,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => (
 async function api(path, opts = {}) {
   if (!state.base) throw new Error("NOT_CONNECTED");
   const res = await fetch(state.base + path, {
+    cache: "no-store",
     ...opts,
     headers: {
       "Authorization": "Bearer " + state.token,
@@ -1074,6 +1150,66 @@ async function api(path, opts = {}) {
   }
   return data;
 }
+
+// Tiny Markdown subset: escape before adding our own fixed markup. No raw HTML or URLs.
+function statusMarkdown(raw) {
+  const inline = t => esc(t).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  let list = false, out = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
+    if (bullet) { if (!list) out.push('<ul>'); list = true; out.push('<li>'+inline(bullet[1])+'</li>'); continue; }
+    if (list) { out.push('</ul>'); list = false; }
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) out.push('<h'+heading[1].length+'>'+inline(heading[2])+'</h'+heading[1].length+'>');
+    else if (line.trim()) out.push('<p>'+inline(line)+'</p>');
+  }
+  if (list) out.push('</ul>');
+  return out.join('');
+}
+let statusDoc = null, statusEditing = false;
+function statusEditMode(edit) {
+  statusEditing = edit;
+  $('statusEditor').classList.toggle('hidden', !edit);
+  $('statusRead').classList.toggle('hidden', edit);
+  $('statusEdit').disabled = edit || !statusDoc;
+}
+async function loadStatus(force = false) {
+  if (statusEditing && !force) return;
+  try {
+    const doc = await api('/status/live');
+    statusDoc = doc;
+    $('statusRead').innerHTML = statusMarkdown(doc.content_md);
+    $('statusMeta').textContent = 'Last updated '+new Date(doc.updated_at).toLocaleString()+' by '+doc.updated_by;
+    $('statusCopy').disabled = false;
+    $('statusText').value = doc.content_md;
+    $('statusNotice').textContent = '';
+    statusEditMode(false);
+    return true;
+  } catch (e) {
+    $('statusNotice').textContent = e.status === 404 ? 'No status document yet. Upload the first document after deployment.' : e.message;
+    if (!statusDoc) $('statusRead').innerHTML = '<p>Your status is unavailable. Check your connection and tap Retry status.</p>';
+    return false;
+  }
+}
+$('statusEdit').onclick = () => { $('statusText').value = statusDoc.content_md; statusEditMode(true); };
+$('statusCancel').onclick = () => { statusEditMode(false); $('statusNotice').textContent = ''; };
+$('statusReload').onclick = () => { if (!statusEditing || confirm('Reload and discard your unsaved edit?')) loadStatus(true); };
+$('statusCopy').onclick = async () => {
+  try { await navigator.clipboard.writeText(statusDoc.content_md); $('statusNotice').textContent = 'Copied'; }
+  catch { $('statusNotice').textContent = 'Copy unavailable. Tap Edit, select the text, then copy.'; }
+};
+$('statusSave').onclick = async () => {
+  $('statusSave').disabled = true;
+  try {
+    const saved = await api('/status/live', {method:'PUT', body:JSON.stringify({content_md:$('statusText').value,updated_by:$('statusAuthor').value,expected_updated_at:statusDoc.updated_at})});
+    statusDoc = saved;
+    statusEditMode(false);
+    await loadStatus(true);
+    $('statusNotice').textContent = 'Saved';
+  } catch(e) {
+    $('statusNotice').textContent = e.status === 409 ? 'Someone else updated it. Your edit is still here; copy it if needed, then tap Reload.' : e.message;
+  } finally { $('statusSave').disabled = false; }
+};
 
 function alertBox(host, kind, title, body) {
   if (!kind) { host.innerHTML = ""; return; }
@@ -1146,9 +1282,10 @@ $("nav").addEventListener("click", (e) => {
   const view = btn.dataset.view;
   document.querySelectorAll("#nav button").forEach(b =>
     b.setAttribute("aria-current", b === btn ? "page" : "false"));
-  ["find","search","bulk","jobs","compare","audit","quotes","customers"].forEach(v =>
+  ["find","search","bulk","jobs","compare","audit","quotes","customers","status","inbox","more"].forEach(v =>
     $("view-" + v).classList.toggle("hidden", v !== view));
   if (view === "customers" && window.loadCustomers) window.loadCustomers();
+  if (view === "status") loadStatus();
   if (view === "find") initFindView();
   if (view === "jobs") loadJobs();
   if (view === "compare") initCompareView();
@@ -3815,5 +3952,45 @@ $('view-quotes').addEventListener('click',e=>rfqAction(async()=>{
 
 </script>
 <script src="customers.js"></script>
+<nav id="phoneTabs" aria-label="Main navigation">
+<button data-phone="status">Status</button><button data-phone="inbox">Inbox <span id="inboxBadge"></span></button><button data-phone="customers">Customers <span id="customersBadge"></span></button><button data-phone="search">Search</button><button data-phone="more">More</button>
+</nav>
+<dialog id="waDialog"><form id="waForm"><h2>Add WhatsApp message</h2><p>Screenshots stay private. No OCR or AI runs on upload.</p><label>Screenshots (up to 10, max 10 MB each)<input id="waFiles" type="file" accept="image/*" multiple required></label><label>Pasted text (optional)<textarea class="input" id="waText" maxlength="20000" rows="4"></textarea></label><label>Customer / enquiry (optional)<select class="input" id="waEnquiry"><option value="">Unassigned - review in Inbox</option></select></label><p id="waNotice" role="status"></p><button class="btn btn-primary" type="submit" id="waSave">Save to Inbox</button><button class="btn btn-ghost" type="button" id="waCancel">Cancel</button></form></dialog>
+<script>
+(() => {
+ let cards=[],updated=0,busy=false,active='status',issue='';$('statusRead').innerHTML='<div class="skeleton" aria-label="Loading status"></div>'; const urls=new Set();
+ function age(){$('liveState').dataset.health=navigator.onLine&&!issue?'live':'offline';const min=Math.floor((Date.now()-updated)/60000);$('liveAge').textContent=updated?(min?`Updated ${min} min ago`:'Updated just now'):'Waiting for update';$('liveState').textContent=navigator.onLine?(issue||(state.token?'Live':'Connect')):'Offline';$('offlineNote').classList.toggle('hidden',navigator.onLine);}
+ function navigate(view){active=view;document.querySelectorAll('main > section[id^="view-"]').forEach(el=>el.classList.toggle('hidden',el.id!=='view-'+view));document.querySelectorAll('#phoneTabs button').forEach(b=>b.setAttribute('aria-current',b.dataset.phone===view?'page':'false'));const original=document.querySelector(`#nav button[data-view="${view}"]`);if(original)original.click();if(view==='inbox'){store.set('si.inbox.seen',new Date().toISOString());$('inboxBadge').textContent='';refresh();}window.scrollTo({top:0,behavior:'smooth'});}
+ const inboxNav=document.createElement('button');inboxNav.dataset.view='inbox';inboxNav.textContent='Inbox';$('nav').append(inboxNav);
+ document.querySelectorAll('#nav button[data-view]').forEach(b=>{b.addEventListener('click',()=>{active=b.dataset.view;if(active==='inbox')refresh();});if(!['status','customers','search','inbox'].includes(b.dataset.view)){const link=document.createElement('button');link.className='btn btn-ghost';link.textContent=b.textContent;link.onclick=()=>navigate(b.dataset.view);$('moreLinks').append(link);}});
+ const rfqLink=document.createElement('a');rfqLink.href='rfq.html';rfqLink.className='btn btn-ghost';rfqLink.textContent='RFQ workspace';$('moreLinks').append(rfqLink);
+ $('phoneTabs').onclick=e=>{const b=e.target.closest('[data-phone]');if(b)navigate(b.dataset.phone);};
+ async function authFetch(path,options={}){const r=await fetch(state.base+path,{...options,cache:'no-store',headers:{Authorization:'Bearer '+state.token}});if(!r.ok){let detail='Request failed';try{detail=(await r.json()).detail||detail;}catch(_){}throw new Error(detail);}return r;}
+ async function loadInbox(){
+  if(!cards.length)$('inboxCards').innerHTML='<div class="skeleton" aria-label="Loading"></div>'.repeat(3);
+  const [email,wa,enquiries]=await Promise.all([api('/customers/whatsapp/email-cards'),api('/customers/whatsapp'),api('/customers/enquiries')]);
+  cards=[...email,...wa].sort((a,b)=>b.created_at.localeCompare(a.created_at));urls.forEach(u=>URL.revokeObjectURL(u));urls.clear();
+  $('inboxCards').innerHTML=cards.length?cards.map((c,i)=>`<article class="inbox-card"><div class="hint">${esc(c.mailbox==='whatsapp'?'WhatsApp':(c.mailbox||'sai@ikeng.online').split('@').pop())} · ${esc(c.created_at)}</div><h2>${esc(c.customer_name||'New conversation')}</h2>${c.already_replied?'<span class="badge mfr">Already replied</span>':''}<strong>${esc(c.subject||c.title||'WhatsApp message')}</strong><p class="inbox-preview">${esc(c.text||'Screenshot — open attachments below')}</p>${c.images?.length?`<div class="inbox-images">${c.images.map(im=>`<button class="btn" data-image="${Number(im.id)}">View screenshot ${Number(im.id)}</button>`).join('')}</div>`:''}<button class="btn btn-primary" data-copy-card="${i}">Copy for Claude</button><p class="hint" id="copyNotice${i}" role="status"></p></article>`).join(''):'<div class="inbox-card"><h2>You’re all caught up</h2><p>New messages will appear here. Add a WhatsApp screenshot to bring a conversation in.</p></div>';
+  const seen=store.get('si.inbox.seen')||'';const unread=cards.filter(c=>c.created_at.replace(' ','T')>seen&&!c.already_replied).length;$('inboxBadge').textContent=active==='inbox'?'':(unread||'');if(active==='inbox')store.set('si.inbox.seen',new Date().toISOString());$('customersBadge').textContent=enquiries.filter(e=>e.overdue).length||'';
+  const selected=$('waEnquiry').value;$('waEnquiry').innerHTML='<option value="">Unassigned — review in Inbox</option>'+enquiries.map(e=>`<option value="${Number(e.id)}">${esc(e.customer_name)} — ${esc(e.title)}</option>`).join('');$('waEnquiry').value=selected;
+ }
+ async function refresh(){age();if(document.hidden||busy||!navigator.onLine||!state.base||!state.token)return;busy=true;try{const tasks=[loadInbox(),loadStatus()];if(active==='customers')tasks.push(window.loadCustomers());const results=await Promise.all(tasks);issue=results[1]===false?'Status unavailable':'';if(!issue)updated=Date.now();age();}catch(error){issue='Update unavailable';age();$('inboxCards').innerHTML='<p>We couldn’t load your latest messages. Check your connection.</p><button class="btn" id="inboxRetry">Try again</button>';$('inboxRetry').onclick=refresh;}finally{busy=false;}}
+ $('inboxCards').onclick=async e=>{
+  const copy=e.target.closest('[data-copy-card]'),image=e.target.closest('[data-image]');
+  if(copy){const i=Number(copy.dataset.copyCard),c=cards[i];copy.disabled=true;try{const pending=api('/status/live').then(doc=>doc.content_md+'\n\n---\nMESSAGE\nMailbox: '+(c.mailbox||'ikeng.online')+'\nCustomer: '+(c.customer_name||'Unassigned')+'\n'+(c.subject||c.title||'')+'\n'+(c.text||'')+(c.images?.length?'\nAttach the screenshot in Claude too.':''));if(window.ClipboardItem&&navigator.clipboard.write){await navigator.clipboard.write([new ClipboardItem({'text/plain':pending.then(text=>new Blob([text],{type:'text/plain'}))})]);}else{await navigator.clipboard.writeText(await pending);}$('copyNotice'+i).textContent='Copied. '+(c.images?.length?'Attach the screenshot in Claude too.':'Paste into Claude.');}catch(err){$('copyNotice'+i).textContent='Could not copy: '+err.message+'. Try again when connected.';}finally{copy.disabled=false;}}
+  if(image){image.disabled=true;try{const r=await authFetch('/customers/whatsapp/images/'+Number(image.dataset.image));const url=URL.createObjectURL(await r.blob());urls.add(url);const img=document.createElement('img');img.src=url;img.alt='Private WhatsApp screenshot';const link=document.createElement('a');link.href=url;link.download='whatsapp-screenshot';link.textContent='Download screenshot';link.className='btn';image.after(img,link);image.remove();}catch(err){image.textContent='Couldn’t open — tap to retry';image.disabled=false;}}
+ };
+ async function openWhatsApp(id=''){$('waNotice').textContent='';$('waDialog').showModal();try{if($('waEnquiry').options.length===1)await loadInbox();$('waEnquiry').value=String(id);}catch(err){$('waNotice').textContent='Could not load customers. You can upload unassigned.';}}
+ window.openWhatsApp=openWhatsApp;$('addWhatsApp').onclick=()=>openWhatsApp();$('waCancel').onclick=()=>$('waDialog').close();
+ $('waForm').onsubmit=async e=>{e.preventDefault();const files=[...$('waFiles').files];if(files.length>10||files.some(f=>f.size>10*1024*1024)){$('waNotice').textContent='Choose up to 10 images, each 10 MB or smaller.';return;}const form=new FormData();files.forEach(f=>form.append('files',f));form.append('text',$('waText').value);if($('waEnquiry').value)form.append('enquiry_id',$('waEnquiry').value);$('waSave').disabled=true;try{await authFetch('/customers/whatsapp',{method:'POST',body:form});$('waForm').reset();$('waDialog').close();navigate('inbox');await refresh();}catch(err){$('waNotice').textContent=err.message;}finally{$('waSave').disabled=false;}};
+ $('liveRefresh').onclick=refresh;const statusRetry=document.createElement('button');statusRetry.className='btn btn-ghost';statusRetry.textContent='Retry status';statusRetry.onclick=()=>loadStatus();$('statusNotice').after(statusRetry);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});window.addEventListener('online',refresh);window.addEventListener('offline',age);setInterval(()=>{age();if(!document.hidden)refresh();},60000);
+ let pull=null;document.addEventListener('touchstart',e=>{pull=window.scrollY===0&&!e.target.closest('input,textarea,select,dialog')?e.touches[0].clientY:null;},{passive:true});document.addEventListener('touchend',e=>{if(pull!==null&&e.changedTouches[0].clientY-pull>90)refresh();pull=null;},{passive:true});
+ $('btnConnect').addEventListener('click',()=>setTimeout(refresh,100));if(!state.base){state.base='https://supplierintel-production.up.railway.app';store.set('si.base',state.base);}const note=document.createElement('p');note.className='hint';note.textContent='On iPhone, enter your access token once inside the Home Screen app. It has separate storage from Safari.';$('cToken').after(note);
+ if(matchMedia('(max-width:760px)').matches||matchMedia('(display-mode:standalone)').matches)navigate('status');if(!state.token)$('connBtn').click();
+ if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{issue='Offline shell unavailable';age();});
+ document.querySelectorAll('input,select,textarea').forEach(el=>{if(!el.labels?.length&&!el.getAttribute('aria-label'))el.setAttribute('aria-label',el.placeholder||el.name||el.id||'Filter');});age();refresh();
+})();
+
+</script>
 </body>
 </html>
