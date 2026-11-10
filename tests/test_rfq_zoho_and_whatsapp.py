@@ -97,3 +97,18 @@ moq: 999
 def test_whatsapp_requires_exact_sender():
     with pytest.raises(ValueError,match='No messages'):
         supplier_messages('03/11/2026, 10:00 - Buyer: price: 1','Supplier')
+
+
+def test_oversized_message_is_skipped_not_fatal():
+    """One huge email (big attachments) must not stop the rest of the mailbox poll."""
+    now_ms = str(int(datetime.now(timezone.utc).timestamp() * 1000))
+    class Fake:
+        def request(self, method, path, **kwargs):
+            if path == '/messages/view':
+                return [{'messageId': '1', 'receivedTime': now_ms, 'subject': 'Huge quote PDFs', 'fromAddress': 'a@x.test'},
+                        {'messageId': '2', 'receivedTime': now_ms, 'subject': 'Normal', 'fromAddress': 'b@x.test'}]
+            if path == '/messages/1/originalmessage':
+                return {'content': 'x' * 12000001}
+            return {'content': 'Subject: Normal\r\n\r\nhello'}
+    result = ZohoInbox(Fake()).fetch_recent(14, 50)
+    assert len(result) == 1 and b'hello' in result[0]

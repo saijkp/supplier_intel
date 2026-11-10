@@ -8,9 +8,13 @@ from email.utils import parseaddr
 import re
 import time
 
+import logging
+
 import httpx
 from config import settings as cfg
 from rfq.templates import header
+
+logger = logging.getLogger(__name__)
 
 REGIONS={'com':('mail.zoho.com','accounts.zoho.com'),
          'eu':('mail.zoho.eu','accounts.zoho.eu'),
@@ -132,7 +136,14 @@ class ZohoInbox:
             content=(original or {}).get('content','')
             if not isinstance(content,str) or not content: continue
             if len(content)>12000000:
-                raise RuntimeError('Zoho message exceeds the supported import size; review it manually')
+                if messages is not None:
+                    # RFQ campaign: a matching supplier reply must never be silently dropped.
+                    raise RuntimeError('Zoho message exceeds the supported import size; review it manually')
+                # Customer inbox poll: one oversized email (large attachments) must not block the
+                # whole mailbox. Skip it and leave a log line so it can be reviewed by hand in Zoho.
+                logger.warning('Skipped oversized Zoho message %s (%d bytes, subject %r); review it manually in Zoho',
+                               mid, len(content), str(item.get('subject',''))[:120])
+                continue
             content = 'X-SupplierIntel-Thread: ' + str(item.get('threadId', '')).replace('\r','').replace('\n','') + '\r\n' + content
             result.append(content.encode('utf-8'))
         return result
