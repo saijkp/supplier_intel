@@ -206,3 +206,12 @@ arrival pulses, confirmation toasts, keyboard focus and reduced-motion support.
 Automatic refresh preserves customer detail edits and focused RFQ drafts.
 Installed iPhone apps still require entering the token once inside the Home
 Screen app. Shell cache version v2 replaces v1; private API data is not cached.
+
+## Prospect Outreach workspace
+
+Outreach adds manual LinkedIn/visit/call tasks, an account pipeline, sourced contacts,
+reply/event timelines, linked project closure, sequence template/list approval and
+funnel metrics against two wins per 100 contacts. Today also includes outreach tasks.
+Refresh is read-only. Run now explicitly starts a reply-poll/due-steps job; sending
+requires server enablement plus approval and corporate-address review. See
+`docs/PROSPECT_OUTREACH_OPERATIONS.md` for mailbox warm-up and the first campaign.

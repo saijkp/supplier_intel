@@ -1,0 +1,236 @@
+<title>Clerkenwell Walk List</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one phone-first column; each walking cluster is headed like a London street name plate. */
+:root{
+  --bg:#f6f5f1; --fg:#17181a; --muted:#5d6066; --line:#d9d7d0; --card:#ffffff;
+  --sign:#ffffff; --sign-ink:#111; --red:#c8102e; --done:#2f6b3f; --done-bg:#e5efe7; --chip:#ecebe6;
+  --display:"Archivo",system-ui,sans-serif; --mono:"IBM Plex Mono",ui-monospace,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#141517; --fg:#ecebe7; --muted:#a3a5aa; --line:#2c2e33; --card:#1c1e21;
+  --sign:#f2f1ec; --sign-ink:#111; --red:#ff4d5e; --done:#8fd3a0; --done-bg:#1f3326; --chip:#26282c; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#141517; --fg:#ecebe7; --muted:#a3a5aa; --line:#2c2e33; --card:#1c1e21;
+  --sign:#f2f1ec; --sign-ink:#111; --red:#ff4d5e; --done:#8fd3a0; --done-bg:#1f3326; --chip:#26282c; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--display);line-height:1.5;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:20px 48px}
+main{max-width:720px;margin:0 auto;display:grid;gap:28px}
+h1{font-size:1.9rem;font-weight:800;margin:0;letter-spacing:-.01em;text-wrap:balance}
+h2{font-size:1.15rem;margin:0 0 6px;text-wrap:balance}
+p{margin:0}
+.lede{color:var(--muted);max-width:62ch}
+.mono{font-family:var(--mono);font-size:.82rem}
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.count{font-family:var(--mono);background:var(--chip);border-radius:999px;padding:4px 10px;font-size:.8rem}
+section.box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;display:grid;gap:10px}
+.pitch{display:grid;gap:12px}
+.pitch div{border-left:3px solid var(--red);padding-left:12px}
+.pitch b{display:block;font-size:.8rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.plate{background:var(--sign);color:var(--sign-ink);border:2px solid #111;border-radius:6px;padding:8px 12px;display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;box-shadow:0 1px 0 #111}
+.plate strong{font-weight:800;letter-spacing:.04em;text-transform:uppercase;font-size:.95rem}
+.plate span{font-family:var(--mono);font-size:.75rem;color:var(--red);font-weight:500}
+ul.stops{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:8px}
+li.stop{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;display:grid;grid-template-columns:auto 1fr;gap:4px 12px;align-items:start}
+li.stop.done{background:var(--done-bg);border-color:transparent}
+li.stop.done .name{text-decoration:line-through;color:var(--done)}
+li.stop input{width:22px;height:22px;margin-top:2px;accent-color:var(--done)}
+.name{font-weight:600}
+.meta{grid-column:2;color:var(--muted);font-size:.9rem;min-width:0}
+.meta a{color:var(--fg)}
+.tag{display:inline-block;font-family:var(--mono);font-size:.72rem;background:var(--chip);border-radius:4px;padding:1px 6px;margin-right:6px}
+.tag.b{background:transparent;border:1px solid var(--line)}
+ol.rules{margin:0;padding-left:20px;display:grid;gap:6px}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:8px;padding:6px 12px;cursor:pointer}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--red);outline-offset:2px}
+.note{font-size:.85rem;color:var(--muted)}
+</style>
+
+<main>
+  <header class="bar" style="justify-content:space-between">
+    <div>
+      <h1>Clerkenwell walk list</h1>
+      <p class="lede">Doors worth knocking on, 11–13 Nov, grouped by street so you can walk them in one loop each. Architects first: they're where most of your orders have come from.</p>
+    </div>
+    <div class="bar"><span class="count" id="count">0 visited</span><button id="reset" type="button">Clear ticks</button></div>
+  </header>
+
+  <section class="box">
+    <h2>Where the list comes from</h2>
+    <p><b>Architects:</b> 504 active companies registered as architectural practices in EC1 on Companies House. I removed virtual-office and accountants' addresses (about 375 of them sit at City Road mail-forwarding addresses), then kept about 70 that look like real studios. The address is the registered office. For most studios that is the office itself, but tap the map link to check.</p>
+    <p><b>Showrooms:</b> about 150 in the Clerkenwell Showrooms directory, mostly brands showing their own products. Only the 22 that resell, source or run a small brand are listed, after the architects.</p>
+  </section>
+
+  <section class="box pitch">
+    <h2>What to say at the desk (30 seconds)</h2>
+    <div><b>Architects and interior designers</b>We make joinery, kitchens, wardrobes, doors and loose furniture to your drawings in vetted partner factories in China, and deliver to site in the UK with test reports and CE documents. Your design gets built as drawn, at a cost that keeps it in the client's budget. Could we price one item on a current residential or hospitality project? Ask for whoever leads interiors, FF&amp;E or a residential project. At a big practice, ask reception to pass the two-pager to the interiors team.</div>
+    <div><b>If they ask about commission</b>Yes, we can pay an introducer fee, agreed in writing and disclosed to the client. Most architects' professional codes require that, and saying it first builds trust.</div>
+    <div><b>Dealers and showrooms that resell</b>When your clients want something bespoke, or a budget your brands cannot hit, we make it to drawing in our partner factories in China and deliver to site in the UK, with test reports and CE documents before anything is ordered. Could we try it on one item from a live project?</div>
+    <div><b>UK brands that make their own range</b>We can second-source parts or a whole line (frames, bases, upholstery, cabinets) with samples and factory checks, so you protect margin without risking quality.</div>
+    <div><b>Tile, flooring and finishes distributors</b>Own-label runs direct from the factory, with test reports, at container or part-container quantities.</div>
+    <div><b>Always ask</b>"Who looks after sourcing or new products?" Get a name and email, leave the one-pager, and email them the same day.</div>
+  </section>
+
+  <h2 style="margin-bottom:-14px">Architects and interior designers</h2>
+  <section>
+    <div class="plate"><strong>St John St · St John's Square · Cowcross · Britton St</strong><span>EC1M</span></div>
+    <ul class="stops" data-group="ar1"></ul>
+  </section>
+  <section>
+    <div class="plate"><strong>Clerkenwell Road · Clerkenwell Green · Great Sutton St</strong><span>EC1M · EC1R · EC1V</span></div>
+    <ul class="stops" data-group="ar2"></ul>
+  </section>
+  <section>
+    <div class="plate"><strong>Farringdon Road · Coldbath Sq · Amwell St</strong><span>EC1R</span></div>
+    <ul class="stops" data-group="ar3"></ul>
+  </section>
+  <section>
+    <div class="plate"><strong>Greville St · Baldwins Gardens · Leather Lane</strong><span>EC1N</span></div>
+    <ul class="stops" data-group="ar4"></ul>
+  </section>
+  <section>
+    <div class="plate"><strong>Goswell Road · Old Street · Golden Lane</strong><span>EC1V · EC1Y</span></div>
+    <ul class="stops" data-group="ar5"></ul>
+  </section>
+
+  <h2 style="margin-bottom:-14px">Showrooms that resell or source</h2>
+  <section>
+    <div class="plate"><strong>St John Street · St John's Lane · Cowcross St</strong><span>EC1M</span></div>
+    <ul class="stops" data-group="a"></ul>
+  </section>
+  <section>
+    <div class="plate"><strong>Great Sutton St · Brewhouse Yard · Northburgh St</strong><span>EC1V</span></div>
+    <ul class="stops" data-group="b"></ul>
+  </section>
+  <section>
+    <div class="plate"><strong>Clerkenwell Road · Old Street · Goswell Road</strong><span>EC1M · EC1V</span></div>
+    <ul class="stops" data-group="c"></ul>
+  </section>
+  <section>
+    <div class="plate"><strong>Rosebery Ave · Leather Lane · Turnmill St</strong><span>EC1R · EC1N</span></div>
+    <ul class="stops" data-group="d"></ul>
+  </section>
+
+  <section class="box">
+    <h2>Already contacted</h2>
+    <p><b>Emailed 10 Nov, no reply yet:</b> Jestico + Whiles, APT, NSpace, Coffey Architects, DThree Studio, Align, Hawkins\Brown, King Conroy. At their door, leave the architects' two-pager with a note: "I emailed on Monday, I'm round the corner this week."</p>
+    <p><b>Drafted, not sent:</b> BDP, SimpsonHaugh, Emrys, Orms, AHMM, Pilbrow &amp; Partners, Zaha Hadid Architects, Haworth Tompkins. Visit first; I'll send the email the same day, mentioning the visit. These are marked in the list.</p>
+  </section>
+
+  <section class="box">
+    <h2>Rules for the day</h2>
+    <ol class="rules">
+      <li>Architects first: the morning is the best time to catch a partner before site visits. Aim for 15 to 20 doors a day. Showrooms are usually open weekdays 9:00 to 17:30. If one is appointment-only, ask for a name and email and move on.</li>
+      <li>Tick each door here, and send me the names and emails you collect (a photo of the business cards is fine). I'll write the follow-up emails the same evening.</li>
+      <li>Extend the trip only if, by Thursday evening, at least 3 people have asked for a price, a sample or a meeting.</li>
+    </ol>
+    <p class="note">Architect addresses are registered offices from Companies House (11 Nov 2026). Showroom addresses come from the Clerkenwell Showrooms directory (clerkenwellshowrooms.com). Either may be out of date, so tap the address to check it on Google Maps before walking over.</p>
+  </section>
+</main>
+
+<script>
+const STOPS=[
+ ["ar1","Fred Pilbrow & Partners","2-5 St John's Square, EC1M 4DE","Architect","Email drafted, not sent. Visit first."],
+ ["ar1","Gianni Botsford Architects","43-45 St John Street, EC1M 4AN","Architect",""],
+ ["ar1","Reed Watts","104a St John Street, EC1M 4EH","Architect",""],
+ ["ar1","Conform Architects","70 St John Street, EC1M 4DT","Architect",""],
+ ["ar1","Michael Tarring Architects","5th Floor Klaco House, 28 St John's Square","Architect",""],
+ ["ar1","Smiths Design","6 St John's Place, EC1M 4NP","Design",""],
+ ["ar1","Gregory Associates","78 Cowcross Street, EC1M 6EJ","Architect",""],
+ ["ar1","3DReid","12 Carthusian Street, EC1M 6EB","Architect",""],
+ ["ar1","Architecture Assembly","19 Britton Street, EC1M 5NZ","Architect",""],
+ ["ar1","Nous Design","26 Britton Street, EC1M 5UB","Design",""],
+ ["ar1","De Matos Ryan","99-100 Turnmill Street, EC1M 5QP","Architect",""],
+ ["ar1","JWA Studios / Studio 4 Architecture","5th Floor, 111 Charterhouse Street, EC1M 6AW","Architect",""],
+ ["ar2","Hawkins\\Brown","30 Clerkenwell Road","Architect","Emailed 10 Nov. Leave the two-pager."],
+ ["ar2","Grimshaw","57 Clerkenwell Road, EC1M 5NG","Architect","Large practice. Ask for the interiors team."],
+ ["ar2","Lyall Bills & Young","50-54 Clerkenwell Road, EC1M 5PS","Architect",""],
+ ["ar2","ScottWhitbyStudio · Woldon · Parti+","1-5 Clerkenwell Road, EC1M 5PA","Architect","Three studios in one building."],
+ ["ar2","Lowell Design","14 Clerkenwell Green, EC1R 0DP","Design",""],
+ ["ar2","Studio W London","3rd Floor Cornwell House, 21 Clerkenwell Green","Design",""],
+ ["ar2","Hodges Design","46 Clerkenwell Close, EC1R 0AZ","Design",""],
+ ["ar2","Tim Ronalds Architects","57 Kingsway Place, Sans Walk, EC1R 0LY","Architect",""],
+ ["ar2","Mailen Design","2nd Floor, 28-29 Great Sutton Street","Design",""],
+ ["ar2","Eighteen Twentyeight","30b Great Sutton Street, EC1V 0DU","Design",""],
+ ["ar2","Studio Egret West","3 Brewhouse Yard, EC1V 4JQ","Architect",""],
+ ["ar2","Studio Ju-Sin","40 Bowling Green Lane, EC1R 0NE","Design",""],
+ ["ar2","Holloway Li","2nd Floor, 6 Baker's Yard, EC1R 3DD","Design",""],
+ ["ar2","Connolly Architects","8 Albion Buildings, 1 Back Hill, EC1R 5EN","Architect",""],
+ ["ar3","MAP Architects · Ansell & Bailey","99-101 Farringdon Road, EC1R 3BN","Architect","Two practices in one building."],
+ ["ar3","ICE Architects · Michi Architecture","Better Space, 127 Farringdon Road, EC1R 3DA","Architect",""],
+ ["ar3","ZJS Design","First Floor, 96 Farringdon Road","Design",""],
+ ["ar3","Studio G Interior Design · Alteration + Repair","Kalamu House, 11 Coldbath Square, EC1R 5HL","Design",""],
+ ["ar3","Studio Ena","4th Floor, The Market Building, 72-82 Rosebery Avenue","Design",""],
+ ["ar3","Tasou Associates","4 Amwell Street, EC1R 1UQ","Design",""],
+ ["ar3","Studio Felicity Bell","Unit 10, 63-67 Rosoman Street, EC1R 0HY","Design",""],
+ ["ar4","Architecture for London","3-5 Bleeding Heart Yard, EC1N 8SJ","Architect",""],
+ ["ar4","Rhodes Architecture","36 Greville Street, EC1N 8TB","Architect",""],
+ ["ar4","Heta Architects","24 Greville Street, EC1N 8SS","Architect",""],
+ ["ar4","Osel Architecture · Studio Multi","The Record Hall, 16-16a Baldwins Gardens","Architect",""],
+ ["ar4","William Tozer Associates","Unit 311, Baldwins Gardens, EC1N 7RJ","Architect",""],
+ ["ar4","Studio Scampi","The Ziggurat, 60-66 Saffron Hill, EC1N 8QX","Design",""],
+ ["ar4","Pure Design Group","45 Leather Lane, EC1N 7TJ","Design",""],
+ ["ar5","Zaha Hadid Architects","101 Goswell Road, EC1V 7EZ","Architect","Email drafted, not sent. Ask for interior architecture."],
+ ["ar5","HDDA","Fourth Floor, 104-110 Goswell Road, EC1V 7DH","Design",""],
+ ["ar5","Jestico + Whiles","Sutton Yard, 65 Goswell Road, EC1V 7EN","Architect","Emailed 10 Nov. Leave the two-pager."],
+ ["ar5","Haworth Tompkins","110 Golden Lane, EC1Y 0TL","Architect","Email drafted, not sent. Visit first."],
+ ["ar5","Eric Parry Architects","28-42 Banner Street, EC1Y 8QE","Architect",""],
+ ["ar5","Fraser Brown MacKenna","15-18 Featherstone Street, EC1Y 8SL","Architect",""],
+ ["ar5","Maccreanor Lavington","4th Floor, 63-71 Gee Street, EC1V 3RS","Architect",""],
+ ["ar5","Casson Mann","45 Mitchell Street, EC1V 3QD","Design",""],
+ ["ar5","Andrew Yeoh Associates","12 Helmet Row, EC1V 3QJ","Architect",""],
+ ["ar5","Yo Murata Studio","5 Baldwin Street, EC1V 9NU","Architect",""],
+ ["ar5","AHMM (Allford Hall Monaghan Morris)","Morelands, 5-23 Old Street, EC1V 9HL","Architect","Email drafted, not sent. Large practice."],
+ ["ar5","Orms","160 Old Street, EC1V 9BW","Architect","Email drafted, not sent. Visit first."],
+ ["ar5","Patel Taylor","48 Rawstorne Street, EC1V 7ND","Architect",""],
+ ["ar5","CareyJones Chapmantolcher","Studio 104, 338-346 Goswell Road","Architect",""],
+ ["ar5","MILK Architecture & Design","342 Old Street, EC1V 9DS","Architect",""],
+ ["ar5","Habiter","Unit 9, Shoreditch Town Hall, 380 Old Street","Design",""],
+ ["ar5","Costa Wolf Design","8 Domingo Street, EC1Y 0TA","Design",""],
+ ["a","Elite Office Furniture","81-87 St John Street, EC1M 4NQ","Dealer","Office furniture dealer, 35+ years. Ask about bespoke and budget runs for client projects."],
+ ["a","The Vault (Alchemy office furniture)","8-11 St Johns Lane, EC1M 4BF","Dealer",""],
+ ["a","Rovic Tiles","8-11 St Johns Lane, EC1M 4BF","Distributor","Imports Italian and Spanish tiles. Own-label porcelain is the angle."],
+ ["a","Vantage Spaces","Bloom Clerkenwell, 49 Cowcross Street","Distributor","Living, preserved and replica planting installations."],
+ ["a","Art Atelier London","8-10 Charterhouse Buildings, EC1M 7AN","Supplier","Art packages for commercial interiors. Frames and mounts are the angle."],
+ ["b","Workstories","13 Northburgh Street, EC1V 0JP","UK brand","Says it designs, sources and manufactures workplace furniture. Strong fit."],
+ ["b","Wagstaff & Umbrella Furniture","9 Brewhouse Yard, EC1V 4JR","Dealer","Furniture selection for workplaces."],
+ ["b","Welltek","26 Seward Street, EC1V 3PA","Distributor","Brand portfolio for architects and workplace consultants."],
+ ["b","Your Workspace","11-12 Great Sutton Street","Supplier","Smart storage provider."],
+ ["b","Tables For Business","4th Floor, 5 Sycamore Street","Dealer","Service-led office furniture."],
+ ["c","ØRN Furniture","96-98 Clerkenwell Road, EC1M 5RJ","UK brand","Emerging design-led brand."],
+ ["c","Sazy","27 Old Street, EC1V 9HL","Supplier","Hospitality products and customised services. FF&E angle."],
+ ["c","Table Place Chairs","The Banking Hall, 74 Goswell Road","Supplier","Hospitality and office seating. FF&E angle."],
+ ["c","Deadgood","46 Old Street, EC1V 9AQ","UK brand","Contract furniture brand."],
+ ["c","Koplus","93-99 Goswell Road","UK brand","Sells through dealers."],
+ ["c","Ocee & Four Design","20 Old Street, EC1V 9AB","UK brand","Lower priority."],
+ ["d","Viaduct","1-10 Summers Street, EC1R 5BD","Dealer","Independent showroom and dealer for contemporary furniture and lighting. Strong fit."],
+ ["d","Haiken","121-131 Rosebery Avenue","UK brand","Value-led office furniture."],
+ ["d","Synergy Creativ","121-131 Rosebery Avenue","Supplier",""],
+ ["d","Pentagon Tiles","45-49 Leather Lane, EC1N 7TJ","Distributor","Tile distributor. Own-label angle."],
+ ["d","Max Furniture","25 Britton Street, EC1M 5NY","Supplier","Acoustic furniture and products."],
+ ["d","Plusfloor","66a Turnmill Street, EC1M 5RR","Distributor","Flooring supplier."]
+];
+const KEY='cw-walk-ticks';
+let ticks={};try{ticks=JSON.parse(localStorage.getItem(KEY)||'{}')}catch(e){}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(ticks))}catch(e){}}
+function count(){document.getElementById('count').textContent=Object.values(ticks).filter(Boolean).length+' of '+STOPS.length+' visited'}
+STOPS.forEach(([g,name,addr,type,why],i)=>{
+  const ul=document.querySelector('ul[data-group="'+g+'"]');
+  const li=document.createElement('li');li.className='stop'+(ticks[i]?' done':'');
+  const id='s'+i;
+  const maps='https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(name+' '+addr+' London');
+  li.innerHTML='<input type="checkbox" id="'+id+'"'+(ticks[i]?' checked':'')+' aria-label="Visited '+name.replace(/"/g,'')+'">'+
+    '<label class="name" for="'+id+'"></label>'+
+    '<div class="meta"><span class="tag'+(type==='UK brand'?' b':'')+'"></span><a target="_blank" rel="noopener"></a><div class="why"></div></div>';
+  li.querySelector('label').textContent=name;
+  li.querySelector('.tag').textContent=type;
+  const a=li.querySelector('a');a.href=maps;a.textContent=addr;
+  li.querySelector('.why').textContent=why;
+  li.querySelector('input').addEventListener('change',e=>{ticks[i]=e.target.checked;li.classList.toggle('done',e.target.checked);save();count()});
+  ul.appendChild(li);
+});
+document.getElementById('reset').addEventListener('click',()=>{ticks={};save();document.querySelectorAll('li.stop').forEach(li=>{li.classList.remove('done');li.querySelector('input').checked=false});count()});
+count();
+</script>

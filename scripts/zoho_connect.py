@@ -60,14 +60,15 @@ def save_variables(railway, values, run=subprocess.run):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--mailbox', choices=['rfq', 'customer'], default='rfq')
+    p.add_argument('--mailbox', choices=['rfq', 'customer', 'outreach'], default='rfq')
     p.add_argument('--region', choices=REGIONS, default='eu')
     args = p.parse_args()
     railway = shutil.which('railway')
     if not railway:
         p.error('Install the Railway CLI, sign in with railway login, then use railway link to select Supplier Intel production.')
-    address = 'sai@ikeng.co.uk' if args.mailbox == 'customer' else 'sai@ikeng.online'
-    prefix = 'CUSTOMER_ZOHO_' if args.mailbox == 'customer' else 'RFQ_ZOHO_'
+    # rfq = suppliers (sai@ikeng.online); customer = sai@ikeng.co.uk; outreach = marketing (sj@ikeng.online)
+    address, prefix = {'customer': ('sai@ikeng.co.uk', 'CUSTOMER_ZOHO_'),
+                       'outreach': ('sj@ikeng.online', 'OUTREACH_ZOHO_')}.get(args.mailbox, ('sai@ikeng.online', 'RFQ_ZOHO_'))
     print(f'1. In this PowerShell folder, railway link must point to the Supplier Intel production service.')
     print(f'2. Open https://api-console.zoho.{args.region}/ in your browser. Sign in as {address}.')
     print('3. Create or open a Self Client. Copy its client ID and client secret. Paste them below (input is hidden).')
@@ -84,8 +85,8 @@ def main():
         with httpx.Client(timeout=30, follow_redirects=False) as client:
             values = authorize(args.region, address, client_id, secret, code, client)
         values = {prefix + key: value for key, value in values.items()}
-        if args.mailbox == 'customer':
-            values['CUSTOMER_ZOHO_ADDRESS'] = address
+        if args.mailbox in ('customer', 'outreach'):
+            values[prefix + 'ADDRESS'] = address
         print(f'5. Verified {address}. Ready to save only {prefix} variables to your linked Railway service.')
         if input('Type SAVE to save these variables (no deploy and no email): ').strip() != 'SAVE':
             print('Cancelled; no Railway variables changed.')

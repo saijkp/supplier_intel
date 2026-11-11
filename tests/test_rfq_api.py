@@ -121,7 +121,7 @@ def test_migration_idempotent_and_retains_supplier(workspace):
         conn.execute('DROP TABLE rfq_workspace_quotes'); conn.execute('DROP TABLE rfqs')
         conn.execute('DELETE FROM schema_migrations WHERE version=35')
     initialise_schema(path); initialise_schema(path)
-    assert get_schema_version(path) == 44
+    assert get_schema_version(path) == 45
     with connection_scope(path) as conn:
         assert conn.execute("SELECT count(*) FROM suppliers WHERE canonical_name='Existing supplier'").fetchone()[0] == 1
         assert conn.execute('SELECT count(*) FROM rfqs').fetchone()[0] == 0

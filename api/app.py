@@ -49,6 +49,8 @@ from api.auth import require_api_token
 from api.rfq import router as rfq_router
 from api.rfq_workflow import router as rfq_workflow_router
 from api.customers import router as customers_router
+from api.outreach import router as outreach_router
+from outreach.worker import run as run_outreach_worker
 from storage.status_repository import StatusRepository, StatusConflict
 from pydantic import BaseModel, Field
 from api.form_webhook import router as form_webhook_router
@@ -181,9 +183,13 @@ async def lifespan(app: FastAPI):
     watchdog_task = asyncio.create_task(_stalled_job_watchdog())
     rfq_worker_task = asyncio.create_task(run_rfq_worker(lambda:get_repo().db_path))
     inbox_task = asyncio.create_task(run_customer_inbox(lambda: get_repo().db_path, CUSTOMER_INBOX_POLL_MINUTES))
+    outreach_task = asyncio.create_task(run_outreach_worker(lambda: get_repo().db_path))
     try:
         yield
     finally:
+        outreach_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await outreach_task
         inbox_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await inbox_task
@@ -208,6 +214,7 @@ app.include_router(form_webhook_router)
 from api.whatsapp import router as whatsapp_router
 app.include_router(whatsapp_router)
 app.include_router(customers_router)
+app.include_router(outreach_router)
 app.mount('/workspace', StaticFiles(directory=Path(__file__).resolve().parents[1] / 'frontend', html=True), name='workspace')
 
 app.add_middleware(
