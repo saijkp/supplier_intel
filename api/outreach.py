@@ -41,7 +41,7 @@ class Step(Strict):
 
 class Sequence(Strict):
     title: str = Field(min_length=1,max_length=300)
-    segment: Literal['architect','interior_designer','showroom_dealer','uk_brand','distributor']
+    segment: Literal['architect','interior_designer','showroom_dealer','uk_brand','distributor','developer']
     steps: list[Step] | None = None
 
 
@@ -84,7 +84,7 @@ class Review(Strict):
 
 
 class Account(Strict):
-    segment: Literal['architect','interior_designer','showroom_dealer','uk_brand','distributor'] | None = None
+    segment: Literal['architect','interior_designer','showroom_dealer','uk_brand','distributor','developer'] | None = None
     subscriber_type: Literal['corporate','sole_trader','partnership','unknown'] | None = None
     fit_notes: str | None = None
     priority: Literal['high','low'] | None = None

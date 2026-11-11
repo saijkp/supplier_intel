@@ -20,9 +20,9 @@ from outreach.repository import OutreachRepository
 from storage.database import connection_scope
 
 STAGES = ('prospect', 'contacted', 'replied', 'meeting', 'drawings received', 'quoted', 'won', 'lost')
-SEGMENTS = ('architect', 'interior_designer', 'showroom_dealer', 'uk_brand', 'distributor')
+SEGMENTS = ('architect', 'interior_designer', 'showroom_dealer', 'uk_brand', 'distributor', 'developer')
 SOURCES = ('apollo_free_search', 'website', 'business_card', 'manual')
-FIELDS = {'first_name', 'company', 'area', 'project_hint'}
+FIELDS = {'first_name', 'company', 'area', 'project_hint', 'project_ref', 'project_address', 'project_summary'}
 GATE = Semaphore(1)
 FOOTER = ('\n\nSai Jyothis | IK Eng Ltd\n#1, 125 Great Clowes Street, Salford, M7 1AL, UK\n'
           'Relevant professional sourcing introduction; source: {source}.\n'
@@ -235,6 +235,9 @@ class OutreachService:
         seq = self.repo.get('outreach_sequences', sid)
         seq['steps'] = self.repo.rows('SELECT * FROM outreach_steps WHERE sequence_id=? ORDER BY position', (sid,))
         seq['contacts'] = self.repo.rows('SELECT e.*,c.name,c.email,a.company,a.subscriber_type,c.email_status FROM outreach_enrolments e JOIN prospect_contacts c ON c.id=e.contact_id JOIN prospect_accounts a ON a.id=c.account_id WHERE sequence_id=?', (sid,))
+        for contact in seq['contacts']:
+            linked = self.repo.rows('SELECT snapshot FROM planning_enrolment_projects WHERE enrolment_id=?',(contact['id'],))
+            contact['project_hook'] = json.loads(linked[0]['snapshot']) if linked else None
         return seq
 
     def enrol(self, sid, contact_ids, mailbox):
@@ -245,6 +248,10 @@ class OutreachService:
             for cid in set(contact_ids):
                 if not c.execute('SELECT 1 FROM prospect_contacts WHERE id=?',(cid,)).fetchone():
                     raise ValueError('Contact not found')
+                contact = dict(c.execute('SELECT c.email,a.domain,a.company FROM prospect_contacts c JOIN prospect_accounts a ON a.id=c.account_id WHERE c.id=?',(cid,)).fetchone())
+                identifiers = [contact['email'] or '', (contact['email'] or '').rpartition('@')[2], contact['domain'] or '', re.sub(r'\W+', '', contact['company'].casefold())]
+                if any(c.execute('SELECT 1 FROM planning_first_touch_exclusions WHERE identifier=?',(v.lower(),)).fetchone() for v in identifiers if v):
+                    raise ValueError('Historical planning recipient requires manual follow-up review')
                 other=c.execute("SELECT 1 FROM outreach_enrolments WHERE contact_id=? AND status='active' AND sequence_id!=?",(cid,sid)).fetchone()
                 if other:
                     raise ValueError('Contact already has an active sequence; pause it first')
@@ -279,12 +286,19 @@ class OutreachService:
     def blocked(self, row):
         email = row.get('email') or ''
         suppressed = self.repo.rows('SELECT 1 FROM suppression_list WHERE identifier IN (?,?)', (email,email.rpartition('@')[2]))
+        historical = any(self.repo.rows('SELECT 1 FROM planning_first_touch_exclusions WHERE identifier=?',(v,))
+                         for v in (email, email.rpartition('@')[2], re.sub(r'\W+', '', row.get('company','').casefold())) if v)
         # RFQ objections must apply to prospect outreach too.
         rfq = self.repo.rows('SELECT 1 FROM rfq_suppressions WHERE lower(email)=?', (email,))
-        return bool(suppressed or rfq or row['opted_out_at'] or row['bounced_at'] or row['flagged'])
+        return bool(historical or suppressed or rfq or row['opted_out_at'] or row['bounced_at'] or row['flagged'])
 
     def _values(self, row):
-        return {'first_name': (row['name'] or '').split()[0] if row['name'] and row['source_url'] else '',
+        projects = self.repo.rows('SELECT snapshot FROM planning_enrolment_projects WHERE enrolment_id=?', (row.get('id'),))
+        project = json.loads(projects[0]['snapshot']) if projects else {}
+        return {'project_ref': project.get('reference') if project.get('source_url') else '',
+                'project_address': project.get('address') if project.get('source_url') else '',
+                'project_summary': project.get('description') if project.get('source_url') else '',
+                'first_name': (row['name'] or '').split()[0] if row['name'] and row['source_url'] else '',
                 'company': row['company'] if row['account_source'] else '',
                 'area': row['area'] if row['account_source'] else '',
                 'project_hint': row['project_hint'] if row['project_hint_source'] else ''}

@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 45
+SCHEMA_VERSION = 46
 
 
 # ═══════════════════════════════════════════════════════════
@@ -962,8 +962,11 @@ CASE lower(trim(status))
 
 from outreach.schema import SQL as OUTREACH_SCHEMA_SQL, statements as outreach_statements
 SCHEMA_SQL += OUTREACH_SCHEMA_SQL
+from planning.schema import SQL as PLANNING_SQL, statements as planning_statements
+SCHEMA_SQL += PLANNING_SQL
 
 MIGRATIONS: dict[int, dict] = {
+    46: {"description": "Planning projects and grounded outreach hooks", "statements": planning_statements()},
     45: {
         "description": "Approval-gated prospect accounts, sequences, ledger and permanent suppression",
         "statements": list(outreach_statements()),

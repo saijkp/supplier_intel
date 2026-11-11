@@ -41,3 +41,6 @@ photos/
 
 # Local test and browser-check scratch files
 /tmp/
+
+# Planning batches hold named contacts; never commit them
+planning/*batch*.json
