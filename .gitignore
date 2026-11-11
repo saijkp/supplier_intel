@@ -38,3 +38,6 @@ extract_and_verify.py
 injection_moulding_100_enriched.xlsx
 output/
 photos/
+
+# Local test and browser-check scratch files
+/tmp/

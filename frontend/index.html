@@ -10,39 +10,69 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="IK ENG">
-<meta name="theme-color" content="#0f1b2d">
+<meta name="theme-color" content="#183d33">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script>
+try { document.documentElement.dataset.theme = (localStorage.getItem('si.theme')==='system'?null:localStorage.getItem('si.theme')) || (matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'); } catch (_) { document.documentElement.dataset.theme=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'; }
+</script>
 <style>
-:root{
-  --steel-900:#0f1b2d;
-  --steel-700:#334862;
-  --steel-500:#5c7593;
-  --steel-300:#a9bdd4;
-  --rule:#d3e0ee;
-  --rule-soft:#e7eef7;
-  --paper:#f4f8fd;
-  --surface:#ffffff;
-
-  --orange:#2563eb;
-  --orange-dark:#1d4ed8;
-
-  --danger:#c0311a;
-  --danger-dark:#9c2513;
-  --danger-bg:#fdece8;
-
-  --tier-verified:#0b6b4f;
-  --tier-verified-bg:#e4f2ec;
-  --tier-stated:#1a5fb4;
-  --tier-claimed:#9a6300;
-  --tier-claimed-bg:#f8efdd;
-
-  --ai:#6d4fb0;
-  --ai-bg:#f2eefa;
-
-  --shadow:0 1px 3px rgba(15,27,45,.07),0 6px 20px rgba(15,27,45,.06);
-}
+:root,:root[data-theme=light]{color-scheme:light;
+  --steel-900:#192f2b;
+  --steel-700:#3b514b;
+  --steel-500:#5f6f67;
+  --steel-300:#60746b;
+  --paper:#f7f5ef;
+  --surface:#fffefb;
+  --rule:#d7dfd4;
+  --rule-soft:#eaf0e7;
+  --orange:#b44120;
+  --orange-dark:#963417;
+  --accent-ink:#ffffff;
+  --tier-verified:#17664d;
+  --tier-verified-bg:#e1f0e6;
+  --tier-stated:#285e50;
+  --tier-claimed:#805500;
+  --tier-claimed-bg:#fff0c7;
+  --danger:#b82b29;
+  --danger-dark:#a42424;
+  --danger-bg:#ffebe7;
+  --ai:#69478a;
+  --ai-bg:#f2eaf8;
+  --sidebar:#183d33;
+  --sidebar-ink:#f9f5e9;
+  --sidebar-muted:#c9dccf;
+  --focus:#9d3c1c;
+  --overlay:#10251dcc;
+  --shadow:0 6px 24px #183d330d}
+:root[data-theme=dark]{color-scheme:dark;
+  --steel-900:#edf4e9;
+  --steel-700:#c9d8cc;
+  --steel-500:#abbcaf;
+  --steel-300:#abbcaf;
+  --paper:#101c18;
+  --surface:#1a2b24;
+  --rule:#3d5347;
+  --rule-soft:#2a4033;
+  --orange:#f7a17b;
+  --orange-dark:#ffb18f;
+  --accent-ink:#28150f;
+  --tier-verified:#8ad8b3;
+  --tier-verified-bg:#224334;
+  --tier-stated:#a5dbbe;
+  --tier-claimed:#f2ca74;
+  --tier-claimed-bg:#473c22;
+  --danger:#ffa2a0;
+  --danger-dark:#ffb1a8;
+  --danger-bg:#442c29;
+  --ai:#d2b3f1;
+  --ai-bg:#372b42;
+  --sidebar:#122e25;
+  --sidebar-ink:#edf4e9;
+  --sidebar-muted:#b1cabb;
+  --focus:#ffbb8f;
+  --shadow:0 6px 24px #00000026}
 
 *{box-sizing:border-box;margin:0;padding:0}
 html{-webkit-text-size-adjust:100%}
@@ -675,9 +705,31 @@ input:not([type=checkbox]):not([type=radio]),select{min-height:44px}
  .tbl,.tbl tbody,.tbl tr,.tbl td{display:block;width:100%!important;min-width:0!important}.tbl thead{display:none}.tbl tr{padding:12px;border:1px solid var(--rule);border-radius:12px;margin:12px 0}.tbl td{border:0;padding:5px 8px;overflow-wrap:anywhere}
  .cust-row{min-height:44px}.cust-cols{grid-template-columns:1fr!important}#liveStrip{padding:8px 16px;font-size:13px}.inbox-card{padding:16px}
 }
-@media(prefers-color-scheme:dark){:root{--steel-900:#e8f0fc;--steel-700:#c5d5eb;--steel-500:#a7bdd9;--steel-300:#c5d5eb;--rule:#3a4d67;--rule-soft:#24364f;--paper:#0e1726;--surface:#182639;--orange:#80adff;--orange-dark:#9bc0ff;--tier-stated:#9bc0ff;--tier-verified:#7ddbb8;--danger-bg:#422520;--danger-dark:#ffb4a7;--ai-bg:#302640}.topbar{background:#0f1b2d}.btn-primary{background:#2563eb;color:white}.input,input,select,textarea{background:var(--surface);color:var(--steel-900)}dialog{background:var(--surface);color:var(--steel-900)}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
+ .dot.amber{background:var(--tier-claimed)}#authBanner{padding:16px;background:var(--surface);border:2px solid var(--tier-claimed)}body.auth-required main{display:none}
+#nav > [data-view],#nav > a{display:none}#researchTabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px}#researchTabs.hidden{display:none}#globalSearch{margin-bottom:24px}#globalSearch .input{flex:1;min-width:0}#globalResults:empty{display:none}.work-item{display:flex;justify-content:space-between;gap:20px;align-items:center;border-bottom:1px solid var(--rule);padding:20px 0}.work-item h2{font-size:20px;margin:8px 0}.status-chip{display:inline-block;padding:4px 9px;border-radius:20px;background:var(--rule-soft);font-size:13px;font-weight:600}.due-overdue{color:var(--danger-dark);background:var(--danger-bg)}.due-today{color:var(--tier-claimed);background:var(--tier-claimed-bg)}@media(max-width:760px){.work-item{align-items:stretch;flex-direction:column}.work-item .btn{align-self:flex-start}}
+/* Ember and evergreen: semantic tokens work in both system and manual modes. */
+.topbar{background:var(--sidebar);color:var(--sidebar-ink);border-color:var(--orange)}
+.btn-primary,:is(#view-search,#view-jobs) .btn-primary{background:var(--orange);color:var(--accent-ink)}.btn-primary:hover{background:var(--orange-dark);color:var(--accent-ink)}
+.input,input,select,textarea,dialog{background:var(--surface);color:var(--steel-900)}
+#waDialog::backdrop,dialog::backdrop{background:var(--overlay)}
+:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+.btn,button,a{transition:background .16s ease,box-shadow .16s ease}.panel{box-shadow:var(--shadow)}
+.eyebrow{font-size:12px;letter-spacing:.14em;font-weight:700;color:var(--orange-dark)}
+#themeToggle{border:1px solid currentColor;border-radius:8px;padding:5px 10px}#globalSearch>label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}#globalResults{padding:16px;background:var(--surface);border:1px solid var(--rule);border-radius:12px;margin-top:10px}#globalResults button{display:block;text-align:left;width:100%}
+#liveState[data-health=auth]{color:var(--tier-claimed)}#liveState[data-health=offline]{color:var(--danger-dark)}
+#authBanner{border-color:var(--tier-claimed);color:var(--steel-900);background:var(--tier-claimed-bg)}.dot.amber{background:var(--tier-claimed)}
+#toast{position:fixed;z-index:150;bottom:100px;left:50%;transform:translateX(-50%);background:var(--sidebar);color:var(--sidebar-ink);padding:12px 20px;border-radius:12px;box-shadow:var(--shadow);max-width:90vw}
+.work-item.new-arrival{animation:arrival 1.4s ease-out}@keyframes arrival{from{background:var(--tier-claimed-bg)}to{background:transparent}}
+@media(min-width:761px){body{padding-left:240px}.topbar{position:fixed;inset:0 auto 0 0;width:240px;border-bottom:0;border-right:1px solid var(--rule)}.topbar-in{height:100%;padding:26px 18px;display:flex;flex-direction:column;align-items:stretch;gap:24px}.brand{flex-shrink:0}.nav{display:flex;flex-direction:column;align-items:stretch;gap:5px;flex:1;overflow:auto}.nav button{color:var(--sidebar-ink);text-align:left;padding:12px 14px;border-radius:10px}.nav button[aria-current=page]{background:var(--sidebar-ink);color:var(--sidebar);font-weight:700}.nav span:not(:empty){float:right;font-size:12px;background:var(--rule-soft);color:var(--steel-900);border-radius:12px;padding:2px 6px}.conn{margin:0;flex-wrap:wrap}.conn button{color:var(--sidebar-ink);text-align:left}.wrap{max-width:1240px}#liveStrip{max-width:1240px}#authBanner{margin:20px}}
+@media(max-width:760px){.conn{max-width:52%}.conn button{white-space:normal;line-height:1.3}#themeToggle{font-size:12px}.brand-name{font-size:20px}.brand-mark{display:none}#phoneTabs{box-shadow:var(--shadow)}#phoneTabs button[aria-current=page]{background:var(--rule-soft);color:var(--orange-dark)}#phoneTabs button{font-size:12px}#globalSearch{margin-bottom:16px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+dialog#auditDetailDialog,#view-compare,#view-search,#view-bulk,#view-jobs{--ink-950:var(--paper);--ink-900:var(--surface);--ink-800:var(--rule-soft);--ink-700:var(--rule);--text-hi:var(--steel-900);--text-lo:var(--steel-500);--accent:var(--orange);--accent-dim:var(--orange-dark);--good:var(--tier-verified);--warn:var(--tier-claimed)}
+:is(#view-compare,#view-search,#view-bulk,#view-jobs) .btn-primary{background:var(--orange);color:var(--accent-ink)}:is(#view-compare,#view-search,#view-bulk,#view-jobs) .btn-primary:hover{background:var(--orange-dark)}
+.brand-mark,.chat-bubble.user{color:var(--accent-ink)}
+.dlg-head,#view-audit .panel-head{background:var(--sidebar);color:var(--sidebar-ink)}#view-audit .panel-head .panel-title{color:var(--sidebar-ink)}
+#phoneTabs span:not(:empty){color:var(--accent-ink);background:var(--orange)}
 </style>
 </head>
 <body>
@@ -688,7 +740,15 @@ input:not([type=checkbox]):not([type=radio]),select{min-height:44px}
       <span class="brand-mark">SI</span>
       <span class="brand-name">Supplier Intel</span>
     </div>
-    <nav class="nav" id="nav">
+    <nav class="nav" id="nav" aria-label="Workspace">
+      <button data-workspace="today">Today <span id="todayCount"></span></button>
+      <button data-workspace="customers">Customers <span id="dueCount"></span></button>
+      <button data-workspace="quotes">Suppliers &amp; RFQs <span id="quoteCount"></span></button>
+      <button data-workspace="research">Research</button>
+      <button data-workspace="inbox">Inbox</button>
+      <button data-workspace="jobs">Jobs</button>
+      <button data-workspace="status">Status</button>
+      <button data-workspace="settings">Settings</button>
       <a href="rfq.html" style="color:inherit;padding:8px 12px">RFQ workspace</a>
       <button data-view="find" aria-current="page">Find suppliers</button>
       <button data-view="search">Search</button>
@@ -701,15 +761,20 @@ input:not([type=checkbox]):not([type=radio]),select{min-height:44px}
       <button data-view="status">Status</button>
     </nav>
     <div class="conn">
-      <span class="dot" id="connDot"></span>
+      <button id="themeToggle" aria-label="Change colour theme">Theme: System</button><span class="dot" id="connDot"></span>
       <button id="connBtn">Not connected</button>
     </div>
   </div>
 </header>
 
+<div id="toast" class="hidden" role="status"></div>
 <div id="liveStrip" role="status"><span id="liveState">Connecting</span> ? <span id="liveAge">Waiting for update</span><button class="btn btn-ghost" id="liveRefresh">Refresh</button></div>
 <div id="offlineNote" class="hidden" role="status">You're offline. Connect to see your latest messages and status. Your private data is never cached.</div>
+<div id="authBanner" class="hidden" role="alert">Add your access token in Settings <button class="btn" onclick="document.getElementById('connBtn').click()">Open Settings</button></div>
 <main class="wrap">
+<form id="globalSearch" role="search"><label for="globalQuery">Search customers, enquiries and suppliers</label><div class="row"><input class="input" id="globalQuery" type="search" placeholder="Name, email or phone" required><button class="btn" type="submit">Search</button></div><div id="globalResults" aria-live="polite"></div></form>
+<nav id="researchTabs" class="hidden" aria-label="Research tools"></nav>
+<section id="view-today" class="hidden"><div class="panel"><div class="panel-head"><div><p class="eyebrow">YOUR DAILY WORKSPACE</p><h1>Today</h1><p class="hint">What needs your attention, newest first.</p></div><button class="btn" id="todayRefresh">Refresh</button></div><div class="panel-body"><p id="todayNotice" role="status"></p><div id="todayList"><div class="skeleton" aria-label="Loading daily work"></div></div></div></div></section>
 <section id="view-inbox" class="hidden"><div class="panel"><div class="panel-head"><h1>Inbox</h1><button class="btn btn-primary" id="addWhatsApp">Add WhatsApp message</button></div><div class="panel-body"><p class="hint">Your latest conversations, ready to take to Claude.</p><div id="inboxCards"></div></div></div></section>
 <section id="view-more" class="hidden"><div class="panel panel-body"><h1>More tools</h1><div id="moreLinks" class="cust-grid"></div></div></section>
 
@@ -1010,7 +1075,7 @@ input:not([type=checkbox]):not([type=radio]),select{min-height:44px}
     <div id="custReadiness" class="hint"></div><div id="custNotice" role="status" style="margin:8px 0;font-weight:600"></div>
     <div class="cust-bar">
       <label>Show <select class="input" id="custFilter">
-        <option value="today" selected>Today</option><option value="due">Follow-ups due</option><option value="open">All open enquiries</option><option value="quiet">Not responding</option><option value="all">Including closed</option>
+        <option value="today">Today</option><option value="due">Follow-ups due</option><option value="open" selected>All open enquiries</option><option value="quiet">Not responding</option><option value="all">Including closed</option>
       </select></label>
       <button class="btn btn-ghost" id="custNewToggle">+ New customer &amp; enquiry</button>
     </div>
@@ -1125,6 +1190,10 @@ async function api(path, opts = {}) {
     }
   }).catch(() => { throw new Error("UNREACHABLE"); });
 
+  if (res.status === 401) {
+    requireAccessToken();
+    const error = new Error('Add your access token in Settings'); error.status = 401; throw error;
+  }
   if (res.status === 204) return null;
 
   const contentType = res.headers.get("content-type") || "";
@@ -1226,7 +1295,7 @@ function explain(err, host) {
     alertBox(host, 1, "Got a webpage instead of data",
       `The response from <code>${esc(state.base)}</code> wasn't JSON. Check the address in the connection dialog.`);
   } else if (err.status === 401) {
-    alertBox(host, 1, "Token rejected", "The access token doesn't match the one set on the server.");
+    requireAccessToken(); host.innerHTML = ""; return;
   } else if (err.status === 503) {
     alertBox(host, 1, "Server has no token set", "The API refuses every request until <code>API_ACCESS_TOKEN</code> is set on Railway.");
   } else {
@@ -1235,21 +1304,22 @@ function explain(err, host) {
 }
 
 /* ═══ Connection ════════════════════════════════════════════ */
+function requireAccessToken() {
+  state.connected = false;
+  $('connDot').className = 'dot amber';
+  $('connBtn').textContent = 'Access token missing or wrong';
+  $('authBanner').classList.remove('hidden');
+  document.body.classList.add('auth-required');
+}
 async function checkHealth() {
-  const dot = $("connDot"), btn = $("connBtn");
-  if (!state.base) {
-    dot.className = "dot"; btn.textContent = "Not connected"; state.connected = false; return;
-  }
+  if (!state.base) { $('connDot').className='dot bad'; $('connBtn').textContent='API unreachable'; state.connected=false; return; }
   try {
-    const r = await fetch(state.base + "/health");
-    if (!r.ok) throw new Error();
-    dot.className = "dot ok";
-    btn.textContent = state.base.replace(/^https?:\/\//, "");
-    state.connected = true;
-  } catch {
-    dot.className = "dot bad";
-    btn.textContent = "Unreachable";
-    state.connected = false;
+    await api('/customers/status');
+    $('connDot').className='dot ok'; $('connBtn').textContent='Connected'; state.connected=true;
+    $('authBanner').classList.add('hidden'); document.body.classList.remove('auth-required');
+  } catch (error) {
+    if (error.status === 401) { requireAccessToken(); return; }
+    $('connDot').className='dot bad'; $('connBtn').textContent='API unreachable'; state.connected=false;
   }
 }
 
@@ -1282,7 +1352,7 @@ $("nav").addEventListener("click", (e) => {
   const view = btn.dataset.view;
   document.querySelectorAll("#nav button").forEach(b =>
     b.setAttribute("aria-current", b === btn ? "page" : "false"));
-  ["find","search","bulk","jobs","compare","audit","quotes","customers","status","inbox","more"].forEach(v =>
+  ["find","search","bulk","jobs","compare","audit","quotes","customers","status","inbox","more","today"].forEach(v =>
     $("view-" + v).classList.toggle("hidden", v !== view));
   if (view === "customers" && window.loadCustomers) window.loadCustomers();
   if (view === "status") loadStatus();
@@ -2104,6 +2174,7 @@ document.addEventListener("click", async (e) => {
     const res = await fetch(state.base + `/pipeline/jobs/${jobId}/export.${format}`, {
       headers: { "Authorization": "Bearer " + state.token },
     });
+    if (res.status === 401) { requireAccessToken(); throw Object.assign(new Error('Add your access token in Settings'), {status:401}); }
     if (!res.ok) throw Object.assign(new Error("Export failed"), { status: res.status });
     const blob = await res.blob();
     const a = document.createElement("a");
@@ -2283,7 +2354,8 @@ async function downloadBatchCsv(jobId) {
   const res = await fetch(state.base + `/batch/${jobId}/export.csv`, {
     headers: { "Authorization": "Bearer " + state.token },
   });
-  if (!res.ok) throw Object.assign(new Error("Export failed"), { status: res.status });
+  if (res.status === 401) { requireAccessToken(); throw Object.assign(new Error('Add your access token in Settings'), {status:401}); }
+    if (!res.ok) throw Object.assign(new Error("Export failed"), { status: res.status });
   const blob = await res.blob();
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -2374,7 +2446,8 @@ async function findSubmitBulk() {
       const res = await fetch(state.base + "/batch/upload", {
         method: "POST", headers: { "Authorization": "Bearer " + state.token }, body: form,
       });
-      if (!res.ok) throw Object.assign(new Error("Upload failed"), { status: res.status });
+      if (res.status === 401) { requireAccessToken(); throw Object.assign(new Error('Add your access token in Settings'), {status:401}); }
+    if (!res.ok) throw Object.assign(new Error("Upload failed"), { status: res.status });
       const job = await res.json();
       newlyTracked.push({ id: job.id, label: item.label });
     } catch (err) {
@@ -2961,6 +3034,7 @@ document.addEventListener("click", async (e) => {
     const res = await fetch(state.base + `/sourcing/runs/${runId}/export.csv`, {
       headers: { "Authorization": "Bearer " + state.token },
     });
+    if (res.status === 401) { requireAccessToken(); throw Object.assign(new Error('Add your access token in Settings'), {status:401}); }
     if (!res.ok) throw Object.assign(new Error("Export failed"), { status: res.status });
     const blob = await res.blob();
     const a = document.createElement("a");
@@ -3898,10 +3972,13 @@ async function rfqAction(work) {
   try { await work(); } catch(e) { $('rfqNotice').textContent = e.message; }
 }
 async function loadRFQ() {
+  if(!$('rfqCampaigns').innerHTML)$('rfqCampaigns').innerHTML='<div class="skeleton" aria-label="Loading campaigns"></div>';
   await rfqAction(async () => {
     const [status,campaigns] = await Promise.all([api('/rfq/status'),api('/rfq/campaigns')]);
     $('rfqReadiness').textContent = `${status.ready ? 'Email sending ready' : 'Email sending unavailable'} · Remaining rolling 24h cap: ${status.remaining_cap}. ${status.missing.length ? 'Missing: '+status.missing.join(', ') : ''} ${status.sending_needs_review.length ? status.sending_needs_review.length+' interrupted sends need human review; they will not be resent.' : ''}`;
-    $('rfqCampaigns').innerHTML = '<h3>Campaigns</h3>'+campaigns.map(c=>`<button class="btn btn-ghost" data-rfq-campaign="${Number(c.id)}">${esc(c.title)} (${esc(c.status)})</button>`).join('');
+    const summaries=[];
+    for(let i=0;i<campaigns.length;i+=5) summaries.push(...await Promise.all(campaigns.slice(i,i+5).filter(c=>c.id!==1).map(async c=>{const comparison=await api(`/rfq/campaigns/${c.id}/compare`);const count=new Set(Object.values(comparison.currencies).flat().map(q=>q.supplier_id).filter(Boolean)).size;return `<article class="work-item"><div><h3>${esc(c.title)}</h3><p>${esc(c.product||'')} &middot; ${esc(c.status)}</p><label>${count} of 4 quotes <progress value="${Math.min(count,4)}" max="4">${count} of 4</progress></label><p class="hint">${comparison.unanswered.length} awaiting reply &middot; Four distinct suppliers per product required</p></div><button class="btn" data-rfq-campaign="${Number(c.id)}">Open campaign</button></article>`;})));
+    $('rfqCampaigns').innerHTML='<h3>Campaigns</h3><a class="btn" href="rfq.html">Open item RFQ workspace</a>'+summaries.join('');
   });
 }
 async function showRFQ(id) {
@@ -3910,7 +3987,8 @@ async function showRFQ(id) {
   $('rfqCampaign').innerHTML=`<h3>${esc(c.title)}</h3><button class="btn" data-rfq-action="approve">Approve email drafts</button> <button class="btn" data-rfq-action="send">Send approved emails</button> <button class="btn btn-ghost" data-rfq-action="followups">Draft follow-ups</button> <button class="btn btn-ghost" data-rfq-action="compare">Compare quotes</button>
   <div style="overflow:auto"><table class="tbl"><thead><tr><th>Supplier / channel</th><th>Draft</th><th>Status / actions</th></tr></thead><tbody>${c.messages.map(m=>`<tr><td>${esc(m.supplier_name)}<br>${esc(m.channel)}<br>${esc(m.recipient)}</td><td>${m.channel==='email'?`<label>Recipient<input class="input" id="rfqRecipient${Number(m.id)}" value="${esc(m.recipient)}" ${m.status==='draft'?'':'disabled'}></label>`:''}<label>Subject<input class="input" id="rfqSubject${Number(m.id)}" value="${esc(m.subject)}" ${m.status==='draft'?'':'disabled'}></label><label>Message<textarea class="input" rows="7" id="rfqBody${Number(m.id)}" ${m.status==='draft'?'':'disabled'}>${esc(m.body)}</textarea></label></td><td>${esc(m.status)}<br>${esc(m.status_reason)}<br>${m.status==='draft'?`<button class="btn btn-sm" data-rfq-save="${Number(m.id)}">Save draft</button>`:''}
   ${m.channel!=='email'?`${/^https?:\/\//i.test(m.action_url||'')?`<a href="${esc(m.action_url)}" target="_blank" rel="noopener noreferrer">Open channel</a>`:''}<button class="btn btn-sm" data-rfq-copy="${Number(m.id)}">Copy message</button>${m.status==='draft'?`<button class="btn btn-sm" data-rfq-sent="${Number(m.id)}">Mark sent</button>`:''}`:''}<button class="btn btn-sm" data-rfq-reply="${Number(m.id)}">Paste reply</button></td></tr>`).join('')}</tbody></table></div>
-  <h3>Replies</h3>${c.replies.map(r=>`<details><summary>Supplier ${Number(r.supplier_id)} · ${esc(r.reply_type)} · ${esc(r.parse_status)}</summary><pre style="white-space:pre-wrap">${esc(r.body_text)}</pre>${(r.attachments||[]).map(a=>`<div>${esc(a.filename)}: ${esc(a.read_status)}</div>`).join('')}</details>`).join('')}`;
+  <h3>Replies</h3>${c.replies.map(r=>`<details id="rfqReply${Number(r.id)}"><summary>Supplier ${Number(r.supplier_id)} · ${esc(r.reply_type)} · ${esc(r.parse_status)}</summary><pre style="white-space:pre-wrap">${esc(r.body_text)}</pre>${(r.attachments||[]).map(a=>`<div>${esc(a.filename)}: ${esc(a.read_status)}</div>`).join('')}</details>`).join('')}`;
+  await compareRFQ();
 }
 async function compareRFQ() {
   const result=await api(`/rfq/campaigns/${rfqCampaignId}/compare`);
@@ -3936,7 +4014,7 @@ $('view-quotes').addEventListener('click',e=>rfqAction(async()=>{
   if(b.dataset.rfqCampaign){await showRFQ(b.dataset.rfqCampaign);return;}
   const id=b.dataset.rfqSave||b.dataset.rfqCopy||b.dataset.rfqSent||b.dataset.rfqReply;
   if(b.dataset.rfqSave){await api('/rfq/messages/'+id,{method:'PATCH',body:JSON.stringify({subject:$('rfqSubject'+id).value,body:$('rfqBody'+id).value,...($('rfqRecipient'+id)?{recipient:$('rfqRecipient'+id).value}:{})})});}
-  if(b.dataset.rfqCopy){await navigator.clipboard.writeText($('rfqBody'+id).value);$('rfqNotice').textContent='Message copied';return;}
+  if(b.dataset.rfqCopy){await navigator.clipboard.writeText($('rfqBody'+id).value);$('rfqNotice').textContent='Message copied';window.showToast?.('Message copied');return;}
   if(b.dataset.rfqSent){if(!confirm('Confirm you sent this message yourself?'))return;await rfqPost('/rfq/messages/'+id+'/mark-sent');}
   if(b.dataset.rfqReply){const text=prompt('Paste the supplier reply:');if(!text)return;await rfqPost('/rfq/messages/'+id+'/reply',{text});}
   if(b.dataset.rfqAction){
@@ -3947,25 +4025,31 @@ $('view-quotes').addEventListener('click',e=>rfqAction(async()=>{
     const result=await rfqPost(`/rfq/campaigns/${rfqCampaignId}/${action}`);
     $('rfqNotice').textContent=result.job_id?'Send job '+result.job_id+' queued. See Job history for results.':JSON.stringify(result);
   }
-  if(id||b.dataset.rfqAction){await showRFQ(rfqCampaignId);await loadRFQ();}
+  if(id||b.dataset.rfqAction){await showRFQ(rfqCampaignId);await loadRFQ();window.showToast?.('Saved');}
 }));
 
 </script>
 <script src="customers.js"></script>
 <nav id="phoneTabs" aria-label="Main navigation">
-<button data-phone="status">Status</button><button data-phone="inbox">Inbox <span id="inboxBadge"></span></button><button data-phone="customers">Customers <span id="customersBadge"></span></button><button data-phone="search">Search</button><button data-phone="more">More</button>
+<button data-phone="today">Today <span id="phoneTodayCount"></span></button><button data-phone="customers">Customers <span id="customersBadge"></span></button><button data-phone="quotes">RFQs <span id="phoneQuoteCount"></span></button><button data-phone="research">Research</button><button data-phone="more">More</button><span id="inboxBadge" hidden></span>
 </nav>
 <dialog id="waDialog"><form id="waForm"><h2>Add WhatsApp message</h2><p>Screenshots stay private. No OCR or AI runs on upload.</p><label>Screenshots (up to 10, max 10 MB each)<input id="waFiles" type="file" accept="image/*" multiple required></label><label>Pasted text (optional)<textarea class="input" id="waText" maxlength="20000" rows="4"></textarea></label><label>Customer / enquiry (optional)<select class="input" id="waEnquiry"><option value="">Unassigned - review in Inbox</option></select></label><p id="waNotice" role="status"></p><button class="btn btn-primary" type="submit" id="waSave">Save to Inbox</button><button class="btn btn-ghost" type="button" id="waCancel">Cancel</button></form></dialog>
 <script>
 (() => {
- let cards=[],updated=0,busy=false,active='status',issue='';$('statusRead').innerHTML='<div class="skeleton" aria-label="Loading status"></div>'; const urls=new Set();
- function age(){$('liveState').dataset.health=navigator.onLine&&!issue?'live':'offline';const min=Math.floor((Date.now()-updated)/60000);$('liveAge').textContent=updated?(min?`Updated ${min} min ago`:'Updated just now'):'Waiting for update';$('liveState').textContent=navigator.onLine?(issue||(state.token?'Live':'Connect')):'Offline';$('offlineNote').classList.toggle('hidden',navigator.onLine);}
- function navigate(view){active=view;document.querySelectorAll('main > section[id^="view-"]').forEach(el=>el.classList.toggle('hidden',el.id!=='view-'+view));document.querySelectorAll('#phoneTabs button').forEach(b=>b.setAttribute('aria-current',b.dataset.phone===view?'page':'false'));const original=document.querySelector(`#nav button[data-view="${view}"]`);if(original)original.click();if(view==='inbox'){store.set('si.inbox.seen',new Date().toISOString());$('inboxBadge').textContent='';refresh();}window.scrollTo({top:0,behavior:'smooth'});}
+ let cards=[],updated=0,busy=false,active='today',issue='';$('statusRead').innerHTML='<div class="skeleton" aria-label="Loading status"></div>'; const urls=new Set();
+ function age(){
+  $('liveState').dataset.health=!navigator.onLine||issue?'offline':state.connected?'live':'auth';
+  const seconds=Math.max(0,Math.floor((Date.now()-updated)/1000));
+  $('liveAge').textContent=updated?(seconds<60?`Updated ${seconds} s ago`:`Updated ${Math.floor(seconds/60)} min ago`):'Waiting for update';
+  $('liveState').textContent=!navigator.onLine?'Offline':!state.connected?'Connect in Settings':(issue||'Live');
+  $('offlineNote').classList.toggle('hidden',navigator.onLine);
+ }
+ function navigate(view){active=view;document.querySelectorAll('main > section[id^="view-"]').forEach(el=>el.classList.toggle('hidden',el.id!=='view-'+view));document.querySelectorAll('#phoneTabs button').forEach(b=>b.setAttribute('aria-current',b.dataset.phone===view?'page':'false'));const original=document.querySelector(`#nav button[data-view="${view}"]`);if(original)original.click();if(view==='inbox'){store.set('si.inbox.seen',new Date().toISOString());$('inboxBadge').textContent='';refresh();}window.scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});}
  const inboxNav=document.createElement('button');inboxNav.dataset.view='inbox';inboxNav.textContent='Inbox';$('nav').append(inboxNav);
  document.querySelectorAll('#nav button[data-view]').forEach(b=>{b.addEventListener('click',()=>{active=b.dataset.view;if(active==='inbox')refresh();});if(!['status','customers','search','inbox'].includes(b.dataset.view)){const link=document.createElement('button');link.className='btn btn-ghost';link.textContent=b.textContent;link.onclick=()=>navigate(b.dataset.view);$('moreLinks').append(link);}});
  const rfqLink=document.createElement('a');rfqLink.href='rfq.html';rfqLink.className='btn btn-ghost';rfqLink.textContent='RFQ workspace';$('moreLinks').append(rfqLink);
- $('phoneTabs').onclick=e=>{const b=e.target.closest('[data-phone]');if(b)navigate(b.dataset.phone);};
- async function authFetch(path,options={}){const r=await fetch(state.base+path,{...options,cache:'no-store',headers:{Authorization:'Bearer '+state.token}});if(!r.ok){let detail='Request failed';try{detail=(await r.json()).detail||detail;}catch(_){}throw new Error(detail);}return r;}
+ $('phoneTabs').onclick=e=>{const b=e.target.closest('[data-phone]');if(b)(window.navigateWorkspace||navigate)(b.dataset.phone);};
+ async function authFetch(path,options={}){const r=await fetch(state.base+path,{...options,cache:'no-store',headers:{Authorization:'Bearer '+state.token}});if(r.status===401){requireAccessToken();throw new Error('Add your access token in Settings');}if(!r.ok){let detail='Request failed';try{detail=(await r.json()).detail||detail;}catch(_){}throw new Error(detail);}return r;}
  async function loadInbox(){
   if(!cards.length)$('inboxCards').innerHTML='<div class="skeleton" aria-label="Loading"></div>'.repeat(3);
   const [email,wa,enquiries]=await Promise.all([api('/customers/whatsapp/email-cards'),api('/customers/whatsapp'),api('/customers/enquiries')]);
@@ -3974,7 +4058,7 @@ $('view-quotes').addEventListener('click',e=>rfqAction(async()=>{
   const seen=store.get('si.inbox.seen')||'';const unread=cards.filter(c=>c.created_at.replace(' ','T')>seen&&!c.already_replied).length;$('inboxBadge').textContent=active==='inbox'?'':(unread||'');if(active==='inbox')store.set('si.inbox.seen',new Date().toISOString());$('customersBadge').textContent=enquiries.filter(e=>e.overdue).length||'';
   const selected=$('waEnquiry').value;$('waEnquiry').innerHTML='<option value="">Unassigned — review in Inbox</option>'+enquiries.map(e=>`<option value="${Number(e.id)}">${esc(e.customer_name)} — ${esc(e.title)}</option>`).join('');$('waEnquiry').value=selected;
  }
- async function refresh(){age();if(document.hidden||busy||!navigator.onLine||!state.base||!state.token)return;busy=true;try{const tasks=[loadInbox(),loadStatus()];if(active==='customers')tasks.push(window.loadCustomers());const results=await Promise.all(tasks);issue=results[1]===false?'Status unavailable':'';if(!issue)updated=Date.now();age();}catch(error){issue='Update unavailable';age();$('inboxCards').innerHTML='<p>We couldn’t load your latest messages. Check your connection.</p><button class="btn" id="inboxRetry">Try again</button>';$('inboxRetry').onclick=refresh;}finally{busy=false;}}
+ async function refresh(){age();if(document.hidden||busy||!navigator.onLine||!state.base||!state.token)return;busy=true;try{await checkHealth();if(!state.connected)return;const tasks=[loadInbox(),loadStatus()];if(window.refreshWorkspace)tasks.push(window.refreshWorkspace());if(workspaceView==='customers'&&!$('custDetail').contains(document.activeElement)&&!$('custCreate').contains(document.activeElement))tasks.push(window.loadCustomers());const results=await Promise.all(tasks);issue=results.some(result=>result===false)?'Update unavailable':'';if(!issue)updated=Date.now();age();}catch(error){issue='Update unavailable';age();$('inboxCards').innerHTML='<p>We couldn’t load your latest messages. Check your connection.</p><button class="btn" id="inboxRetry">Try again</button>';$('inboxRetry').onclick=refresh;}finally{busy=false;}}
  $('inboxCards').onclick=async e=>{
   const copy=e.target.closest('[data-copy-card]'),image=e.target.closest('[data-image]');
   if(copy){const i=Number(copy.dataset.copyCard),c=cards[i];copy.disabled=true;try{const pending=api('/status/live').then(doc=>doc.content_md+'\n\n---\nMESSAGE\nMailbox: '+(c.mailbox||'ikeng.online')+'\nCustomer: '+(c.customer_name||'Unassigned')+'\n'+(c.subject||c.title||'')+'\n'+(c.text||'')+(c.images?.length?'\nAttach the screenshot in Claude too.':''));if(window.ClipboardItem&&navigator.clipboard.write){await navigator.clipboard.write([new ClipboardItem({'text/plain':pending.then(text=>new Blob([text],{type:'text/plain'}))})]);}else{await navigator.clipboard.writeText(await pending);}$('copyNotice'+i).textContent='Copied. '+(c.images?.length?'Attach the screenshot in Claude too.':'Paste into Claude.');}catch(err){$('copyNotice'+i).textContent='Could not copy: '+err.message+'. Try again when connected.';}finally{copy.disabled=false;}}
@@ -3983,14 +4067,107 @@ $('view-quotes').addEventListener('click',e=>rfqAction(async()=>{
  async function openWhatsApp(id=''){$('waNotice').textContent='';$('waDialog').showModal();try{if($('waEnquiry').options.length===1)await loadInbox();$('waEnquiry').value=String(id);}catch(err){$('waNotice').textContent='Could not load customers. You can upload unassigned.';}}
  window.openWhatsApp=openWhatsApp;$('addWhatsApp').onclick=()=>openWhatsApp();$('waCancel').onclick=()=>$('waDialog').close();
  $('waForm').onsubmit=async e=>{e.preventDefault();const files=[...$('waFiles').files];if(files.length>10||files.some(f=>f.size>10*1024*1024)){$('waNotice').textContent='Choose up to 10 images, each 10 MB or smaller.';return;}const form=new FormData();files.forEach(f=>form.append('files',f));form.append('text',$('waText').value);if($('waEnquiry').value)form.append('enquiry_id',$('waEnquiry').value);$('waSave').disabled=true;try{await authFetch('/customers/whatsapp',{method:'POST',body:form});$('waForm').reset();$('waDialog').close();navigate('inbox');await refresh();}catch(err){$('waNotice').textContent=err.message;}finally{$('waSave').disabled=false;}};
- $('liveRefresh').onclick=refresh;const statusRetry=document.createElement('button');statusRetry.className='btn btn-ghost';statusRetry.textContent='Retry status';statusRetry.onclick=()=>loadStatus();$('statusNotice').after(statusRetry);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});window.addEventListener('online',refresh);window.addEventListener('offline',age);setInterval(()=>{age();if(!document.hidden)refresh();},60000);
+ $('liveRefresh').onclick=refresh;const statusRetry=document.createElement('button');statusRetry.className='btn btn-ghost';statusRetry.textContent='Retry status';statusRetry.onclick=()=>loadStatus();$('statusNotice').after(statusRetry);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});window.addEventListener('online',refresh);window.addEventListener('offline',age);setInterval(()=>{if(!document.hidden)refresh();},60000);setInterval(()=>{if(!document.hidden)age();},1000);
  let pull=null;document.addEventListener('touchstart',e=>{pull=window.scrollY===0&&!e.target.closest('input,textarea,select,dialog')?e.touches[0].clientY:null;},{passive:true});document.addEventListener('touchend',e=>{if(pull!==null&&e.changedTouches[0].clientY-pull>90)refresh();pull=null;},{passive:true});
  $('btnConnect').addEventListener('click',()=>setTimeout(refresh,100));if(!state.base){state.base='https://supplierintel-production.up.railway.app';store.set('si.base',state.base);}const note=document.createElement('p');note.className='hint';note.textContent='On iPhone, enter your access token once inside the Home Screen app. It has separate storage from Safari.';$('cToken').after(note);
- if(matchMedia('(max-width:760px)').matches||matchMedia('(display-mode:standalone)').matches)navigate('status');if(!state.token)$('connBtn').click();
+ if(!state.token)$('connBtn').click();
  if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{issue='Offline shell unavailable';age();});
- document.querySelectorAll('input,select,textarea').forEach(el=>{if(!el.labels?.length&&!el.getAttribute('aria-label'))el.setAttribute('aria-label',el.placeholder||el.name||el.id||'Filter');});age();refresh();
+ document.querySelectorAll('input,select,textarea').forEach(el=>{if(!el.labels?.length&&!el.getAttribute('aria-label'))el.setAttribute('aria-label',el.placeholder||el.name||el.id||'Filter');});age();setTimeout(refresh,0);
 })();
 
+</script>
+<script>
+/* Daily work is composed from free read endpoints; no polling action sends email. */
+let workspaceView='today', dailyItems=[], workspaceBusy=false, dailyLoaded=false;
+const researchViews=['find','search','bulk','compare','audit'];
+function navigateWorkspace(view) {
+  if(view==='settings') { $('connBtn').click(); return; }
+  workspaceView=view;
+  const target=view==='research'?'find':view;
+  const original=document.querySelector(`#nav button[data-view="${target}"]`);
+  if(original) original.click();
+  else document.querySelectorAll('main > section[id^="view-"]').forEach(el=>el.classList.toggle('hidden',el.id!=='view-'+target));
+  $('researchTabs').classList.toggle('hidden',view!=='research');
+  document.querySelectorAll('[data-workspace],[data-phone]').forEach(b=>b.setAttribute('aria-current',(b.dataset.workspace||b.dataset.phone)===view?'page':'false'));
+  if(view==='today')loadToday();
+  if(view==='more') {
+    $('moreLinks').innerHTML='';
+    for(const [v,title] of [['inbox','Inbox & WhatsApp'],['jobs','Jobs'],['status','Status'],['settings','Settings']]) {
+      const b=document.createElement('button');b.className='btn';b.textContent=title;b.onclick=()=>navigateWorkspace(v);$('moreLinks').append(b);
+    }
+  }
+}
+window.navigateWorkspace=navigateWorkspace;
+// Keep internal research/job links in sync with both navigation surfaces.
+$('nav').addEventListener('click',event=>{
+  const legacy=event.target.closest('[data-view]');if(!legacy)return;
+  workspaceView=researchViews.includes(legacy.dataset.view)?'research':legacy.dataset.view;
+  $('researchTabs').classList.toggle('hidden',workspaceView!=='research');
+  document.querySelectorAll('[data-workspace],[data-phone]').forEach(button=>button.setAttribute('aria-current',(button.dataset.workspace||button.dataset.phone)===workspaceView?'page':'false'));
+});
+document.querySelectorAll('[data-workspace]').forEach(b=>b.onclick=()=>navigateWorkspace(b.dataset.workspace));
+for(const view of researchViews) {
+  const original=document.querySelector(`#nav button[data-view="${view}"]`),b=document.createElement('button');
+  b.className='btn btn-ghost';b.textContent=original.textContent;b.dataset.research=view;
+  b.onclick=()=>{original.click();workspaceView='research';document.querySelectorAll('[data-workspace],[data-phone]').forEach(x=>x.setAttribute('aria-current',(x.dataset.workspace||x.dataset.phone)==='research'?'page':'false'));$('researchTabs').classList.remove('hidden');document.querySelectorAll('[data-research]').forEach(x=>x.setAttribute('aria-current',x===b?'page':'false'));};
+  $('researchTabs').append(b);
+}
+function dailyDate(value){if(!value)return 0;return Date.parse(/Z$|[+-]\d\d:\d\d$/.test(value)?value:value.replace(' ','T')+'Z')||0;}
+function dueChip(value) {
+  if(!value)return '';
+  const date=value.slice(0,10),today=new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/London',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+  return `<span class="status-chip ${date<today?'due-overdue':date===today?'due-today':''}">${date<today?'Overdue: ':date===today?'Today: ':''}${esc(date)}</span>`;
+}
+function buildDailyItems(groups,enquiries,email,whatsapp,pending,campaigns,jobs) {
+  const items=new Map();
+  const add=(key,item)=>items.set(key,{key,...item});
+  for(const [group,rows] of Object.entries(groups)) for(const e of rows) add('enquiry-'+e.id,{time:enquiries.find(x=>x.id===e.id)?.updated_at,due:e.due,title:e.customer+' - '+(e.next_action||e.reference),label:group.replaceAll('_',' '),action:'Open enquiry',view:'customers',enquiry:e.id});
+  for(const e of enquiries.filter(e=>e.waiting_on==='us'||e.status==='new'))add('enquiry-'+e.id,{time:e.updated_at||e.created_at,due:e.next_action_due,title:e.customer_name+' - '+e.title,label:e.status==='new'?'New':'Waiting on us',action:'Open enquiry',view:'customers',enquiry:e.id});
+  for(const c of [...email,...whatsapp].filter(c=>!c.already_replied))add((c.mailbox||'whatsapp')+'-'+c.id,{time:c.created_at,title:c.customer_name||c.subject||c.title||'New enquiry',label:c.mailbox==='whatsapp'||!c.mailbox?'WhatsApp':'New message',action:c.enquiry_id?'Open enquiry':'Review inbox',view:c.enquiry_id?'customers':'inbox',enquiry:c.enquiry_id});
+  for(const r of (pending.pending||[]).filter(r=>r.campaign_id!==1))add('reply-'+r.reply_id,{time:r.received_at,title:r.supplier_name||r.subject||'Supplier reply',label:'Quote needs reading',action:'Read reply',view:'quotes',campaign:r.campaign_id,reply:r.reply_id});
+  for(const c of campaigns)for(const m of c.messages||[])if(m.status==='sent'&&!m.replied_at&&Date.now()-dailyDate(m.sent_at)>=86400000&&!c.replies.some(r=>r.supplier_id===m.supplier_id&&!['bounce','auto_reply'].includes(r.reply_type)))add('chase-'+m.id,{time:m.sent_at,title:c.title+' - '+(m.supplier_name||m.recipient||'Supplier'),label:'No reply after 24h',action:'Review chase',view:'quotes',campaign:c.id});
+  for(const j of jobs.filter(j=>['pending','queued','running','failed'].includes(j.status)))add('job-'+j.id,{time:j.updated_at||j.created_at,title:j.query||j.id,label:'Job '+j.status,action:'View job',view:'jobs'});
+  return [...items.values()].sort((a,b)=>dailyDate(b.time)-dailyDate(a.time));
+}
+async function loadToday(){
+  if(workspaceBusy||!state.base||!state.token)return;
+  workspaceBusy=true;
+  const oldKeys=new Set(dailyItems.map(x=>x.key));const hadItems=dailyLoaded;
+  try {
+    const [groups,enquiries,email,wa,pending,campaignRows,jobs]=await Promise.all([api('/customers/today'),api('/customers/enquiries'),api('/customers/whatsapp/email-cards'),api('/customers/whatsapp'),api('/rfq/replies/pending?limit=100'),api('/rfq/campaigns'),api('/pipeline/jobs?limit=100')]);
+    const campaigns=[];
+    // Limit concurrent requests without hiding older active campaigns.
+    for(let i=0;i<campaignRows.length;i+=5)campaigns.push(...await Promise.all(campaignRows.slice(i,i+5).filter(c=>c.id!==1).map(c=>api('/rfq/campaigns/'+c.id))));
+    dailyItems=buildDailyItems(groups,enquiries,email,wa,pending,campaigns,jobs);
+    $('todayList').innerHTML=dailyItems.length?dailyItems.map((item,i)=>`<article class="work-item" data-key="${esc(item.key)}"><div><span class="status-chip">${esc(item.label)}</span> ${dueChip(item.due)}<h2>${esc(item.title)}</h2><p class="hint">${esc(item.time||'')}</p></div><button class="btn btn-primary" data-daily="${i}">${esc(item.action)}</button></article>`).join(''):'<p class="empty-state">You are caught up. New work will appear here automatically.</p>';
+    document.querySelectorAll('.work-item').forEach(el=>{if(hadItems&&!oldKeys.has(el.dataset.key))el.classList.add('new-arrival');});
+    $('todayNotice').textContent='';$('todayCount').textContent=dailyItems.length||'';$('phoneTodayCount').textContent=dailyItems.length||'';$('dueCount').textContent=(groups.overdue||[]).length?`${groups.overdue.length} overdue`:'';$('quoteCount').textContent=(pending.pending||[]).filter(r=>r.campaign_id!==1).length||'';
+    dailyLoaded=true;$('phoneQuoteCount').textContent=$('quoteCount').textContent;window.dispatchEvent(new CustomEvent('daily-updated'));return true;
+  }catch(error){$('todayNotice').textContent=error.status===401?'':'Could not update daily work. Refresh to retry; previous items may be out of date.';return false;}
+  finally{workspaceBusy=false;}
+}
+$('todayRefresh').onclick=loadToday;
+$('todayList').onclick=async e=>{const b=e.target.closest('[data-daily]');if(!b)return;const item=dailyItems[Number(b.dataset.daily)];navigateWorkspace(item.view);if(item.enquiry&&window.showCustomerEnquiry)await window.showCustomerEnquiry(item.enquiry);if(item.campaign)await rfqAction(()=>showRFQ(item.campaign));if(item.reply){const reply=$('rfqReply'+item.reply);if(reply){reply.open=true;reply.scrollIntoView({block:'start'});}}};
+window.refreshWorkspace=async()=>{const ok=await loadToday();if(workspaceView==='quotes'&&!$('view-quotes').contains(document.activeElement)){await loadRFQ();if(rfqCampaignId)await showRFQ(rfqCampaignId);}return ok;};
+let globalSearchSequence=0;
+$('globalSearch').onsubmit=async e=>{
+  e.preventDefault();const seq=++globalSearchSequence,q=$('globalQuery').value.trim().toLowerCase();if(!q)return;
+  $('globalResults').innerHTML='<div class="skeleton" aria-label="Searching"></div>';
+  try {
+    const [customers,enquiries,suppliers]=await Promise.all([api('/customers?q='+encodeURIComponent(q)),api('/customers/enquiries?include_closed=true'),api('/suppliers/search?country=China&limit=50&identity='+encodeURIComponent(q))]);
+    if(seq!==globalSearchSequence)return;
+    const ids=new Set(customers.map(c=>c.id));
+    const found=enquiries.filter(x=>ids.has(x.customer_id)||[x.customer_name,x.title,x.reference,x.customer_email,x.customer_phone].some(v=>String(v||'').toLowerCase().includes(q)));
+    $('globalResults').innerHTML='<h2>Search results</h2>'+found.map(x=>`<button class="btn" data-global-enquiry="${Number(x.id)}">${esc(x.customer_name)} &middot; ${esc(x.title)}</button>`).join('')+suppliers.map(x=>`<button class="btn" data-global-supplier="${Number(x.id)}">${esc(x.canonical_name)}</button>`).join('')+(!found.length&&!suppliers.length?'<p>No matches found.</p>':'')+'<button class="btn" data-global-clear>Close results</button>';
+  }catch(error){if(seq===globalSearchSequence)$('globalResults').textContent='Search unavailable. Check Settings and try again.';}
+};
+$('globalResults').onclick=e=>{const b=e.target.closest('button');if(!b)return;if(b.hasAttribute('data-global-clear')){$('globalResults').innerHTML='';return;}if(b.dataset.globalEnquiry){navigateWorkspace('customers');window.showCustomerEnquiry?.(b.dataset.globalEnquiry);}if(b.dataset.globalSupplier){navigateWorkspace('research');openAuditDetail(Number(b.dataset.globalSupplier),'Supplier','');}};
+let toastTimer;
+window.showToast=function(message){$('toast').textContent=message;$('toast').classList.remove('hidden');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.add('hidden'),3500);};
+const systemTheme=matchMedia('(prefers-color-scheme: dark)');
+function applyTheme(){const preference=store.get('si.theme')||'system';document.documentElement.dataset.theme=preference==='system'?(systemTheme.matches?'dark':'light'):preference;$('themeToggle').textContent='Theme: '+preference;document.querySelector('meta[name="theme-color"]').content=getComputedStyle(document.documentElement).getPropertyValue('--sidebar').trim();}
+$('themeToggle').onclick=()=>{const modes=['system','light','dark'],current=store.get('si.theme')||'system';store.set('si.theme',modes[(modes.indexOf(current)+1)%modes.length]);applyTheme();};systemTheme.addEventListener('change',applyTheme);applyTheme();
+navigateWorkspace('today');
 </script>
 </body>
 </html>
