@@ -5,6 +5,9 @@ manual LinkedIn/visit tasks and linked customer projects. Sending and scheduling
 default off. See [the plan](docs/PROSPECT_OUTREACH_PLAN.md) and
 [operating instructions](docs/PROSPECT_OUTREACH_OPERATIONS.md).
 
+Planning register projects provide grounded outreach hooks and unapproved architect/developer
+drafts. See [Phase 2 operations](docs/PLANNING_PROJECTS.md).
+
 A procurement research tool: give it a product (and optionally
 required certifications, a country, a manufacturer-only filter), and
 it searches multiple B2B sources, merges duplicate listings of the

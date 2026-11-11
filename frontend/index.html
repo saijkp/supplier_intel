@@ -744,6 +744,7 @@ dialog#auditDetailDialog,#view-compare,#view-search,#view-bulk,#view-jobs{--ink-
       <button data-workspace="today">Today <span id="todayCount"></span></button>
       <button data-workspace="customers">Customers <span id="dueCount"></span></button>
       <button data-workspace="outreach">Outreach</button>
+      <button data-workspace="projects">Projects</button>
       <button data-workspace="quotes">Suppliers &amp; RFQs <span id="quoteCount"></span></button>
       <button data-workspace="research">Research</button>
       <button data-workspace="inbox">Inbox</button>
@@ -776,6 +777,9 @@ dialog#auditDetailDialog,#view-compare,#view-search,#view-bulk,#view-jobs{--ink-
 <form id="globalSearch" role="search"><label for="globalQuery">Search customers, enquiries and suppliers</label><div class="row"><input class="input" id="globalQuery" type="search" placeholder="Name, email or phone" required><button class="btn" type="submit">Search</button></div><div id="globalResults" aria-live="polite"></div></form>
 <nav id="researchTabs" class="hidden" aria-label="Research tools"></nav>
 <section id="view-today" class="hidden"><div class="panel"><div class="panel-head"><div><p class="eyebrow">YOUR DAILY WORKSPACE</p><h1>Today</h1><p class="hint">What needs your attention, newest first.</p></div><button class="btn" id="todayRefresh">Refresh</button></div><div class="panel-body"><p id="todayNotice" role="status"></p><div id="todayList"><div class="skeleton" aria-label="Loading daily work"></div></div></div></div></section>
+<section id="view-projects" class="hidden">
+ <div class="panel"><div class="panel-head"><div><h1>Projects</h1><p class="hint">New fit projects this week. Enrolment creates an unapproved outreach draft.</p></div><button class="btn" id="planningRefresh">Refresh</button></div><div class="panel-body"><p id="planningNotice" role="status"></p><div id="planningProjects"></div></div></div>
+</section>
 <section id="view-outreach" class="hidden">
  <div class="panel"><div class="panel-head"><div><p class="eyebrow">ARCHITECTS &amp; SHOWROOMS</p><h1>Prospect outreach</h1><p class="hint">Manual LinkedIn, visits and calls. Approved corporate email only.</p></div><button class="btn" id="outRefresh">Refresh</button><button class="btn btn-primary" id="outRun">Run now</button></div>
  <div class="panel-body"><p id="outNotice" role="status" aria-live="polite"></p><div id="outMetrics"></div>
@@ -4104,9 +4108,10 @@ function navigateWorkspace(view) {
   document.querySelectorAll('[data-workspace],[data-phone]').forEach(b=>b.setAttribute('aria-current',(b.dataset.workspace||b.dataset.phone)===view?'page':'false'));
   if(view==='today')loadToday();
   if(view==='outreach')loadOutreach();
+  if(view==='projects')loadPlanning();
   if(view==='more') {
     $('moreLinks').innerHTML='';
-    for(const [v,title] of [['outreach','Outreach'],['inbox','Inbox & WhatsApp'],['jobs','Jobs'],['status','Status'],['settings','Settings']]) {
+    for(const [v,title] of [['outreach','Outreach'],['projects','Projects'],['inbox','Inbox & WhatsApp'],['jobs','Jobs'],['status','Status'],['settings','Settings']]) {
       const b=document.createElement('button');b.className='btn';b.textContent=title;b.onclick=()=>navigateWorkspace(v);$('moreLinks').append(b);
     }
   }
@@ -4185,6 +4190,18 @@ window.showToast=function(message){$('toast').textContent=message;$('toast').cla
 const systemTheme=matchMedia('(prefers-color-scheme: dark)');
 function applyTheme(){const preference=store.get('si.theme')||'system';document.documentElement.dataset.theme=preference==='system'?(systemTheme.matches?'dark':'light'):preference;$('themeToggle').textContent='Theme: '+preference;document.querySelector('meta[name="theme-color"]').content=getComputedStyle(document.documentElement).getPropertyValue('--sidebar').trim();}
 $('themeToggle').onclick=()=>{const modes=['system','light','dark'],current=store.get('si.theme')||'system';store.set('si.theme',modes[(modes.indexOf(current)+1)%modes.length]);applyTheme();};systemTheme.addEventListener('change',applyTheme);applyTheme();
+async function loadPlanning(){
+ try{
+  const projects=await api('/planning/projects');
+  $('planningProjects').innerHTML=projects.map(p=>`<article class="panel"><div class="panel-body"><h2>${esc(p.reference)} ? ${esc(p.address||'')}</h2><p>${esc(p.description||'')}</p><p>${esc(p.authority)} ? Captured status: ${esc(p.status||'Unknown')} ? Fit ${esc(p.fit_score)}</p><p>Architect: ${esc(p.architect||p.agent||'Unknown')} ? Developer: ${esc(p.developer||p.applicant||'Unknown')}</p><p>${esc(p.fit_reasons.map(r=>r.rule+': '+r.evidence).join('; '))}</p><p>Register: ${esc(p.source_url||'')}</p>${p.contacts.map(c=>`<button class="btn" data-planning-project="${p.id}" data-planning-contact="${c.id}">Enrol ${esc(c.name||c.email||'architect contact')} for approval</button>`).join('')||'<p class="hint">No architect contact recorded. Add an evidenced contact in Outreach.</p>'}</div></article>`).join('')||'<p>No new fit projects this week.</p>';
+ }catch(error){$('planningNotice').textContent=error.message;}
+}
+$('planningRefresh').onclick=loadPlanning;
+$('planningProjects').addEventListener('click',async event=>{
+ const b=event.target.closest('[data-planning-project]');if(!b)return;b.disabled=true;
+ try{const seq=await api('/planning/projects/'+b.dataset.planningProject+'/enrol',outJSON('POST',{contact_id:Number(b.dataset.planningContact),mailbox:'sj@ikeng.online'}));$('planningNotice').textContent='Draft sequence #'+seq.id+' created. Review and approve the exact list in Outreach.';}
+ catch(error){$('planningNotice').textContent=error.message;}finally{b.disabled=false;}
+});
 let outreachData={accounts:[],tasks:[],sequences:[]},outreachAccount=null,outreachBusy=false;
 const outreachStages=['prospect','contacted','replied','meeting','drawings received','quoted','won','lost'];
 const outJSON=(method,body)=>({method,body:JSON.stringify(body)});
@@ -4198,7 +4215,7 @@ async function loadOutreach(){
   $('outMetrics').innerHTML=`<div class="work-item"><div><h2>${Number(metrics.contacted)} contacted · ${Number(metrics.replied)} replied (${(100*metrics.reply_rate).toFixed(1)}%)</h2><p>${Number(metrics.stages.meeting||0)} at meeting · ${Number(metrics.stages['drawings received']||0)} at drawings · ${Number(metrics.stages.quoted||0)} at quote · ${Number(metrics.wins)} wins</p><p>GBP ${Number(metrics.won_gbp).toLocaleString()} won · actual margin ${metrics.margin_gbp===null?'unrecorded':'GBP '+Number(metrics.margin_gbp).toLocaleString()}</p><p>${Number(metrics.wins_per_100).toFixed(1)} wins per 100 contacts / target 2. Cohort outcomes take time.</p></div></div>`;
   $('outTasks').innerHTML=tasks.length?tasks.map(t=>{const p=outPayload(t);return `<article class="work-item"><div><span class="status-chip">${esc(t.kind.replaceAll('_',' '))}</span><h3>${esc(t.company)}</h3><p>${esc(t.area||'')} ${esc(t.address||'')}</p><pre style="white-space:pre-wrap">${esc(p.body||p.text||p.reason||p.classification||'Review reply in account timeline')}</pre>${t.kind==='linkedin_task'?`<p><a class="btn" href="${esc(outSafeLink(p.action_url))}" target="_blank" rel="noopener noreferrer">Open in Sales Navigator</a></p><p>${esc(p.connection_note||'')}</p><button class="btn" data-out-copy="${t.id}" data-copy-field="connection_note">Copy connection note</button><button class="btn" data-out-copy="${t.id}" data-copy-field="body">Copy message</button>`:''}<button class="btn" data-out-account="${t.account_id}">Account</button><button class="btn" data-out-done="${t.id}">Mark done</button>${t.enrolment_id?`<button class="btn" data-out-reply="${t.enrolment_id}">Paste reply</button>`:''}</div></article>`;}).join(''):'<p>No outstanding tasks.</p>';
   $('outBoard').innerHTML=outreachStages.map(stage=>`<div style="min-width:190px;flex:1"><h3>${esc(stage)}</h3>${accounts.filter(a=>a.stage===stage).map(a=>`<p><button class="btn" data-out-account="${a.id}">${esc(a.company)}</button><br><span class="hint">${esc(a.segment)} · ${esc(a.priority)}${a.flagged?' · flagged':''}</span></p>`).join('')}</div>`).join('');
-  $('outSequences').innerHTML=sequences.map(q=>`<details><summary>${esc(q.title)} — ${q.approved_at?'Approved by '+esc(q.approved_by):'Needs approval'}</summary><label>Templates (JSON steps)<textarea id="outSteps${q.id}" rows="12" style="width:100%">${esc(JSON.stringify(q.steps.map(({channel,day_offset,subject,template})=>({channel,day_offset,subject,template})),null,2))}</textarea></label><button class="btn" data-out-save="${q.id}">Save templates &amp; clear approval</button><h4>Exact recipient list (${q.contacts.length})</h4>${q.contacts.map(c=>`<p>${esc(c.name||'Unnamed')} · ${esc(c.company)} · ${esc(c.email||'No email')} · ${esc(c.subscriber_type)} / ${esc(c.email_status)} · ${esc(c.mailbox)} · ${esc(c.status)}</p>`).join('')}<label>Contact IDs (from account details) <input id="outContacts${q.id}" placeholder="1, 2, 3"></label><label>Mailbox <select id="outMailbox${q.id}"><option>sj@ikeng.online</option><option>sai@ikeng.online</option></select></label><button class="btn" data-out-enrol="${q.id}">Set/add recipients</button><label>Legitimate interest assessment <textarea id="outLia${q.id}" rows="3" placeholder="Purpose, necessity, balance, relevance, address review and privacy handling">${esc(q.legitimate_interest_note||'')}</textarea></label><button class="btn btn-primary" data-out-approve="${q.id}">Sai: approve these templates and this exact list</button></details>`).join('');
+  $('outSequences').innerHTML=sequences.map(q=>`<details><summary>${esc(q.title)} — ${q.approved_at?'Approved by '+esc(q.approved_by):'Needs approval'}</summary><label>Templates (JSON steps)<textarea id="outSteps${q.id}" rows="12" style="width:100%">${esc(JSON.stringify(q.steps.map(({channel,day_offset,subject,template})=>({channel,day_offset,subject,template})),null,2))}</textarea></label><button class="btn" data-out-save="${q.id}">Save templates &amp; clear approval</button><h4>Exact recipient list (${q.contacts.length})</h4>${q.contacts.map(c=>`<p>${esc(c.name||'Unnamed')} · ${esc(c.company)} · ${esc(c.email||'No email')} · ${esc(c.subscriber_type)} / ${esc(c.email_status)} · ${esc(c.mailbox)} · ${esc(c.status)}</p>${c.project_hook?`<blockquote><p>Frozen register hook: ${esc(c.project_hook.reference)} ? ${esc(c.project_hook.address||'')}</p><p>${esc(c.project_hook.description||'')}</p><p>Source: ${esc(c.project_hook.source_url||'')}</p></blockquote>`:''}`).join('')}<label>Contact IDs (from account details) <input id="outContacts${q.id}" placeholder="1, 2, 3"></label><label>Mailbox <select id="outMailbox${q.id}"><option>sj@ikeng.online</option><option>sai@ikeng.online</option></select></label><button class="btn" data-out-enrol="${q.id}">Set/add recipients</button><label>Legitimate interest assessment <textarea id="outLia${q.id}" rows="3" placeholder="Purpose, necessity, balance, relevance, address review and privacy handling">${esc(q.legitimate_interest_note||'')}</textarea></label><button class="btn btn-primary" data-out-approve="${q.id}">Sai: approve these templates and this exact list</button></details>`).join('');
   $('outNotice').textContent='Updated. Run now polls replies then processes due approved steps; sending also requires server enablement.';
  }catch(error){$('outNotice').textContent=error.message||'Could not load outreach';}finally{outreachBusy=false;}
 }

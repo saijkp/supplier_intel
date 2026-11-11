@@ -1,6 +1,7 @@
 """Drafts based on the curated walk-list pitch; Sai must approve each list."""
 def steps(segment):
     pitch = {
+        'developer': 'Could we price joinery, kitchens, wardrobes, doors or FF&E against your project drawings?',
         'architect': 'We source joinery, kitchens, wardrobes, doors and loose furniture made to drawing through partner factories in China for UK projects. Could we price one item on a residential or hospitality project?',
         'interior_designer': 'Could we price one item to your drawings for a UK interiors or FF&E project, through our partner factories in China?',
         'showroom_dealer': 'When a client needs a bespoke item beyond your stocked range, could we price it to drawing through our partner factories in China for UK delivery?',
