@@ -78,7 +78,7 @@ def test_valid_public_webhook_card_and_conversion(setup, payload):
         'finish_level': 'Premium', 'requirement': 'Six oak cabinets', 'design_support': 'Yes',
         'required_date': '2027-04-01', 'budget': '5000 GBP', 'references': 'https://example.com/plan',
         'materials': 'Oak', 'dimensions': '600mm', 'anything_else': 'Narrow access',
-        'lead_source': 'direct', 'project_name': 'Example House'}
+        'lead_source': 'direct', 'project_name': 'Example House', 'units': '1'}
     assert json.loads(lead['full_text']) == payload
     assert service.repo.rows('customers') == service.repo.rows('customer_enquiries') == []
     assert service.repo.rows('customer_messages') == []

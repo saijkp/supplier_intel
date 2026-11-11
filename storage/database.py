@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 46
+SCHEMA_VERSION = 47
 
 
 # ═══════════════════════════════════════════════════════════
@@ -879,7 +879,7 @@ CREATE TABLE IF NOT EXISTS customers (
 CREATE TABLE IF NOT EXISTS customer_enquiries (
  id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL REFERENCES customers(id), reference TEXT UNIQUE NOT NULL,
  mailbox TEXT, title TEXT NOT NULL, requirements TEXT, status TEXT NOT NULL DEFAULT 'new', next_action TEXT,
- next_action_due TEXT, blocker TEXT, estimated_value TEXT, owner TEXT, summary TEXT,
+ next_action_due TEXT, next_action_snoozed_until TEXT, blocker TEXT, estimated_value TEXT, owner TEXT, summary TEXT,
  rfq_campaign_ids TEXT NOT NULL DEFAULT '[]', source_ref TEXT UNIQUE,
  last_customer_contact_at TEXT, last_our_contact_at TEXT,
  waiting_on TEXT CHECK(waiting_on IN ('us','customer','supplier')), qualification TEXT NOT NULL DEFAULT '{}', close_reason TEXT, close_note TEXT, won_value REAL, closed_at TEXT, resume_status TEXT,
@@ -966,6 +966,10 @@ from planning.schema import SQL as PLANNING_SQL, statements as planning_statemen
 SCHEMA_SQL += PLANNING_SQL
 
 MIGRATIONS: dict[int, dict] = {
+    47: {
+        "description": "Snooze next actions without changing who owes a reply",
+        "columns": [("customer_enquiries", "next_action_snoozed_until", "TEXT")],
+    },
     46: {"description": "Planning projects and grounded outreach hooks", "statements": planning_statements()},
     45: {
         "description": "Approval-gated prospect accounts, sequences, ledger and permanent suppression",

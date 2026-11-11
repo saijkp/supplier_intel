@@ -134,7 +134,7 @@ def test_v45_upgrade_and_candidate_changes_preserve_trusted_fields(service):
     with connection_scope(service.repo.db_path) as c:
         c.execute('DELETE FROM schema_migrations WHERE version=46')
     initialise_schema(service.repo.db_path)
-    assert get_schema_version(service.repo.db_path)==46
+    assert get_schema_version(service.repo.db_path)==47
     service.store({**project(),'description':'30 flats','address':'Changed address'})
     row=service.repo.rows('SELECT * FROM planning_projects WHERE id=?',(pid,))[0]
     assert row['description']=='Erection of 24 flats' and row['address']=='X Road'

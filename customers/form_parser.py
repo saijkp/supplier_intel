@@ -6,7 +6,7 @@ import re
 LABELS = {
     'Lead Source': 'lead_source', 'Full name': 'name', 'Company (optional)': 'company',
     'Email': 'email', 'Phone / WhatsApp': 'phone', 'Property developer': None,
-    'Project name': 'project_name', 'Location': 'location', 'Number of units': None,
+    'Project name': 'project_name', 'Location': 'location', 'Number of units': 'units',
     'Finish level': 'finish_level', 'New build': None, 'Cat': 'categories',
     'Design Support': 'design_support', 'Materials / finishes': 'materials',
     'Specific dimensions': 'dimensions', 'Required on-site date': 'required_date',
@@ -58,7 +58,7 @@ NETLIFY_FIELDS = {
     'description': 'requirement', 'design_support': 'design_support',
     'delivery_date': 'required_date', 'budget': 'budget', 'references': 'references',
     'materials': 'materials', 'dimensions': 'dimensions', 'notes': 'anything_else',
-    'lead_source': 'lead_source', 'project_name': 'project_name',
+    'lead_source': 'lead_source', 'project_name': 'project_name', 'units': 'units',
 }
 
 

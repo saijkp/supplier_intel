@@ -251,6 +251,66 @@ def reopen(enquiry_id: int, body: ReopenIn = ReopenIn(), service: CustomerServic
     return _call(service.reopen_enquiry, enquiry_id, **_set(body))
 
 
+class ActionIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    action: Literal['done', 'snooze', 'waiting']
+    due: Optional[str] = None
+
+
+@router.get('/next-actions')
+def next_actions(service: CustomerService = Depends(get_customer_service)):
+    from customers.next_actions import next_actions as queue
+    return queue(service)
+
+
+@router.post('/enquiries/{enquiry_id}/action')
+def enquiry_action(enquiry_id: int, body: ActionIn, service: CustomerService = Depends(get_customer_service)):
+    return _call(service.act, enquiry_id, body.action, body.due)
+
+
+class ComposeIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: Optional[str] = Field(default=None, max_length=300)
+    enquiry: Optional[int] = None
+    lead: Optional[int] = None
+    body: str = Field(min_length=1, max_length=20000)
+    subject: Optional[str] = Field(default=None, max_length=300)
+
+
+@router.post('/compose')
+def compose(body: ComposeIn, service: CustomerService = Depends(get_customer_service)):
+    from config import settings as cfg
+    if not body.body.strip():
+        raise HTTPException(400, 'Write a reply first')
+    if bool(body.enquiry) == bool(body.lead):
+        raise HTTPException(400, 'Choose one enquiry or inbound email')
+    if body.lead:
+        lead = _call(service.repo.get, 'customer_inbox_leads', body.lead)
+        if lead['status'] == 'new' and not lead.get('from_name'):
+            if not (body.name or '').strip():
+                raise HTTPException(400, 'Enter the customer name from their message')
+            _call(service.convert_lead, body.lead, name=body.name)
+        message = _call(service.draft_lead_reply, body.lead, body.body)
+    else:
+        message = _call(service.draft_followup, body.enquiry, body=body.body, subject=body.subject)
+    service.repo.update('customer_messages', message['id'], mailbox=cfg.CUSTOMER_ZOHO_ADDRESS.lower())
+    return service.repo.get('customer_messages', message['id'])
+
+
+@router.post('/messages/{message_id}/send-now')
+def send_now(message_id: int, service: CustomerService = Depends(get_customer_service)):
+    # The explicit Send click approves exactly this stored draft. No new send plumbing.
+    message = _call(service.repo.get, 'customer_messages', message_id)
+    from config import settings as cfg
+    if message['channel'] != 'email' or message.get('mailbox') != cfg.CUSTOMER_ZOHO_ADDRESS.lower():
+        raise HTTPException(400, 'Use the customer mailbox for this action')
+    if message['status'] == 'draft':
+        _call(service.approve, message_id)
+    result = _call(service.send, message_id)
+    _call(service.act, message['enquiry_id'], 'waiting')
+    return result
+
+
 @router.get('/{customer_id}')
 def get_customer(customer_id: int, service: CustomerService = Depends(get_customer_service)):
     return _call(service.get_customer, customer_id)

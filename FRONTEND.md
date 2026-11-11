@@ -215,3 +215,29 @@ funnel metrics against two wins per 100 contacts. Today also includes outreach t
 Refresh is read-only. Run now explicitly starts a reply-poll/due-steps job; sending
 requires server enablement plus approval and corporate-address review. See
 `docs/PROSPECT_OUTREACH_OPERATIONS.md` for mailbox warm-up and the first campaign.
+
+
+## Next actions (11 November 2026)
+
+Today leads with one urgency-ordered list from `GET /customers/next-actions`.
+It reads stored inbound leads, unlinked WhatsApp screenshots, customer SLAs,
+unreviewed supplier replies, unreplied RFQs after 24 hours and due outreach tasks.
+Refresh is read-only and makes no mailbox or paid API calls. Other tabs remain.
+
+Create enquiry converts the stored form fields without overwriting filled values;
+unit count and the other supplied project fields are retained in requirements.
+Screenshot intake asks for a manually transcribed name/number; it never runs OCR.
+Reply by email opens a blank in-app composer. Send approves that exact draft and
+uses the existing customer mailbox, Sent checks, duplicate guard and daily cap.
+The email-app link is a fallback. WhatsApp opens a direct prefilled wa.me link;
+Sai sends it himself. No reference line or private notes enter that text.
+
+Mark done and Waiting on them log a note and schedule a three-day customer
+check-in (preserving the existing 30-day not-responding recheck). Snooze sets a
+future due date without changing who owes a reply; a new inbound activity cancels
+the snooze. Schema migration 46 adds that snooze marker. The empty state names
+the next scheduled customer/outreach action. Shell cache version is now v3.
+
+Form-notification matching now tolerates case and folded whitespace in the
+configured marker before automated/bulk-email filters. The exact 11 November
+production notification was not inspected; regressions use synthetic messages.
