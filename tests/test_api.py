@@ -296,6 +296,20 @@ class TestSearchEndpoint:
         assert len(results) == 1
         assert results[0]["canonical_name"] == "Acme Trailer Parts"
 
+    @pytest.mark.parametrize('identity', ['Factory Eleven', 'sales@eleven.example', '+86 12345678'])
+    def test_identity_search_matches_name_email_phone_and_keeps_country_and_flags(self, client, identity):
+        supplier = {'canonical_name': 'Factory Eleven', 'country': 'China', 'primary_email': 'sales@eleven.example', 'primary_phone': '+86 12345678'}
+        client.repo.create_golden_record({**supplier, 'domain': 'eleven.example'})
+        client.repo.create_golden_record({**supplier, 'domain': 'uk-eleven.example', 'country': 'United Kingdom'})
+        hidden_id=client.repo.create_golden_record({**supplier, 'domain': 'hidden-eleven.example'})
+        client.repo.update_supplier_fields(hidden_id, {'flagged': 1})
+        response=client.get('/suppliers/search', params={'identity':identity, 'country':'China'}, headers=auth_headers())
+        assert response.status_code == 200
+        assert [r['domain'] for r in response.json()] == ['eleven.example']
+        literal=client.get('/suppliers/search',params={'identity':"%' OR 1=1 --"},headers=auth_headers())
+        assert literal.status_code == 200
+        assert literal.json() == []
+
     def test_search_with_no_matches_returns_empty_list_not_404(self, client):
         response = client.get(
             "/suppliers/search", params={"product": "nonexistent widget"}, headers=auth_headers(),

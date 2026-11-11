@@ -443,6 +443,7 @@ class SupplierRepository:
         *,
         product_query: Optional[str] = None,
         category_query: Optional[str] = None,
+        identity_query: Optional[str] = None,
         required_capabilities: Optional[List[str]] = None,
         manufacturers_only: bool = False,
         verified_only: bool = False,
@@ -531,6 +532,12 @@ class SupplierRepository:
 
         clauses: List[str] = ["flagged = 0"]
         params: List[Any] = []
+
+        if identity_query:
+            # Literal identity lookup: parameterised values never become SQL.
+            pattern = '%' + identity_query.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
+            clauses.append("(canonical_name LIKE ? ESCAPE '\\' OR primary_email LIKE ? ESCAPE '\\' OR primary_phone LIKE ? ESCAPE '\\')")
+            params.extend([pattern] * 3)
 
         if product_query or category_query:
             # Two independent OR'd groups, not one combined AND -- a

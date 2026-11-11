@@ -56,7 +56,7 @@ Open the site, click **Not connected**, and enter:
 - **Access token** — the same string as `API_ACCESS_TOKEN` on Railway
 
 Both are kept in this browser's local storage and sent only to your own
-API. The dot in the header turns green once `/health` answers.
+API. The dot turns green only after authenticated `/customers/status` succeeds. A 401 opens a single Settings banner; amber means the access token is missing or wrong, red means the API is unreachable.
 
 Storage access is wrapped so that a browser or preview frame that
 blocks local storage falls back to keeping the details in memory for
@@ -174,3 +174,35 @@ Every contributing signal is listed underneath with its weight, so the
 number can be argued with rather than just trusted. The thresholds
 behind it are uncalibrated starting points; recording real outcomes is
 what will eventually make them meaningful.
+
+
+## Daily workspace (November 2026 redesign)
+
+The default home is Today: existing customer actions, unreplied inbox cards,
+RFQ replies awaiting extraction, sent RFQs without a reply for 24 hours, and
+running/failed jobs. Every action opens its existing workspace; refreshing
+never sends, approves, polls mailboxes, extracts quotes, or starts paid work.
+The action queue uses existing authenticated GET endpoints. Supplier identity
+search adds an optional `identity` filter to `/suppliers/search` for name,
+primary email and primary phone, preserving country and flagged filters.
+
+Desktop navigation is a sidebar; phones have Today, Customers, RFQs, Research
+and More at the bottom. Research preserves Find, Search, Bulk, Compare and
+Audit as sub-tabs. Settings opens the existing connection dialog. Customer
+stage counts filter the pipeline. Each enquiry opens a detail view containing
+linked inbound mailbox cards, private WhatsApp screenshots, next action and
+due date, profile, qualification, customer quotes and follow-up controls.
+Email attachment download is unavailable in the current customer API.
+
+Campaign progress counts distinct suppliers with extracted quotes against a
+minimum of four per campaign product. Replies without extracted quotes do not
+count. The existing item RFQ workspace remains linked for line-item sourcing.
+The buyer still decides whether quotes are comparable and what to send.
+
+The evergreen/ember palette uses semantic CSS variables. Theme cycles through
+System, Light and Dark and saves the preference locally. Visible workspaces
+refresh every 60 seconds, with elapsed update timestamps, skeletons, subtle
+arrival pulses, confirmation toasts, keyboard focus and reduced-motion support.
+Automatic refresh preserves customer detail edits and focused RFQ drafts.
+Installed iPhone apps still require entering the token once inside the Home
+Screen app. Shell cache version v2 replaces v1; private API data is not cached.

@@ -20,8 +20,13 @@
 
   const closedStages = ['won', 'lost', 'closed'];
   const qualificationKeys = ['scope', 'location', 'budget', 'timeline', 'plans', 'decision_maker'];
-  let current = null;
-  const notice = (t) => { $('custNotice').textContent = t || ''; };
+  let current = null, selectedStage='', detailSequence=0, privateImageUrl=null;
+  const stageLabel = value => ({new:'New', 'quote sent':'Quoted', won:'Won', paused:'Parked', nurture:'Parked', 'not responding':'Not responding'}[value] || value);
+  const waitingLabel = value => ({us:'Waiting on us', customer:'Waiting on customer', supplier:'Waiting on supplier'}[value] || '');
+  function detailMode(open){['custPipeline','custLeads','custList'].forEach(id=>$(id).classList.toggle('hidden',open));$('custDetail').classList.toggle('hidden',!open);}
+  function releaseImage(){if(privateImageUrl){URL.revokeObjectURL(privateImageUrl);privateImageUrl=null;}}
+  const imageDialog=document.createElement('dialog');imageDialog.id='customerImage';imageDialog.innerHTML='<button class="btn" type="button">Close screenshot</button><img alt="Private WhatsApp screenshot" style="display:block;max-width:100%;max-height:75vh">';document.body.append(imageDialog);imageDialog.querySelector('button').onclick=()=>imageDialog.close();imageDialog.addEventListener('close',releaseImage);
+  const notice = (t) => { $('custNotice').textContent = t || ''; if(t&&/^(Saved|Sent|Created)/.test(t))window.showToast?.(t); };
   const run = async (work) => { try { notice(''); await work(); } catch (e) { notice(e.message === 'NOT_CONNECTED' ? 'Connect to your API first.' : (e.detail || e.message)); } };
   const post = (path, body) => api(path, {method: 'POST', body: JSON.stringify(body || {})});
   const patch = (path, body) => api(path, {method: 'PATCH', body: JSON.stringify(body)});
@@ -29,10 +34,12 @@
   const today = () => new Date().toISOString().slice(0, 10);
 
   async function loadCustomers() {
+    if(!$('custList').innerHTML)$('custList').innerHTML='<div class="skeleton" aria-label="Loading customers"></div>';
     await run(async () => {
       const filter = $('custFilter').value;
       const qs = filter === 'due' ? '?due_only=true' : filter === 'all' ? '?include_closed=true' : filter === 'quiet' ? '?status=not%20responding' : '';
-      const [status, rows, leads] = await Promise.all([api('/customers/status'), api('/customers/enquiries' + qs), api('/customers/leads')]);
+      const [status, allRows, leads] = await Promise.all([api('/customers/status'), api('/customers/enquiries' + qs), api('/customers/leads')]);
+      const rows=selectedStage?allRows.filter(r=>r.status===selectedStage):allRows;
       $('custLeads').innerHTML = leads.length ? `<div class="cust-leads"><h3>Possible new enquiries from email (${leads.length})</h3>
         <p class="hint">Review website submissions and first emails. Add each real enquiry, dismiss the rest.</p>` +
         leads.map(l => `<div class="cust-msg"><strong>${esc(l.from_name || l.from_address)}</strong> &lt;${esc(l.from_address)}&gt; · ${esc(l.received_at)}
@@ -45,8 +52,8 @@
       $('custReadiness').textContent = `${status.send_enabled ? 'Email sending enabled for configured mailboxes' : 'Email sending disabled'} · 30 emails per mailbox per UK day; Sent checked before each send` +
         (status.missing.length ? ' · Missing: ' + status.missing.join(', ') : '');
       const pipeline = await api('/customers/pipeline');
-      $('custPipeline').innerHTML = '<div class="cust-grid">' + Object.entries(pipeline.stages).filter(([, p]) => p.count).map(([stage, p]) => `<div class="cust-msg"><strong>${esc(stage)}</strong>: ${esc(p.count)}<br>GBP ${esc(p.estimated_value)}</div>`).join('') + '</div>';
-      if (filter === 'today') {
+      $('custPipeline').innerHTML = '<div class="cust-grid">' + Object.entries(pipeline.stages).filter(([, p]) => p.count).map(([stage, p]) => `<button class="cust-msg" data-customer-stage="${esc(stage)}" aria-pressed="${stage===selectedStage}"><strong>${esc(stageLabel(stage))}</strong>: ${esc(p.count)}<br>GBP ${esc(p.estimated_value)}</button>`).join('') + '</div>';
+      if (filter === 'today' && !selectedStage) {
         const groups = await api('/customers/today');
         $('custList').innerHTML = Object.entries(groups).map(([group, items]) => `<h3>${esc(group.replaceAll('_', ' '))} (${esc(items.length)})</h3><table class="tbl"><tbody>` + items.map(r => `<tr class="cust-row" tabindex="0" role="button" data-enquiry="${esc(r.id)}"><td>${esc(r.reference)}<br>${esc(r.customer)}</td><td>${esc(r.stage)}<br>Waiting on: ${esc(r.waiting_on || '')}</td><td>${esc(r.next_action)}<br>${esc(r.due)}</td><td>${esc(r.why)}</td></tr>`).join('') + '</tbody></table>').join('');
         return;
@@ -56,22 +63,34 @@
         <div style="overflow:auto"><table class="tbl"><thead><tr><th>Customer</th><th>Enquiry</th><th>Status</th><th>Next action</th><th>Due</th><th>Last heard</th></tr></thead><tbody>` +
         rows.map(r => `<tr class="cust-row" tabindex="0" role="button" data-enquiry="${Number(r.id)}">
           <td><strong>${esc(r.customer_name)}</strong><br><span class="hint">${esc(r.reference)}</span></td>
-          <td>${esc(r.title)}</td><td>${esc(r.status)}${r.unanswered_contacts ? `<br><span class="hint">${Number(r.unanswered_contacts)} contact${r.unanswered_contacts > 1 ? 's' : ''} without reply</span>` : ''}</td>
+          <td>${esc(r.title)}</td><td><span class="status-chip">${esc(stageLabel(r.status))}</span> <span class="status-chip">${esc(waitingLabel(r.waiting_on))}</span>${r.unanswered_contacts ? `<br><span class="hint">${Number(r.unanswered_contacts)} contact${r.unanswered_contacts > 1 ? 's' : ''} without reply</span>` : ''}</td>
           <td>${esc((r.next_action || '').slice(0, 140))}${(r.next_action || '').length > 140 ? '…' : ''}</td>
-          <td class="${r.overdue ? 'cust-due' : ''}">${esc(day(r.next_action_due)) || '-'}</td>
+          <td class="${r.overdue ? 'cust-due' : ''}">${typeof dueChip==='function'?dueChip(r.next_action_due):(esc(day(r.next_action_due))||'-')}</td>
           <td>${esc(day(r.last_customer_contact_at)) || '-'}</td></tr>`).join('') + '</tbody></table></div>';
     });
   }
   window.loadCustomers = loadCustomers;
 
   async function showEnquiry(id) {
+    const sequence=++detailSequence;
     await run(async () => {
-      const e = await api('/customers/enquiries/' + Number(id)); current = e;
+      const [e,emailCards,waCards]=await Promise.all([api('/customers/enquiries/' + Number(id)),api('/customers/whatsapp/email-cards'),api('/customers/whatsapp')]);
+      if(sequence!==detailSequence)return;
+      current = e;releaseImage();detailMode(true);
+      const conversation=[...emailCards,...waCards.map(c=>({...c,mailbox:'whatsapp'}))].filter(c=>c.enquiry_id===e.id).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
       const c = e.customer, status = await api('/customers/status');
+      if(sequence!==detailSequence)return;
       const isClosed = closedStages.includes(e.status);
       const opts = (status.statuses || []).filter(s => !closedStages.includes(s)).map(s => `<option ${s === e.status ? 'selected' : ''}>${esc(s)}</option>`).join('');
       $('custDetail').innerHTML = `<div class="cust-detail">
-        <h3>${esc(c.name)} · ${esc(e.title)} <span class="hint">${esc(e.reference)}</span></h3>
+        <button class="btn btn-ghost" data-cust="back">All enquiries</button>
+        <h2 tabindex="-1" id="customerDetailTitle">${esc(c.name)} &middot; ${esc(e.title)}</h2><p class="hint">${esc(e.reference)} &middot; ${esc(c.email||c.phone||'')}</p>
+        <p><span class="status-chip">${esc(stageLabel(e.status))}</span> <span class="status-chip">${esc(waitingLabel(e.waiting_on))}</span> ${typeof dueChip==='function'?dueChip(e.next_action_due):esc(day(e.next_action_due))}</p>
+        <p><strong>Next action:</strong> ${esc(e.next_action||'Set a next action below')}</p>
+        <nav class="row" aria-label="Enquiry sections"><a class="btn" href="#customerConversation">Messages &amp; files</a><a class="btn" href="#customerNextAction">Edit next action</a><a class="btn" href="#customerQuotes">Quotes sent</a></nav>
+        <section id="customerConversation"><h3>Messages &amp; files</h3><p class="hint">Both mailboxes and linked WhatsApp cards, newest first.</p>
+        ${conversation.length?conversation.map(card=>`<article class="cust-msg"><p class="hint">${esc(card.mailbox||'Email')} &middot; ${esc(card.created_at)}</p><h4>${esc(card.subject||card.title||'WhatsApp')}</h4><div style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(card.text||'Screenshot attached')}</div>${(card.images||[]).map(im=>`<button class="btn" data-customer-image="${Number(im.id)}">Open screenshot ${Number(im.id)}</button>`).join('')}</article>`).join(''):'<p>No linked inbound cards. Logged messages appear in the timeline below.</p>'}
+        <p class="hint">Screenshots open privately. Email attachment downloads are not available from the current customer API.</p></section>
         <div class="cust-cols">
           <div>
             <h4>Customer profile</h4>
@@ -85,7 +104,7 @@
               <label class="cust-wide">Notes<textarea class="input" id="cuNotes" rows="3">${esc(c.notes)}</textarea></label>
             </div>
             <button class="btn btn-sm" data-cust="save-customer">Save profile</button>
-            <h4>Enquiry</h4>
+            <h3 id="customerNextAction">Next action &amp; enquiry</h3>
             <div class="cust-grid">
               <label>Stage ${isClosed ? esc(e.status) : ''}<select class="input" id="enStatus" ${isClosed ? 'disabled' : ''}>${opts}</select></label>
               <label>Waiting on<select class="input" id="enWaiting">${['', 'us', 'customer', 'supplier'].map(w => `<option value="${esc(w)}" ${w === (e.waiting_on || '') ? 'selected' : ''}>${esc(w || 'Unspecified')}</option>`).join('')}</select></label>
@@ -106,7 +125,7 @@
             <h4>Qualification</h4><p class="hint">Use only the customer's own messages. Blank fields are gaps.</p>
             <div class="cust-grid">${qualificationKeys.map(k => `<label class="${e.qualification_missing.includes(k) ? 'cust-due' : ''}">${esc(k.replaceAll('_', ' '))}<textarea class="input" id="qual_${esc(k)}">${esc(e.qualification[k] || '')}</textarea></label>`).join('')}</div>
             <button class="btn btn-sm" data-cust="qualification">Save qualification</button>
-            <h4>Customer quotes</h4><p class="hint">Customer prices only. Never enter supplier costs.</p>
+            <h3 id="customerQuotes">Quotes sent</h3><p class="hint">Customer prices only. Never enter supplier costs.</p>
             ${e.quotes.map(q => `<div class="cust-msg">v${esc(q.version)}: ${esc(q.currency)} ${esc(q.amount)} · ${esc(q.status)}<br>${esc(q.summary)}<br>Sent ${esc(q.sent_at)} · Valid until ${esc(q.valid_until)}<br>${['sent', 'accepted', 'rejected'].map(st => `<button class="btn btn-sm" data-cust="quote-status" data-id="${esc(q.id)}" data-status="${esc(st)}">${esc(st === 'sent' ? 'Mark sent' : st)}</button>`).join('')}</div>`).join('')}
             <details><summary>Add quote</summary><div class="cust-grid"><label>Amount<input class="input" id="qAmount" type="number" step="0.01"></label><label>Currency<input class="input" id="qCurrency" value="GBP"></label><label>Summary<textarea class="input" id="qSummary"></textarea></label><label>Valid until<input class="input" id="qUntil" type="date"></label></div><button class="btn btn-sm" data-cust="add-quote">Add quote</button></details>
             ${isClosed ? `<label>Reopen stage<select class="input" id="reopenStage">${['new','qualifying','quoting','quote sent','negotiating'].map(st => `<option>${esc(st)}</option>`).join('')}</select></label><button class="btn" data-cust="reopen">Reopen</button>` : `<button class="btn" data-cust="close-form">Close enquiry</button><div id="closeForm" class="hidden"><label>Outcome<select class="input" id="closeOutcome"><option>won</option><option>lost</option><option>closed</option></select></label><label>Won value (won only)<input class="input" id="closeValue" type="number" step="0.01"></label><label>Reason (lost/closed)<select class="input" id="closeReason">${['price','timing','went elsewhere','no project','no response','not a customer','duplicate','other'].map(r => `<option>${esc(r)}</option>`).join('')}</select></label><label>Proof of order/deposit (won), or closing note<textarea class="input" id="closeNote"></textarea></label><button class="btn" data-cust="close">Confirm close</button></div>`}
@@ -115,7 +134,7 @@
             <button class="btn btn-sm" data-cust="draft-email" ${c.email ? '' : 'disabled title="Add an email to the profile first"'}>Draft email follow-up</button>
             <button class="btn btn-sm btn-ghost" data-cust="draft-whatsapp" ${c.whatsapp || c.phone ? '' : 'disabled title="Add a phone/WhatsApp number first"'}>Draft WhatsApp follow-up</button>
             ${e.messages.map(m => `<div class="cust-msg">
-              <div><strong>${esc(m.channel)}</strong> to ${esc(m.recipient)} · <strong>${esc(m.status)}</strong> ${esc(m.status_reason || '')} ${m.sent_at ? '· sent ' + esc(m.sent_at) : ''}</div>
+              <div><strong>${esc(m.channel)}</strong> ? ${esc(m.mailbox||e.mailbox||'Mailbox not recorded')} to ${esc(m.recipient)} · <strong>${esc(m.status)}</strong> ${esc(m.status_reason || '')} ${m.sent_at ? '· sent ' + esc(m.sent_at) : ''}</div>
               ${m.channel === 'email' ? `<label>Subject<input class="input" id="cmSub${Number(m.id)}" value="${esc(m.subject)}" ${m.status === 'draft' ? '' : 'disabled'}></label>` : ''}
               <label>Message<textarea class="input" rows="7" id="cmBody${Number(m.id)}" ${m.status === 'draft' ? '' : 'disabled'}>${esc(m.body)}</textarea></label>
               ${m.status === 'draft' ? `<button class="btn btn-sm btn-ghost" data-cust-msg="save" data-id="${Number(m.id)}">Save</button>` : ''}
@@ -135,12 +154,14 @@
             </div>
             <button class="btn btn-sm" data-cust="log">Add to timeline</button>
             <h4>Timeline</h4>
-            ${e.activities.map(a => `<div class="cust-act ${a.kind.endsWith('_in') ? 'in' : a.kind.endsWith('_out') || a.kind === 'meeting' ? 'out' : ''}"><span class="hint">${esc(a.occurred_at)} · ${esc(a.kind)}</span>\n${esc(a.summary)}</div>`).join('')}
+            ${e.activities.map(a => `<div class="cust-act ${a.kind.endsWith('_in') ? 'in' : a.kind.endsWith('_out') || a.kind === 'meeting' ? 'out' : ''}"><span class="hint">${esc(a.occurred_at)} &middot; ${esc(a.mailbox||a.kind)}</span>\n${esc(a.summary)}</div>`).join('')}
           </div>
         </div></div>`;
-      $('custDetail').scrollIntoView({behavior: 'smooth', block: 'start'});
+      $('customerDetailTitle').focus({preventScroll:true});$('custDetail').scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth', block: 'start'});
     });
   }
+
+  window.showCustomerEnquiry = showEnquiry;
 
   const val = (id) => $(id).value.trim();
   $('view-customers').addEventListener('keydown', ev => {
@@ -150,6 +171,9 @@
     const row = ev.target.closest('tr[data-enquiry]');
     if (row) { showEnquiry(row.dataset.enquiry); return; }
     const b = ev.target.closest('button'); if (!b) return;
+    if(b.dataset.customerStage){selectedStage=selectedStage===b.dataset.customerStage?'':b.dataset.customerStage;$('custFilter').value='all';detailMode(false);loadCustomers();return;}
+    if(b.dataset.customerImage){run(async()=>{const response=await fetch(state.base+'/customers/whatsapp/images/'+Number(b.dataset.customerImage),{cache:'no-store',headers:{Authorization:'Bearer '+state.token}});if(response.status===401){requireAccessToken();return;}if(!response.ok)throw new Error('Screenshot unavailable');releaseImage();privateImageUrl=URL.createObjectURL(await response.blob());imageDialog.querySelector('img').src=privateImageUrl;imageDialog.showModal();});return;}
+    if(b.dataset.cust==='back'){++detailSequence;current=null;releaseImage();detailMode(false);$('custList').scrollIntoView();return;}
     if (b.dataset.waEnquiry) { window.openWhatsApp(b.dataset.waEnquiry); return; }
     if (b.id === 'custRefresh') { loadCustomers(); if (current) showEnquiry(current.id); return; }
     if (b.id === 'custNewToggle') { $('custCreate').classList.toggle('hidden'); return; }
@@ -197,7 +221,7 @@
       if (!$('custNotice').textContent) notice('Saved.');
     });
   });
-  $('custFilter').addEventListener('change', loadCustomers);
+  $('custFilter').addEventListener('change',()=>{selectedStage='';detailMode(false);loadCustomers();});
   $('custCreate').addEventListener('submit', (ev) => {
     ev.preventDefault();
     run(async () => {

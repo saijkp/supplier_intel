@@ -370,6 +370,7 @@ def get_dashboard_summary(repo: SupplierRepository = Depends(get_repo)) -> Dict[
 )
 def search_suppliers(
     product: Optional[str] = None,
+    identity: Optional[str] = Query(default=None, min_length=1, max_length=200),
     require: List[str] = Query(default=[]),
     manufacturers_only: bool = False,
     verified_only: bool = False,
@@ -399,6 +400,7 @@ def search_suppliers(
     try:
         results = repo.search_suppliers_full(
             product_query=product,
+            identity_query=identity,
             required_capabilities=require,
             manufacturers_only=manufacturers_only,
             verified_only=verified_only,
