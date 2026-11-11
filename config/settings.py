@@ -923,6 +923,12 @@ RFQ_ZOHO_CLIENT_ID = (os.getenv('RFQ_ZOHO_CLIENT_ID') or '')
 RFQ_ZOHO_CLIENT_SECRET = (os.getenv('RFQ_ZOHO_CLIENT_SECRET') or '')
 RFQ_ZOHO_REFRESH_TOKEN = (os.getenv('RFQ_ZOHO_REFRESH_TOKEN') or '')
 RFQ_ZOHO_ACCOUNT_ID = (os.getenv('RFQ_ZOHO_ACCOUNT_ID') or '')
+OUTREACH_ZOHO_REGION = (os.getenv('OUTREACH_ZOHO_REGION') or 'eu')
+OUTREACH_ZOHO_ADDRESS = (os.getenv('OUTREACH_ZOHO_ADDRESS') or 'sj@ikeng.online')
+OUTREACH_ZOHO_CLIENT_ID = (os.getenv('OUTREACH_ZOHO_CLIENT_ID') or '')
+OUTREACH_ZOHO_CLIENT_SECRET = (os.getenv('OUTREACH_ZOHO_CLIENT_SECRET') or '')
+OUTREACH_ZOHO_REFRESH_TOKEN = (os.getenv('OUTREACH_ZOHO_REFRESH_TOKEN') or '')
+OUTREACH_ZOHO_ACCOUNT_ID = (os.getenv('OUTREACH_ZOHO_ACCOUNT_ID') or '')
 # 'openai' (default): replies are parsed by the OpenAI API on arrival.
 # 'agent': the app never calls OpenAI for quotes; replies wait as 'pending' until a
 # Claude Code / Codex session reads them (scripts/rfq_agent.py) and submits candidates,

@@ -1,5 +1,10 @@
 # Supplier Intelligence Platform
 
+Prospect outreach for UK architects/showrooms has an approval-gated workspace,
+manual LinkedIn/visit tasks and linked customer projects. Sending and scheduling
+default off. See [the plan](docs/PROSPECT_OUTREACH_PLAN.md) and
+[operating instructions](docs/PROSPECT_OUTREACH_OPERATIONS.md).
+
 A procurement research tool: give it a product (and optionally
 required certifications, a country, a manufacturer-only filter), and
 it searches multiple B2B sources, merges duplicate listings of the

@@ -72,6 +72,37 @@ class ZohoSender:
         self.client.request('GET','')
         return True
     def send(self,message):
+        import os
+        # When prospect sending is enabled, *all* Zoho sends share its mailbox
+        # budget/spacing, including RFQ/customer routes and manual replies in Sent.
+        # RLock permits OutreachService/CustomerService to hold the same lock.
+        if os.getenv('OUTREACH_SEND_ENABLED','').lower() == 'true':
+            from customers.mailboxes import SEND_LOCK
+            with SEND_LOCK:
+                self._shared_budget(message)
+                return self._send(message)
+        return self._send(message)
+
+    def _shared_budget(self,message):
+        import os
+        from datetime import date
+        from customers.mailboxes import Mailbox, UK, sent_time
+        address=self.address or cfg.RFQ_FROM_ADDRESS
+        box=Mailbox(address,self,ZohoInbox(self.client))
+        sent=box.sent(2);current=datetime.now(timezone.utc)
+        box.check_send(message,sent,current)
+        if address.lower()=='sj@ikeng.online':
+            try:
+                age=(current.astimezone(UK).date()-date.fromisoformat(os.getenv('OUTREACH_WARMUP_START',''))).days
+            except ValueError:
+                raise ValueError('Configure outreach warm-up start before sending from sj') from None
+            cap=0 if age<0 else (5,10,20,30)[min(age//7,3)]
+            if sum(sent_time(m).astimezone(UK).date()==current.astimezone(UK).date() for m in sent)>=cap:
+                raise ValueError('Mailbox warm-up cap reached')
+        if sent and (current-max(sent_time(m) for m in sent)).total_seconds()<90:
+            raise ValueError('Mailbox sends must be spaced at least 90 seconds apart')
+
+    def _send(self,message):
         data=self.client.request('POST','/messages',json={'fromAddress':header(self.address or cfg.RFQ_FROM_ADDRESS),
               'toAddress':header(message['recipient']),'subject':header(message['subject']),
               'content':message['body'],'mailFormat':'plaintext'})

@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 44
+SCHEMA_VERSION = 45
 
 
 # ═══════════════════════════════════════════════════════════
@@ -960,7 +960,14 @@ CASE lower(trim(status))
  WHEN 'closed' THEN 'closed' ELSE 'qualifying' END
 """
 
+from outreach.schema import SQL as OUTREACH_SCHEMA_SQL, statements as outreach_statements
+SCHEMA_SQL += OUTREACH_SCHEMA_SQL
+
 MIGRATIONS: dict[int, dict] = {
+    45: {
+        "description": "Approval-gated prospect accounts, sequences, ledger and permanent suppression",
+        "statements": list(outreach_statements()),
+    },
     44: {
         "description": "Manual WhatsApp inbox cards and private screenshot attachments (no OCR)",
         "statements": [
