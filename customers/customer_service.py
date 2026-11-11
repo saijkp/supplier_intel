@@ -194,6 +194,31 @@ class CustomerService:
             self.log(enquiry_id, 'status_change', f"Status: {enquiry['status']} -> {values['status']}")
         return self.get_enquiry(enquiry_id)
 
+    def act(self, enquiry_id, action, due=None):
+        from zoneinfo import ZoneInfo
+        today = datetime.now(ZoneInfo('Europe/London')).date()
+        enquiry = self.repo.get('customer_enquiries', enquiry_id)
+        if enquiry['status'] in CLOSED_STATUSES:
+            raise ValueError('Enquiry is closed')
+        if action == 'snooze':
+            try:
+                chosen = datetime.strptime(due or '', '%Y-%m-%d').date()
+            except ValueError:
+                raise ValueError('Choose a valid date') from None
+            if chosen <= today:
+                raise ValueError('Choose a future date')
+            self.update_enquiry(enquiry_id, next_action_due=chosen.isoformat())
+            self.repo.update('customer_enquiries', enquiry_id, next_action_snoozed_until=chosen.isoformat())
+        elif action in {'done', 'waiting'}:
+            # Three unanswered chases already schedule a 30-day recheck. Keep it.
+            if enquiry['status'] != NOT_RESPONDING:
+                self.update_enquiry(enquiry_id, waiting_on='customer', next_action_due=(today + timedelta(days=3)).isoformat())
+            self.repo.update('customer_enquiries', enquiry_id, next_action_snoozed_until=None)
+        else:
+            raise ValueError('Unknown action')
+        self.log(enquiry_id, 'note', {'done':'Next action marked done', 'snooze':'Next action snoozed', 'waiting':'Waiting on customer'}[action])
+        return self.get_enquiry(enquiry_id)
+
     def get_enquiry(self, enquiry_id):
         enquiry = self.repo.get('customer_enquiries', enquiry_id)
         enquiry = self._decorate(enquiry)
@@ -434,12 +459,13 @@ class CustomerService:
         summary = (summary or '').strip()
         if not summary:
             raise ValueError('Activity summary is required')
-        self.repo.get('customer_enquiries', enquiry_id)
+        enquiry = self.repo.get('customer_enquiries', enquiry_id)
         when = occurred_at or now()
         activity_id = self.repo.insert('customer_activities', enquiry_id=enquiry_id, kind=kind, summary=summary,
                                        occurred_at=when, external_id=external_id)
         if kind in INBOUND:
-            self.repo.update('customer_enquiries', enquiry_id, last_customer_contact_at=when)
+            self.repo.update('customer_enquiries', enquiry_id, last_customer_contact_at=when, next_action_snoozed_until=None,
+                             **({'waiting_on':'us', 'next_action_due':now()[:10]} if enquiry['status'] not in CLOSED_STATUSES else {}))
             self._cancel_pending(enquiry_id, 'Customer replied')
             enquiry = self.repo.get('customer_enquiries', enquiry_id)
             if (enquiry['status'] or '').lower() == NOT_RESPONDING:
@@ -698,7 +724,7 @@ class CustomerService:
             try:
                 is_form = (bool(re.search(cfg.CUSTOMER_FORM_SUBJECT_PATTERN, subject))
                            # Netlify puts the marker in the subject; the body starts at the fields.
-                           and cfg.CUSTOMER_FORM_BODY_MARKER in subject + '\n' + text
+                           and ' '.join(cfg.CUSTOMER_FORM_BODY_MARKER.split()).casefold() in ' '.join((subject + '\n' + text).split()).casefold()
                            and (not cfg.CUSTOMER_FORM_SENDERS or sender in cfg.CUSTOMER_FORM_SENDERS))
             except re.error:
                 is_form = False  # invalid deployment config must not stop ordinary email
@@ -870,7 +896,7 @@ class CustomerService:
         qualification = {k: v for k, v in form_qualification(fields).items()
                          if not (enquiry.get('qualification') or {}).get(k)}
         updates = {'qualification': qualification} if qualification else {}
-        if not enquiry.get('requirements') and fields.get('requirement'):
-            updates['requirements'] = fields['requirement']
+        if not enquiry.get('requirements'):
+            updates['requirements'] = '\n'.join(f'{k.replace("_", " ")}: {v}' for k, v in fields.items() if v and k not in {'name', 'email', 'phone', 'company', 'lead_source'})
         if updates:
             self.update_enquiry(enquiry['id'], **updates)

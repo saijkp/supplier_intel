@@ -1,5 +1,5 @@
 /* Bump this version whenever the static shell changes. Never cache private data. */
-const CACHE_VERSION = 'supplier-intel-shell-v2';
+const CACHE_VERSION = 'supplier-intel-shell-v3';
 const SHELL = ['./index.html', './customers.js', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png'];
 const shellURLs = new Set(SHELL.map(path => new URL(path, self.registration.scope).href));
 self.addEventListener('install', event => {

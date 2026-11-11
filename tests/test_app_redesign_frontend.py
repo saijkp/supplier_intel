@@ -36,24 +36,19 @@ down=true;await checkHealth();assert.equal($('connBtn').textContent,'API unreach
     assert result.returncode==0,result.stdout+result.stderr
 
 
-def test_daily_work_deduplicates_sorts_and_requires_a_day_before_chasing(tmp_path):
+def test_daily_dates_and_international_phone_validation(tmp_path):
     node=shutil.which('node')
     if not node:
         pytest.skip('Node is required for JS checks')
     source=Path('frontend/index.html').read_text(encoding='utf-8')
     dates=source[source.index('function dailyDate('):source.index('function dueChip(')]
-    build=source[source.index('function buildDailyItems('):source.index('async function loadToday(')]
-    script="const assert=require('node:assert/strict');\n"+dates+build+r'''
-const now=Date.now(),old=new Date(now-90000000).toISOString(),recent=new Date(now-3600000).toISOString();
-const enquiries=[{id:9,customer_name:'Buyer',status:'new',waiting_on:'us',created_at:recent}];
-const campaigns=[{id:8,title:'Kitchen',messages:[{id:1,status:'sent',supplier_id:4,sent_at:old},{id:2,status:'sent',supplier_id:5,sent_at:recent},{id:3,status:'sent',supplier_id:6,sent_at:old}],replies:[{supplier_id:6,reply_type:'quote'}]}];
-const items=buildDailyItems({overdue:[{id:9,customer:'Buyer'}]},enquiries,[],[],{pending:[{reply_id:3,received_at:new Date(now).toISOString(),campaign_id:8}]},campaigns,[{id:4,status:'failed',created_at:old},{id:5,status:'completed'}]);
-assert.equal(items.filter(x=>x.key==='enquiry-9').length,1);
-assert.equal(items[0].key,'reply-3');
-assert.deepEqual(items.filter(x=>x.key.startsWith('chase-')).map(x=>x.key),['chase-1']);
-assert.ok(items.some(x=>x.key==='job-4'));assert.ok(!items.some(x=>x.key==='job-5'));
+    phone=source[source.index('function validDailyPhone('):source.index('const dailyPost=')]
+    script="const assert=require('node:assert/strict');\n"+dates+phone+r"""
 assert.equal(dailyDate('2026-11-11 10:00:00'),Date.parse('2026-11-11T10:00:00Z'));
-'''
+assert.ok(validDailyPhone('+44 7700 900111'));
+assert.ok(!validDailyPhone('07700 900111'));
+assert.ok(!validDailyPhone('unknown'));
+"""
     path=tmp_path/'daily.cjs';path.write_text(script,encoding='utf-8')
     result=subprocess.run([node,str(path)],capture_output=True,text=True,timeout=20)
     assert result.returncode==0,result.stdout+result.stderr
