@@ -52,7 +52,7 @@ def prepare(s, n=1, mailbox='sj@ikeng.online', subtype='corporate', steps=None):
 
 def test_schema_idempotent(engine):
     s,_,_=engine; initialise_schema(s.repo.db_path)
-    assert get_schema_version(s.repo.db_path)==47
+    assert get_schema_version(s.repo.db_path)==48
 
 
 def test_approval_gate_and_disabled(engine):
@@ -346,7 +346,7 @@ def test_migration_from_44_preserves_existing_data(engine):
         c.execute("INSERT INTO customers(name) VALUES('Existing buyer')")
     initialise_schema(s.repo.db_path)
     assert s.repo.rows('SELECT name FROM customers')[0]['name']=='Existing buyer'
-    assert get_schema_version(s.repo.db_path)==47
+    assert get_schema_version(s.repo.db_path)==48
 
 
 def test_manual_next_action_and_preproject_loss(engine):

@@ -10,14 +10,14 @@ class ProspectContactService:
         self.client=client
         self.api_key=api_key if api_key is not None else cfg.APOLLO_API_KEY
 
-    def search(self, account_id):
+    def search(self, account_id, titles=None):
         account=self.outreach.repo.get('prospect_accounts',account_id)
         # Mark every attempt, including missing domain/config, so batches never loop.
         self.outreach.repo.execute('UPDATE prospect_accounts SET contact_search_attempted_at=? WHERE id=?',(stamp(self.outreach.now()),account_id))
         if not account['domain'] or not self.api_key:
             return {'skipped':True,'reason':'Domain and Apollo key required; no reveal performed'}
         payload={'q_organization_domains_list':[account['domain']],
-                 'person_titles':['director','architect','interiors','FF&E','sourcing','founder','buyer'], 'per_page':10}
+                 'person_titles':titles or ['director','architect','interiors','FF&E','sourcing','founder','buyer'], 'per_page':10}
         def request(client):
             response=client.post('https://api.apollo.io/api/v1/mixed_people/api_search',headers={'x-api-key':self.api_key},json=payload)
             response.raise_for_status()

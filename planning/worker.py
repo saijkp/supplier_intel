@@ -19,12 +19,11 @@ def due(service):
 async def run(db_path):
     while True:
         await asyncio.sleep(60)
-        if os.getenv('PLANNING_SCHEDULE_ENABLED','').lower() != 'true':
-            continue
         try:
             service = PlanningService(OutreachService(OutreachRepository(db_path())))
-            if due(service):
+            service.expire_stalled()
+            if os.getenv('PLANNING_SCHEDULE_ENABLED','').lower() == 'true' and due(service):
                 areas = json.loads(os.environ['PLANNING_AREAS']) if os.getenv('PLANNING_AREAS') else None
-                await asyncio.to_thread(service.sync_recent,areas,90)
+                await asyncio.to_thread(service.run_background, service.start_run(), areas=areas, days=90)
         except Exception:
             logger.exception('Planning sync failed; results inconclusive')
