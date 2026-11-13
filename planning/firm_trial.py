@@ -108,12 +108,33 @@ def role_priority(person):
     return 2 if 'associate' in role else 3 if any(t in role for t in ('architect', 'interior designer')) else 99
 
 
+def reveal_candidate(person):
+    person_id = clean(person.get('apollo_id') or person.get('id')) or clean(person.get('source_url')).removeprefix('apollo-free:')
+    if not person_id:
+        return None
+    return {'apollo_id': person_id, 'first_name': clean(person.get('first_name')) or clean(person.get('name')).split(' ')[0],
+            'role': person.get('title') or person.get('role'),
+            'organization_domain': person.get('organization_domain') or (person.get('organization') or {}).get('primary_domain'),
+            'source': 'apollo', 'source_url': 'apollo-free:' + person_id}
+
+
+def collect_reveal_candidates(data, found=()):
+    candidates = data.setdefault('reveal_candidates', [])
+    legacy = data.get('people', []) + data.get('apollo_candidates', []) + data.get('field_provenance', {}).get('rejected_people', [])
+    for person in list(found) + [p for p in legacy if p.get('source') == 'apollo']:
+        candidate = reveal_candidate(person)
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+
 def sanitize_contacts(data, company):
+    collect_reveal_candidates(data)
     people, generic = [], list(data.get('generic_contacts', []))
     rejected = data.setdefault('field_provenance', {}).setdefault('rejected_people', [])
     for original in data.get('people', []):
         person = dict(original)
-        if not human_name(person.get('name'), company):
+        if (not human_name(person.get('name'), company)
+                or (person.get('source') == 'apollo' and not person.get('email_evidence'))):
             if person.get('email') and person['email'].split('@')[0].lower() in GENERIC:
                 person['generic'] = True
                 if person not in generic:
@@ -158,8 +179,30 @@ def verify_site(http, url, company, profile=None):
     if parts.scheme != 'https' or not parts.hostname or parts.username or parts.password:
         return None
     url = 'https://' + parts.netloc + '/'
-    text = BeautifulSoup(http.get(url), 'html.parser').get_text(' ', strip=True)
-    if parking_page_reason(text) or not firm_name(company) or not re.search(r'(?<!\w)' + re.escape(firm_name(company)) + r'(?!\w)', firm_name(text)):
+    pages, queue = [], [url]
+    for target in queue:
+        try:
+            soup = BeautifulSoup(http.get(target), 'html.parser')
+        except Exception:
+            if target == url:
+                raise
+            continue
+        page_text = soup.get_text(' ', strip=True)
+        if parking_page_reason(page_text):
+            if target == url:
+                return None
+            continue
+        pages.append({'source_url': target, 'text': page_text})
+        for link in soup.select('a[href]'):
+            href = urljoin(target, link['href']).split('#')[0]
+            parts = urlsplit(href)
+            if (parts.scheme == 'https' and not parts.username and not parts.password
+                    and domain(href) == domain(url)
+                    and re.search(r'contact|about', link.get_text(' ', strip=True) + ' ' + parts.path, re.I)
+                    and href not in queue and len(queue) < 4):
+                queue.append(href)
+    text = ' '.join(p['text'] for p in pages)
+    if not firm_name(company) or not re.search(r'(?<!\w)' + re.escape(firm_name(company)) + r'(?!\w)', firm_name(text)):
         return None
     address = str(getattr(profile, 'registered_office_address', '') or '')
     postcodes = re.findall(r'\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b', address, re.I)
@@ -168,7 +211,7 @@ def verify_site(http, url, company, profile=None):
     uk = bool(re.search(r'\b(?:London|Manchester|Birmingham|Bristol|Leeds|Liverpool|Sheffield|Nottingham|Leicester|Cardiff|Edinburgh|Glasgow|Belfast|Newcastle|Oxford|Cambridge|York|Southampton|Brighton|United Kingdom|UK)\b|(?:\+44\s*(?:\(0\))?|\b0)[1-9][\d ()-]{8,12}\d|\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b', text, re.I))
     if not uk:
         return None
-    return {'website': url, 'website_verified': True, 'website_evidence': {'source_url': url, 'name_match': True, 'uk_signal': uk, 'postcode_match': postcode, 'outward_match': outward, 'score': 80 + 10 * uk + 10 * postcode + 5 * outward}}
+    return {'website': url, 'website_verified': True, 'website_evidence': {'source_url': url, 'pages': pages, 'name_match': True, 'uk_signal': uk, 'postcode_match': postcode, 'outward_match': outward, 'score': 80 + 10 * uk + 10 * postcode + 5 * outward}}
 
 
 def firm_report(repo):
@@ -232,6 +275,14 @@ class FirmTrial:
             company, projects = item
             live = [p for p in projects if not re.search(r'refus|withdraw|reject|complete', p.get('status') or '', re.I)]
             return (classify(company) == 'architect', max((fit(p['description'], p['application_type'] or '')[0] for p in live), default=0), max((p.get('validated_date') or '' for p in live), default=''), len(live))
+        # Local repairs must not depend on network retry ranking or budget.
+        from types import SimpleNamespace
+        for row in self.repo.rows('SELECT * FROM planning_firm_trials'):
+            data = json.loads(row['payload'])
+            profile = SimpleNamespace(company_status='active', sic_codes=data.get('sic_codes', [])) if data.get('CH_verified') else None
+            data['classification'] = classify(row['company'], profile)
+            sanitize_contacts(data, row['company'])
+            self.persist_progress(row['firm_key'], data)
         attempted = 0
         for company, projects in sorted(groups.items(), key=rank, reverse=True):
             alias = 'name:' + name_key(company)
@@ -293,12 +344,7 @@ class FirmTrial:
                     self.record_call(key, data, 'apollo', 'people_search')
                     found = self.apollo.search(company, urlsplit(website).hostname if website else None)
                     found = [p for p in found if firm_name(clean((p.get('organization') or {}).get('name'))) == firm_name(company) or (website and (p.get('organization') or {}).get('primary_domain') == urlsplit(website).hostname)]
-                for person in found:
-                    if not person.get('id'):
-                        continue
-                    name = clean(person.get('name')) or ' '.join(filter(None, [clean(person.get('first_name')), clean(person.get('last_name'))]))
-                    record = {'name': name, 'role': person.get('title'), 'source': 'apollo', 'source_url': 'apollo-free:' + str(person['id']), 'organization_domain': (person.get('organization') or {}).get('primary_domain')}
-                    people.append(record)
+                collect_reveal_candidates(data, found)
                 data['people'] = people
                 if not people and profile:
                     data['people'] = self.planning.companies_house.get_officers(profile.company_number)
@@ -316,7 +362,7 @@ class FirmTrial:
     def persist_progress(self, key, data):
         old = json.loads(self.repo.rows('SELECT payload FROM planning_firm_trials WHERE firm_key=?', (key,))[0]['payload'])
         merged, candidates = merge_trusted(old, data)
-        for field in ('people', 'generic_contacts', 'pages', 'search_calls', 'apollo_candidates'):
+        for field in ('people', 'generic_contacts', 'pages', 'search_calls', 'apollo_candidates', 'reveal_candidates'):
             merged[field] = list(old.get(field, []))
             for item in data.get(field, []):
                 if item not in merged[field]:
@@ -403,6 +449,8 @@ class FirmTrial:
     def retry(self, key, company, data, max_searches):
         from types import SimpleNamespace
         profile = SimpleNamespace(company_status='active', sic_codes=data.get('sic_codes', []), registered_office_address=data.get('registered_office_address')) if data.get('CH_verified') else None
+        data['classification'] = classify(company, profile)
+        sanitize_contacts(data, company)
         if not data.get('CH_verified'):
             profile, matching = match_company(self.planning.companies_house, company)
             # Negative/review outcomes are operational state, not trusted identity.
@@ -432,8 +480,8 @@ class FirmTrial:
             else:
                 data.setdefault('field_provenance', {}).setdefault('website_reverification', []).append({'website': data['website'], 'reason': 'Failed name/UK re-verification', 'at': stamp(self.now())})
                 data['field_provenance']['website_candidate'] = data['website']
-        if data['classification'] in ('architect', 'design_build_contractor') and not data.get('website_verified'):
-            website = self.discover(key, company, data, profile, max_searches)
+        if data['classification'] in ('architect', 'design_build_contractor'):
+            website = data.get('website') if data.get('website_verified') else self.discover(key, company, data, profile, max_searches)
             if website:
                 try:
                     people, pages = site_people(self.http, website, company, data.setdefault('generic_contacts', []))
@@ -450,11 +498,11 @@ class FirmTrial:
                     data.setdefault('pages', []).extend(pages)
                 except Exception as exc:
                     data['site_reason'] = type(exc).__name__
-        data.setdefault('apollo_candidates', []).extend(p for p in data.get('people', []) if p.get('source') == 'apollo' and p not in data.get('apollo_candidates', []))
+        collect_reveal_candidates(data)
         self.persist_progress(key, data)
 
     def reveal_best(self, key, company, data, max_reveals):
-        data.setdefault('apollo_candidates', []).extend(p for p in data.get('people', []) if p.get('source') == 'apollo' and p not in data.get('apollo_candidates', []))
+        collect_reveal_candidates(data)
         sanitize_contacts(data, company)
         if (os.getenv('OUTREACH_APOLLO_REVEAL_ENABLED', '').lower() != 'true'
                 or self.reveals_used >= max_reveals or data.get('reveals_used')
@@ -462,14 +510,10 @@ class FirmTrial:
                 or data.get('classification') != 'architect'
                 or any(p.get('email') and not p.get('generic') for p in data['people'])):
             return
-        candidates = data['people'] + data.get('apollo_candidates', [])
-        if not any(p.get('source') == 'apollo' and domain(p.get('organization_domain')) == domain(data.get('website')) for p in candidates):
+        candidates = data['reveal_candidates']
+        if not any(domain(p.get('organization_domain')) == domain(data.get('website')) for p in candidates):
             self.record_call(key, data, 'apollo', 'people_search_for_reveal')
-            found = self.apollo.search(company, domain(data['website']))
-            for hit in found:
-                if hit.get('id'):
-                    candidates.append({'name': clean(hit.get('name')) or ' '.join(filter(None, [clean(hit.get('first_name')), clean(hit.get('last_name'))])), 'role': hit.get('title'), 'organization_domain': (hit.get('organization') or {}).get('primary_domain'), 'source': 'apollo', 'source_url': 'apollo-free:' + str(hit['id'])})
-            data['apollo_candidates'] = [p for p in candidates if p.get('source') == 'apollo']
+            collect_reveal_candidates(data, self.apollo.search(company, domain(data['website'])))
         ranked = sorted((p for p in candidates if p.get('source') == 'apollo'
                          and domain(p.get('organization_domain')) == domain(data.get('website'))
                          and role_priority(p) < 99), key=role_priority)
@@ -478,20 +522,20 @@ class FirmTrial:
         person = ranked[0]
         self.reveals_used += 1
         data['reveals_used'] = data.get('reveals_used', 0) + 1
-        entry = {'firm': company, 'person': person.get('name'), 'person_id': person['source_url'], 'credit_used': 1, 'at': stamp(self.now()), 'status': 'reserved'}
+        entry = {'firm': company, 'person': person.get('first_name'), 'title': person.get('role'), 'person_id': person['apollo_id'], 'credit_used': 1, 'at': stamp(self.now()), 'status': 'reserved'}
         data.setdefault('reveal_log', []).append(entry)
         self.persist_progress(key, data)
         try:
-            revealed = self.apollo.reveal(person['source_url'].removeprefix('apollo-free:'))
+            revealed = self.apollo.reveal(person['apollo_id'])
             entry['status'] = 'completed'
             email = clean(revealed.get('email'))
-            if re.fullmatch(EMAIL, email):
-                person['email'] = email
-                person['email_evidence'] = revealed
-            if human_name(revealed.get('name'), company):
-                person['name'] = revealed['name']
-            if human_name(person.get('name'), company) and person not in data['people']:
-                data['people'].append(person)
+            name = clean(revealed.get('name')) or ' '.join(filter(None, [clean(revealed.get('first_name')), clean(revealed.get('last_name'))]))
+            if human_name(name, company) and re.fullmatch(EMAIL, email):
+                record = {**person, 'name': name, 'email': email, 'email_evidence': revealed}
+                if record not in data['people']:
+                    data['people'].append(record)
+            else:
+                entry['result_reason'] = 'Revealed full human name and email required'
         except Exception as exc:
             entry['status'] = type(exc).__name__
             raise

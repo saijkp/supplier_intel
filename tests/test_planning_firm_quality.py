@@ -87,7 +87,8 @@ def test_reveal_single_best_and_gates(service, monkeypatch, change):
     if change == 'unverified': data['website_verified'] = False
     if change == 'no_ch': data['CH_verified'] = False
     if change == 'contractor': data['classification'] = 'design_build_contractor'
-    if change == 'direct': data['people'][0]['email'] = 'existing@studio.example'
+    if change == 'direct':
+        data['people'][0].update(email='existing@studio.example', email_evidence={'name': 'Alex Smith', 'email': 'existing@studio.example'})
     if change == 'org_mismatch':
         for p in data['people']: p['organization_domain'] = 'different.example'
     trial.reveal_best('ch:00123456', 'Studio Architects', data, 0 if change == 'cap' else 10)
@@ -116,3 +117,88 @@ def test_reveal_run_cap_and_failure_reserved(service, monkeypatch):
     data['reveals_used'] = 0
     trial.reveal_best('ch:00123456', 'Other Architects', data, 1)
     assert trial.reveals_used == 1
+
+
+@pytest.mark.parametrize('enabled,cap,expected', [('true', 10, ['founder']), ('false', 10, []), ('true', 0, [])])
+def test_first_name_only_search_candidates(service, monkeypatch, enabled, cap, expected):
+    seed(service)
+    monkeypatch.setenv('OUTREACH_APOLLO_REVEAL_ENABLED', enabled)
+    hits = [dict(id=ident, first_name=first, last_name_obfuscated='S***', title=title,
+                 organization={'name': 'Studio Architects', 'primary_domain': 'studio.example'})
+            for ident, first, title in [('architect', 'Paolo', 'Architect'), ('associate', 'Oliver', 'Associate'),
+                                        ('ad', 'Neil', 'Associate Director'), ('founder', 'David', 'Founder')]]
+    reveals = []
+    apollo = NS(api_key=True, organizations=lambda _: [{'name': 'Studio Architects', 'primary_domain': 'studio.example'}],
+                search=lambda *a: hits, reveal=lambda ident: reveals.append(ident) or {'name': 'David Smith', 'email': 'david@studio.example'})
+    result = FirmTrial(service, http=NS(get=lambda _: 'Studio Architects London'), apollo=apollo,
+                       serp=NS(api_key=False)).run(max_reveals=cap)
+    data = result['firm_records'][0]['payload']
+    assert reveals == expected
+    assert {p['first_name'] for p in data['reveal_candidates']} == {'Paolo', 'Oliver', 'Neil', 'David'}
+    assert {p['apollo_id'] for p in data['reveal_candidates']} == {'architect', 'associate', 'ad', 'founder'}
+    assert not any('name' in p or 'email' in p for p in data['reveal_candidates'])
+    assert [p['name'] for p in data['people'] if p.get('source') == 'apollo'] == (['David Smith'] if expected else [])
+    assert result['run_reveals_used'] == len(expected)
+
+
+@pytest.mark.parametrize('revealed', [{'name': 'Dilan', 'email': 'dilan@studio.example'}, {'name': 'Dilan Smith'}, {}])
+def test_reveal_requires_full_name_and_email(service, monkeypatch, revealed):
+    seed(service)
+    trial = FirmTrial(service, http=NS(get=lambda _: 'Other'), apollo=NS(api_key=False), serp=NS(api_key=False))
+    trial.run(max_reveals=0)
+    monkeypatch.setenv('OUTREACH_APOLLO_REVEAL_ENABLED', 'true')
+    calls = []
+    trial.apollo = NS(reveal=lambda ident: calls.append(ident) or revealed)
+    data = dict(website='https://studio.example/', website_verified=True, CH_verified=True, classification='architect',
+                people=[], field_provenance={'rejected_people': [dict(name='Dilan', role='Director', source='apollo',
+                    source_url='apollo-free:dilan', organization_domain='studio.example')]})
+    trial.reveal_best('ch:00123456', 'Studio Architects', data, 1)
+    assert calls == ['dilan'] and not data['people']
+    assert data['reveal_log'][0]['status'] == 'completed'
+    saved = json.loads(service.repo.rows('SELECT payload FROM planning_firm_trials WHERE firm_key=?', ('ch:00123456',))[0]['payload'])
+    assert not saved['people'] and saved['reveals_used'] == 1
+
+
+def test_cottrell_contact_page_uk_evidence():
+    company = 'Cottrell and Vermeulen Architecture'
+    pages = {'https://cv-arch.co.uk/': '<h1>Cottrell & Vermeulen Architecture</h1><a href="/contact/">Contact</a>',
+             'https://cv-arch.co.uk/contact/': 'Contact 1B Iliffe St London SE17 3LJ Telephone +44 (0) 20 7708 2567'}
+    result = verify_site(NS(get=pages.__getitem__), 'cv-arch.co.uk', company)
+    assert result['website_verified'] and result['website_evidence']['uk_signal']
+    assert result['website_evidence']['pages'][1]['source_url'].endswith('/contact/')
+    assert verify_site(NS(get=pages.__getitem__), 'cv-arch.co.uk', 'Other Architects') is None
+    pages['https://cv-arch.co.uk/contact/'] = 'Contact us'
+    assert verify_site(NS(get=pages.__getitem__), 'cv-arch.co.uk', company) is None
+
+
+@pytest.mark.parametrize('href', ['https://other.example/contact', 'http://cv-arch.co.uk/contact', 'https://user@cv-arch.co.uk/contact'])
+def test_contact_evidence_cannot_cross_domain_or_scheme(href):
+    calls = []
+    def get(url):
+        calls.append(url)
+        return '<h1>Cottrell & Vermeulen Architecture</h1><a href="' + href + '">Contact</a>'
+    assert verify_site(NS(get=get), 'cv-arch.co.uk', 'Cottrell and Vermeulen Architecture') is None
+    assert calls == ['https://cv-arch.co.uk/']
+
+
+def test_local_cleanup_not_starved_by_retry_limit_or_registry_failure(service):
+    seed(service)
+    trial = FirmTrial(service, http=NS(get=lambda _: 'Other'), apollo=NS(api_key=False), serp=NS(api_key=False))
+    trial.run(max_reveals=0)
+    # These lower-ranked rows used to remain unchanged when architects consumed the budget.
+    for i, company in enumerate(['Formation design and build', 'Brecons Design & Build Ltd']):
+        payload = dict(classification='architect', CH_verified=bool(i), sic_codes=['41100', '41201', '41202', '70229'],
+                       people=[dict(name='Dilan', role='Architecture', source='apollo', source_url='apollo-free:dilan')])
+        service.repo.execute('INSERT INTO planning_firm_trials(firm_key,company,payload,attempted_at) VALUES(?,?,?,?)',
+                             ('name:contractor' + str(i), company, json.dumps(payload), '2026-11-13'))
+    def fail(*a):
+        raise RuntimeError('fake registry failure')
+    service.companies_house = NS(search_companies=fail, get_company_profile=fail)
+    trial.run(limit=1, retry_incomplete=True, max_searches=0, max_reveals=0)
+    for row in service.repo.rows("SELECT * FROM planning_firm_trials WHERE firm_key LIKE 'name:contractor%'"):
+        data = json.loads(row['payload'])
+        assert data['classification'] == 'design_build_contractor' and not data['people']
+        assert data['reveal_candidates'][0]['first_name'] == 'Dilan'
+    # Repeated persistence must not resurrect legacy single-token people.
+    trial.run(limit=1, retry_incomplete=True, max_searches=0, max_reveals=0)
+    assert all(not json.loads(r['payload'])['people'] for r in service.repo.rows("SELECT payload FROM planning_firm_trials WHERE firm_key LIKE 'name:contractor%'"))
