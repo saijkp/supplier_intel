@@ -11,7 +11,10 @@ from storage.rfq_repository import RFQRepository
 
 
 @pytest.fixture
-def zoho(monkeypatch):
+def zoho(monkeypatch,tmp_path):
+    path=tmp_path/"tokens.db"
+    initialise_schema(path)
+    monkeypatch.setattr(cfg,"DB_PATH",path)
     for key,value in {'REGION':'eu','CLIENT_ID':'client','CLIENT_SECRET':'fake-client-secret',
                       'REFRESH_TOKEN':'fake-refresh-token','ACCOUNT_ID':'12345'}.items():
         monkeypatch.setattr(cfg,'RFQ_ZOHO_'+key,value)

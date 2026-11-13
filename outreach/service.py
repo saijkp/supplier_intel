@@ -72,6 +72,10 @@ def render(text, values):
 
 def classify(text):
     text = text.lower()
+    if re.search(r'spam complaint|abuse report|feedback report',text):
+        return 'complaint'
+    if re.search(r'no longer (?:works?|employed|with)|left (?:the |our )?(?:company|firm|practice)',text):
+        return 'departed'
     if re.search(r'opt[ -]?out|unsubscribe|remove me|do not (?:email|contact)|stop (?:emailing|contacting)', text):
         return 'opt-out'
     if re.search(r'undeliver|delivery (?:status notification|fail)|mail delivery subsystem|address not found', text):
@@ -100,8 +104,16 @@ class OutreachService:
             from rfq.zoho_mail import ZohoClient, ZohoSender, ZohoInbox
             self._boxes = {}
             for address, prefix in [('sai@ikeng.online', 'RFQ_ZOHO_'), ('sj@ikeng.online', 'OUTREACH_ZOHO_')]:
-                client = ZohoClient(prefix=prefix)
+                client = ZohoClient(prefix=prefix, db_path=self.repo.db_path)
                 self._boxes[address] = Mailbox(address, ZohoSender(client, address), ZohoInbox(client))
+        from outreach.always_on import mailbox_config
+        from rfq.zoho_mail import ZohoClient, ZohoSender, ZohoInbox
+        for address, conf in mailbox_config().items():
+            if address not in self._boxes and self._boxes is not None and self._boxes:
+                # Only extend the real registry; injected fake registries stay isolated.
+                if all(isinstance(b.sender, ZohoSender) for b in self._boxes.values()):
+                    client=ZohoClient(prefix=conf['prefix'],db_path=self.repo.db_path)
+                    self._boxes[address]=Mailbox(address,ZohoSender(client,address),ZohoInbox(client))
         return self._boxes
 
     def event(self, account_id, kind, payload=None, enrolment_id=None, external_id=None, status='done'):
@@ -308,7 +320,13 @@ class OutreachService:
         next_steps = self.repo.rows('SELECT s.* FROM outreach_steps s WHERE sequence_id=? AND NOT EXISTS(SELECT 1 FROM outreach_events v WHERE v.enrolment_id=? AND v.step_id=s.id) ORDER BY position LIMIT 1', (row['sequence_id'],eid))
         if next_steps:
             start = datetime.fromisoformat(row['started_at']).replace(tzinfo=timezone.utc)
-            self.repo.execute('UPDATE outreach_enrolments SET next_step_at=? WHERE id=?', (stamp(start+timedelta(days=next_steps[0]['day_offset'])),eid))
+            due=start+timedelta(days=next_steps[0]['day_offset'])
+            if self.repo.get('outreach_sequences',row['sequence_id'])['title'].startswith('Always-on '):
+                last=self.repo.rows('SELECT v.created_at,s.day_offset FROM outreach_events v JOIN outreach_steps s ON s.id=v.step_id WHERE v.enrolment_id=? ORDER BY s.position DESC LIMIT 1',(eid,))
+                if last:
+                    actual=datetime.fromisoformat(last[0]['created_at']).replace(tzinfo=timezone.utc)
+                    due=max(due,actual+timedelta(days=max(0,next_steps[0]['day_offset']-last[0]['day_offset'])))
+            self.repo.execute('UPDATE outreach_enrolments SET next_step_at=? WHERE id=?', (stamp(due),eid))
         else:
             self.repo.execute("UPDATE outreach_enrolments SET status='finished' WHERE id=?", (eid,))
             # Finishing a cold cadence is not a business outcome. Keep an action
@@ -322,8 +340,10 @@ class OutreachService:
     def _cap(self, mailbox):
         if mailbox != 'sj@ikeng.online':
             return 30
+        from outreach.always_on import mailbox_config
+        baseline=self.warmup_start or mailbox_config().get(mailbox,{}).get('warmup_start','')
         try:
-            age = (self.now().astimezone(UK).date() - date.fromisoformat(self.warmup_start)).days
+            age = (self.now().astimezone(UK).date() - date.fromisoformat(baseline)).days
         except ValueError:
             raise ValueError('Configure OUTREACH_WARMUP_START before sending from sj') from None
         if age < 0:
@@ -341,6 +361,10 @@ class OutreachService:
             GATE.release()
 
     def _run_due(self, limit):
+        from outreach.always_on import AlwaysOnService
+        safety=AlwaysOnService(self)
+        if safety.paused():
+            return {'sent':0,'tasks':0,'skipped':0,'failed':0,'paused':True}
         stats = {'sent':0,'tasks':0,'skipped':0,'failed':0}
         deadline = time.monotonic()+45
         for _ in range(limit):
@@ -354,6 +378,8 @@ class OutreachService:
             progressed = False
             for row in rows:
                 eid = row['id']
+                if row['mailbox'] in getattr(self,'_blocked_mailboxes',set()):
+                    continue
                 steps = self.repo.rows('SELECT s.* FROM outreach_steps s WHERE sequence_id=? AND NOT EXISTS(SELECT 1 FROM outreach_events v WHERE v.enrolment_id=? AND v.step_id=s.id) ORDER BY position LIMIT 1', (row['sequence_id'],eid))
                 if not steps:
                     self._advance(eid); continue
@@ -367,15 +393,39 @@ class OutreachService:
                 payload = {'subject':render(step['subject'],values),'body':render(step['template'],values),
                            'recipient':row['email'],'mailbox':row['mailbox']}
                 if step['channel'] == 'email':
+                    from outreach.always_on import managed_payload
+                    try:
+                        managed=managed_payload(self,row,step,payload)
+                    except Exception as exc:
+                        self.repo.execute("UPDATE outreach_project_queue SET state='waiting enrichment',reason=?,retry_at=?,attempted_at=? WHERE enrolment_id=?",(str(exc) if isinstance(exc,ValueError) else type(exc).__name__,stamp(self.now()+timedelta(hours=1)),stamp(self.now()),eid))
+                        self.repo.execute('UPDATE outreach_enrolments SET next_step_at=? WHERE id=?',(stamp(self.now()+timedelta(hours=1)),eid))
+                        stats['skipped']+=1
+                        continue
+                    if managed is None:
+                        stats['skipped']+=1
+                        continue
+                    is_managed=self.repo.get('outreach_sequences',row['sequence_id'])['title'].startswith('Always-on ')
+                    payload=managed
                     if not self.enabled or row['subscriber_type'] != 'corporate' or row['email_status'] != 'corporate_verified' or not row['email']:
                         stats['skipped'] += 1; continue
                     if not payload['body'] or not payload['subject'] or re.search(r'[\r\n]',payload['subject']):
                         stats['skipped'] += 1; continue
                     payload['subject'] += ' [IKE-PROSPECT-'+str(eid)+']'
-                    payload['body'] += FOOTER.format(source=row['source_url'] or row['source'])
+                    if not is_managed:
+                        payload['body'] += FOOTER.format(source=row['source_url'] or row['source'])
                     try:
                         sent = self._send(row, step, payload)
-                    except Exception:
+                    except Exception as exc:
+                        from rfq.zoho_mail import ZohoError
+                        if isinstance(exc,ZohoError) and exc.safe_to_retry:
+                            key='send_retry:'+str(eid)
+                            previous=safety.state(key,{'attempts':0})
+                            attempts=previous['attempts']+1
+                            retry_at=stamp(self.now()+timedelta(minutes=min(1440,5*2**min(attempts,9))))
+                            safety.put(key,{'attempts':attempts,'category':exc.category,'attempted_at':stamp(self.now()),'retry_at':retry_at})
+                            self.repo.execute('UPDATE outreach_enrolments SET next_step_at=? WHERE id=?',(retry_at,eid))
+                            stats['failed']+=1
+                            continue
                         self.repo.execute("UPDATE outreach_enrolments SET status='paused' WHERE id=? AND status='active'",(eid,))
                         if not self.repo.rows("SELECT 1 FROM outreach_events WHERE enrolment_id=? AND kind='needs Sai' AND status='pending'",(eid,)):
                             self.event(row['account_id'],'needs Sai',{'reason':'Delivery safety check blocked sending. Review Sent, cap and configuration.'},eid,status='pending')
@@ -414,7 +464,11 @@ class OutreachService:
             sent = box.sent(2)
             today = self.now().astimezone(UK).date()
             today_sent = [m for m in sent if sent_time(m).astimezone(UK).date()==today]
-            if len(today_sent) >= self._cap(row['mailbox']):
+            cap=self._cap(row['mailbox'])
+            if self.repo.get('outreach_sequences',row['sequence_id'])['title'].startswith('Always-on '):
+                from outreach.always_on import AlwaysOnService
+                cap=min(cap,AlwaysOnService(self).cap(row['mailbox']))
+            if len(today_sent) >= cap:
                 return False
             box.check_send(payload,sent,self.now())
             if sent and (self.now()-max(sent_time(m) for m in sent)).total_seconds() < 90:
@@ -451,7 +505,16 @@ class OutreachService:
                     raise ValueError('Sent verification failed')
                 self.repo.execute("UPDATE outreach_events SET status='sent',provider_id=?,updated_at=? WHERE id=?", (provider,stamp(self.now()),event_id))
                 return True
-            except Exception:
+            except Exception as exc:
+                from rfq.zoho_mail import ZohoError
+                if isinstance(exc,ZohoError) and exc.safe_to_retry:
+                    # Explicit provider rejection: retain audit, release step claim.
+                    self.repo.execute("UPDATE outreach_events SET status='retry',step_id=NULL,updated_at=? WHERE id=?",(stamp(self.now()),event_id))
+                    if exc.category=='recipient':
+                        self.repo.execute('UPDATE prospect_contacts SET bounced_at=? WHERE id=?',(stamp(self.now()),row['contact_id']))
+                        self.repo.execute("UPDATE outreach_enrolments SET status='stopped' WHERE id=?",(row['id'],))
+                        self.suppress(payload['recipient'],'invalid recipient')
+                    raise
                 self.repo.execute("UPDATE outreach_events SET status='failed',updated_at=? WHERE id=?", (stamp(self.now()),event_id))
                 self.repo.execute("UPDATE outreach_enrolments SET status='paused' WHERE id=?", (row['id'],))
                 self.event(row['account_id'],'needs Sai',{'reason':'Send uncertain; inspect Zoho and ledger. Never retry blindly.'},row['id'],status='pending')
@@ -538,12 +601,14 @@ class OutreachService:
             c.execute("UPDATE outreach_events SET status='cancelled' WHERE status='pending' AND enrolment_id IN (SELECT id FROM outreach_enrolments WHERE contact_id=?)", (contact['id'],))
             if category == 'bounce':
                 c.execute('UPDATE prospect_contacts SET bounced_at=? WHERE id=?', (now,contact['id']))
-            if category in ('opt-out','bounce') and contact['email']:
+            if category in ('opt-out','bounce','complaint','departed') and contact['email']:
                 c.execute('INSERT OR IGNORE INTO suppression_list VALUES(?,?,?)',(contact['email'],category,now))
                 c.execute('UPDATE prospect_contacts SET opted_out_at=? WHERE id=?',(now,contact['id']))
-        if category in ('opt-out','bounce') and contact['email']:
+        if category in ('opt-out','bounce','complaint','departed') and contact['email']:
             self.suppress(contact['email'],category)
-        elif category == 'interested':
+            if category=='complaint':
+                self.suppress(contact['email'].rpartition('@')[2],category)
+        elif category not in ('opt-out','bounce','complaint','departed','out-of-office'):
             task=self.event(contact['account_id'],'needs Sai',{'classification':category,'text':text,'reason':'Project intake pending'},eid,status='pending')
             try:
                 enquiry = self.convert(contact['account_id'],contact['id'],text)
@@ -556,9 +621,11 @@ class OutreachService:
         self.stage(contact['account_id'],'replied')
         return {'classification':category}
 
-    def poll_replies(self):
+    def poll_replies(self, mailbox=None):
         processed = 0
         for address, box in self.mailboxes().items():
+            if mailbox is not None and address!=mailbox:
+                continue
             enrolments = self.repo.rows('SELECT e.*,c.email FROM outreach_enrolments e JOIN prospect_contacts c ON c.id=e.contact_id WHERE e.mailbox=?', (address,))
             if not enrolments:
                 continue

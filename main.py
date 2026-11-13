@@ -204,6 +204,20 @@ def doctor(live: bool) -> None:
     else:
         console.print(f"[yellow]! Database not yet created. Run `python main.py init-db`.[/yellow]")
 
+    if DB_PATH.exists():
+        try:
+            from outreach.always_on import AlwaysOnService
+            health=AlwaysOnService().health()
+            console.print("Outreach health (/health/outreach): " + ("OK" if health['ok'] else "; ".join(health['reasons'])))
+        except Exception:
+            console.print("[yellow]Outreach health unavailable; initialise schema and inspect /health/outreach[/yellow]")
+    outreach_dns_failed=False
+    if live:
+        from diagnostics.outreach_health import sending_domain_checks
+        for check in sending_domain_checks():
+            outreach_dns_failed=outreach_dns_failed or not check["ok"]
+            console.print(f"Outreach {check['domain']} {check['check']}: {'OK' if check['ok'] else 'FAIL'}: {check['detail']}")
+
     if not live:
         console.print("\n[dim]Run with --live to make a real call to every configured "
                        "integration and confirm it actually works.[/dim]")
@@ -227,7 +241,7 @@ def doctor(live: bool) -> None:
     passed = [r for r in results if r.status == "pass"]
     skipped = [r for r in results if r.status == "skipped"]
     console.print(f"\n{len(passed)} passed, {len(failed)} failed, {len(skipped)} skipped (not configured).")
-    if failed:
+    if failed or outreach_dns_failed:
         console.print(
             "[red]Modify or reconfigure the failed integrations above before relying on them "
             "in a real run.[/red]"

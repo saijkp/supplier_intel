@@ -60,7 +60,7 @@ def save_variables(railway, values, run=subprocess.run):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--mailbox', choices=['rfq', 'customer', 'outreach'], default='rfq')
+    p.add_argument('--mailbox', choices=['rfq', 'customer', 'outreach', 'org-sai', 'org-sj', 'org-sales'], default='rfq')
     p.add_argument('--region', choices=REGIONS, default='eu')
     args = p.parse_args()
     railway = shutil.which('railway')
@@ -68,7 +68,11 @@ def main():
         p.error('Install the Railway CLI, sign in with railway login, then use railway link to select Supplier Intel production.')
     # rfq = suppliers (sai@ikeng.online); customer = sai@ikeng.co.uk; outreach = marketing (sj@ikeng.online)
     address, prefix = {'customer': ('sai@ikeng.co.uk', 'CUSTOMER_ZOHO_'),
-                       'outreach': ('sj@ikeng.online', 'OUTREACH_ZOHO_')}.get(args.mailbox, ('sai@ikeng.online', 'RFQ_ZOHO_'))
+                       'outreach': ('sj@ikeng.online', 'OUTREACH_ZOHO_'),
+                       # ikeng.org prospecting pool (separate Zoho org); list them in OUTREACH_MAILBOXES
+                       'org-sai': ('sai@ikeng.org', 'ORG_SAI_ZOHO_'),
+                       'org-sj': ('sj@ikeng.org', 'ORG_SJ_ZOHO_'),
+                       'org-sales': ('sales@ikeng.org', 'ORG_SALES_ZOHO_')}.get(args.mailbox, ('sai@ikeng.online', 'RFQ_ZOHO_'))
     print(f'1. In this PowerShell folder, railway link must point to the Supplier Intel production service.')
     print(f'2. Open https://api-console.zoho.{args.region}/ in your browser. Sign in as {address}.')
     print('3. Create or open a Self Client. Copy its client ID and client secret. Paste them below (input is hidden).')

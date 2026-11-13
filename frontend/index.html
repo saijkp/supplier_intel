@@ -777,13 +777,14 @@ dialog#auditDetailDialog,#view-compare,#view-search,#view-bulk,#view-jobs{--ink-
 <main class="wrap">
 <form id="globalSearch" role="search"><label for="globalQuery">Search customers, enquiries and suppliers</label><div class="row"><input class="input" id="globalQuery" type="search" placeholder="Name, email or phone" required><button class="btn" type="submit">Search</button></div><div id="globalResults" aria-live="polite"></div></form>
 <nav id="researchTabs" class="hidden" aria-label="Research tools"></nav>
-<section id="view-today" class="hidden"><div class="panel"><div class="panel-head"><div><p class="eyebrow">YOUR DAILY WORKSPACE</p><h1>Next actions</h1><p class="hint">Next actions, most urgent first.</p></div><button class="btn" id="todayRefresh">Refresh</button></div><div class="panel-body"><p id="todayNotice" role="status"></p><div id="todayList"><div class="skeleton" aria-label="Loading daily work"></div></div></div></div></section>
+<section id="view-today" class="hidden"><div class="panel"><div class="panel-head"><div><p class="eyebrow">YOUR DAILY WORKSPACE</p><h1>Next actions</h1><p class="hint">Next actions, most urgent first.</p></div><button class="btn" id="todayRefresh">Refresh</button></div><div class="panel-body"><p id="todayNotice" role="status"></p><div id="outreachHealth" role="status"></div><div id="todayList"><div class="skeleton" aria-label="Loading daily work"></div></div></div></div></section>
 <section id="view-projects" class="hidden">
  <div class="panel"><div class="panel-head"><div><h1>Projects</h1><p class="hint">New fit projects this week. Enrolment creates an unapproved outreach draft.</p></div><button class="btn" id="planningRefresh">Refresh</button></div><div class="panel-body"><p id="planningNotice" role="status"></p><div id="planningProjects"></div></div></div>
 </section>
 <section id="view-outreach" class="hidden">
  <div class="panel"><div class="panel-head"><div><p class="eyebrow">ARCHITECTS &amp; SHOWROOMS</p><h1>Prospect outreach</h1><p class="hint">Manual LinkedIn, visits and calls. Approved corporate email only.</p></div><button class="btn" id="outRefresh">Refresh</button><button class="btn btn-primary" id="outRun">Run now</button></div>
  <div class="panel-body"><p id="outNotice" role="status" aria-live="polite"></p><div id="outMetrics"></div>
+ <details><summary>Daily project outreach</summary><p>Review the five-touch project sequence and next batch. LinkedIn remains a task for you. New project emails stay in dry run until enabled after review.</p><button class="btn" id="alwaysPreview">Review next batch and wording</button><button class="btn" id="alwaysApprove">Approve project template once</button><button class="btn" id="alwaysPause">Pause all outreach</button><button class="btn" id="alwaysResume">Resume outreach</button><div id="alwaysBatch"></div></details>
  <h2>Today's tasks</h2><div id="outTasks"></div>
  <h2>Account pipeline</h2><div id="outBoard" style="display:flex;gap:12px;overflow-x:auto"></div>
  <div id="outDetail"></div>
@@ -4143,6 +4144,11 @@ async function loadToday(){
   workspaceBusy=true;
   const oldKeys=new Set(dailyItems.map(x=>x.key));const hadItems=dailyLoaded;
   try {
+    api('/outreach/always-on/status').then(out=>{
+      const h=out.health;const counts=out.daily;
+      $('outreachHealth').innerHTML=`<article class="panel ${h.ok?'':'due-overdue'}"><h2>Daily project outreach ${h.dry_run?' (dry run)':''}</h2><p>${h.reasons.map(esc).join('; ')||'Running on Railway'}</p><p>${counts.projects_found} projects | ${counts.decision_makers_found} decision makers | ${counts.credits_used} credits | ${counts.emails_sent} sent | ${counts.followups_due} follow-ups due | ${counts.replies} replies</p><p>${counts.identity_waiting} projects waiting for identity | ${counts.states.map(x=>`${esc(x.state)}: ${x.count}`).join(' | ')}</p><button class="btn" id="outreachReview">Review outreach and mailbox setup</button></article>`;
+      $('outreachReview').onclick=()=>{document.querySelector('[data-workspace="outreach"]')?.click();};
+    }).catch(()=>{$('outreachHealth').textContent='Outreach health unavailable. Refresh to retry.';});
     const queue=await api('/customers/next-actions');
     dailyItems=queue.items;
     const button=(i,action,label)=>`<button class="btn ${['email','create'].includes(action)?'btn-primary':''}" data-daily="${i}" data-action="${action}">${label}</button>`;
@@ -4252,6 +4258,18 @@ async function outAccount(id){
  $('outVisit').onclick=()=>outAction(async()=>{const outcome=prompt('Visit outcome');if(!outcome)return;const name=prompt('Business-card contact name (blank if none)')||'',email=name?(prompt('Email on card')||''):'';const result=await api('/outreach/accounts/'+a.id+'/visit',outJSON('POST',{outcome,card:name?{name,email}:null}));await loadOutreach();await outAccount(a.id);$('outNotice').textContent='Visit recorded. Same-day draft #'+result.sequence.id+' created. Enrol the card contact, review corporate address, and approve before sending.';});
 }
 $('outRefresh').onclick=loadOutreach;
+$('alwaysPreview').onclick=()=>outAction(async()=>{
+ const [status,batch]=await Promise.all([api('/outreach/always-on/status'),api('/outreach/always-on/preview')]);
+ $('alwaysBatch').innerHTML=`<p>${status.health.dry_run?'Dry run is on.':'Live sending is enabled.'} ${status.health.paused?'Outreach is paused.':''}</p><h3>Project sequence</h3>`+status.template_steps.map(step=>`<article><h4>Day ${step.day_offset}: ${step.channel==='email'?'Email':'Manual LinkedIn task'}</h4><pre style="white-space:pre-wrap">${esc(step.template)}</pre></article>`).join('')+'<h3>Next batch</h3>'+batch.emails.map(email=>`<article><p>${esc(email.recipient||('Project '+email.project_id))}</p>${email.blocked?`<p>Waiting: ${esc(email.blocked)}</p>`:`<h4>${esc(email.subject)}</h4><pre style="white-space:pre-wrap">${esc(email.body)}</pre>`}</article>`).join('')+(batch.emails.length?'':'<p>No eligible contacts yet. Missing project identities and verified contacts stay in the fix queue.</p>');
+});
+$('alwaysApprove').onclick=()=>outAction(async()=>{
+ const note=prompt('Sai: record why these corporate project introductions are relevant and proportionate, then approve the displayed five-touch wording. This authorises automatic enrolment of future eligible projects. Dry run remains controlled separately.');
+ if(!note)return;
+ await api('/outreach/always-on/template/approve',outJSON('POST',{approved_by:'Sai',note}));
+ $('outNotice').textContent='Project template approved. Review the first batch before switching off dry run.';
+});
+$('alwaysPause').onclick=()=>outAction(async()=>{await api('/outreach/always-on/pause',outJSON('POST',{paused:true}));$('outNotice').textContent='All prospect outreach is paused. Replies are still checked.';});
+$('alwaysResume').onclick=()=>outAction(async()=>{await api('/outreach/always-on/pause',outJSON('POST',{paused:false}));$('outNotice').textContent='Outreach resumed within its sending window, quality checks and caps.';});
 $('outRun').onclick=()=>outAction(async()=>{if(!confirm('Poll replies and run due steps now? Approved email can send if server sending is enabled.'))return;const job=await api('/outreach/jobs',outJSON('POST',{limit:10}));await outWatchJob(job.id);});
 async function outWatchJob(id){$('outNotice').textContent='Routine queued: '+id;for(let i=0;i<30;i++){await new Promise(r=>setTimeout(r,1500));const job=await api('/outreach/jobs/'+id);if(['completed','failed'].includes(job.status)){await loadOutreach();$('outNotice').textContent=job.status+': '+(job.result||'');return;}}$('outNotice').textContent='Job still running: '+id+'. Refresh to check tasks.';}
 $('outCreateSequence').onsubmit=e=>{e.preventDefault();outAction(async()=>{await api('/outreach/sequences',outJSON('POST',{title:$('outSeqTitle').value,segment:$('outSegment').value}));await loadOutreach();});};
