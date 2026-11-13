@@ -108,6 +108,23 @@ def role_priority(person):
     return 2 if 'associate' in role else 3 if any(t in role for t in ('architect', 'interior designer')) else 99
 
 
+def scoped(people, searched_domain):
+    """Apollo free search omits the organisation domain on obfuscated hits.
+
+    A search filtered by q_organization_domains_list only returns people at
+    that domain, so stamp it where Apollo left it blank (never overwrite).
+    """
+    if not searched_domain:
+        return people
+    out = []
+    for person in people or []:
+        person = dict(person)
+        if not (person.get('organization_domain') or (person.get('organization') or {}).get('primary_domain')):
+            person['organization_domain'] = domain(searched_domain)
+        out.append(person)
+    return out
+
+
 def reveal_candidate(person):
     person_id = clean(person.get('apollo_id') or person.get('id')) or clean(person.get('source_url')).removeprefix('apollo-free:')
     if not person_id:
@@ -342,7 +359,7 @@ class FirmTrial:
                 found = []
                 if data['classification'] == 'architect':
                     self.record_call(key, data, 'apollo', 'people_search')
-                    found = self.apollo.search(company, urlsplit(website).hostname if website else None)
+                    found = scoped(self.apollo.search(company, urlsplit(website).hostname if website else None), urlsplit(website).hostname if website else None)
                     found = [p for p in found if firm_name(clean((p.get('organization') or {}).get('name'))) == firm_name(company) or (website and (p.get('organization') or {}).get('primary_domain') == urlsplit(website).hostname)]
                 collect_reveal_candidates(data, found)
                 data['people'] = people
@@ -513,7 +530,7 @@ class FirmTrial:
         candidates = data['reveal_candidates']
         if not any(domain(p.get('organization_domain')) == domain(data.get('website')) for p in candidates):
             self.record_call(key, data, 'apollo', 'people_search_for_reveal')
-            collect_reveal_candidates(data, self.apollo.search(company, domain(data['website'])))
+            collect_reveal_candidates(data, scoped(self.apollo.search(company, domain(data['website'])), domain(data['website'])))
         ranked = sorted((p for p in candidates if p.get('source') == 'apollo'
                          and domain(p.get('organization_domain')) == domain(data.get('website'))
                          and role_priority(p) < 99), key=role_priority)

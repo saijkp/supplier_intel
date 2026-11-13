@@ -202,3 +202,11 @@ def test_local_cleanup_not_starved_by_retry_limit_or_registry_failure(service):
     # Repeated persistence must not resurrect legacy single-token people.
     trial.run(limit=1, retry_incomplete=True, max_searches=0, max_reveals=0)
     assert all(not json.loads(r['payload'])['people'] for r in service.repo.rows("SELECT payload FROM planning_firm_trials WHERE firm_key LIKE 'name:contractor%'"))
+
+
+def test_scoped_search_stamps_missing_domain_only():
+    from planning.firm_trial import scoped
+    people = scoped([{'id': 'a1', 'first_name': 'Graham'}, {'id': 'b2', 'organization_domain': 'other.example'}], 'www.grahamford.example')
+    assert people[0]['organization_domain'] == 'grahamford.example'
+    assert people[1]['organization_domain'] == 'other.example'
+    assert scoped([{'id': 'c3'}], None) == [{'id': 'c3'}]
