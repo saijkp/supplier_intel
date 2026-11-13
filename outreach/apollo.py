@@ -170,6 +170,16 @@ class FirmTrialApollo:
         self.client = client or httpx.Client(timeout=15)
         self.api_key = cfg.APOLLO_API_KEY if api_key is None else api_key
 
+    def organizations(self, company):
+        """Organisation SEARCH only; no enrich or email reveal endpoint."""
+        if not self.api_key:
+            return []
+        response = self.client.post('https://api.apollo.io/api/v1/mixed_companies/search',
+            headers={'x-api-key': self.api_key}, json={'q_organization_name': company,
+            'organization_locations': ['London, United Kingdom'], 'per_page': 10})
+        response.raise_for_status()
+        return response.json().get('organizations') or []
+
     def search(self, company, domain=None):
         if not self.api_key:
             return []

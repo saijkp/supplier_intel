@@ -80,7 +80,7 @@ def test_reveal_gate_cap_idempotency_no_send(service, monkeypatch, enabled, cap,
     seed(service)
     monkeypatch.setenv('OUTREACH_APOLLO_REVEAL_ENABLED', enabled)
     apollo = Apollo()
-    trial = FirmTrial(service, apollo=apollo)
+    trial = FirmTrial(service, serp=SimpleNamespace(api_key=False), apollo=apollo)
     before = {table: service.repo.rows('SELECT * FROM ' + table) for table in ('prospect_accounts', 'outreach_enrolments', 'rfq_messages')}
     result = trial.run(3, max_reveals=cap)
     assert result['firms_seen'] == result['CH_verified'] == 1
@@ -122,7 +122,7 @@ def test_negative_attempt_marker(service):
     service.store(raw)
     calls = []
     service.companies_house = SimpleNamespace(search_companies=lambda name: calls.append(name) or [])
-    trial = FirmTrial(service, apollo=SimpleNamespace(search=lambda *args: pytest.fail('consultant targeted')))
+    trial = FirmTrial(service, serp=SimpleNamespace(api_key=False), apollo=SimpleNamespace(search=lambda *args: pytest.fail('consultant targeted')))
     assert trial.run()['firms_seen'] == 1
     trial.run()
     assert calls == ['DP9']
@@ -130,7 +130,7 @@ def test_negative_attempt_marker(service):
 
 def test_trial_preserves_trusted_fields(service):
     seed(service)
-    trial = FirmTrial(service, apollo=Apollo())
+    trial = FirmTrial(service, serp=SimpleNamespace(api_key=False), apollo=Apollo())
     trial.run(max_reveals=0)
     key = 'ch:00123456'
     trial.save(key, {'website': 'https://trusted.example'})
