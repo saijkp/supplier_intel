@@ -695,6 +695,8 @@ class OutreachService:
         account['events'] = self.repo.rows('SELECT * FROM outreach_events WHERE account_id=? ORDER BY id DESC',(aid,))
         account['enrolments'] = self.repo.rows('SELECT e.* FROM outreach_enrolments e JOIN prospect_contacts c ON c.id=e.contact_id WHERE c.account_id=?',(aid,))
         account['enquiries'] = self.repo.rows('SELECT q.*,l.margin_gbp FROM prospect_enquiry_links l JOIN customer_enquiries q ON q.id=l.enquiry_id WHERE l.account_id=?',(aid,))
+        account['project_hooks'] = self.repo.rows("SELECT id,address,description,units,reference,status,source_url FROM planning_projects WHERE agent_account_id=? AND agent_role='architect' ORDER BY first_seen_at DESC", (aid,))
+        account['project_hook'] = account['project_hooks'][0] if account['project_hooks'] else None
         return account
 
     def tasks(self):

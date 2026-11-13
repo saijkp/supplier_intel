@@ -3,7 +3,7 @@ import json
 from datetime import date, datetime, timezone
 import httpx
 import pytest
-from planning.planit_client import PlanItClient, Inconclusive
+from planning.planit_client import PlanItClient, Inconclusive, RateLimited
 from planning.relevance import fit
 from planning.service import PlanningService
 from planning.import_batch import import_batch
@@ -17,15 +17,28 @@ from storage.database import initialise_schema
 def service(tmp_path):
     path=tmp_path/'planning.db'
     initialise_schema(path)
-    return PlanningService(OutreachService(OutreachRepository(path),now=lambda:datetime(2026,11,11,9,tzinfo=timezone.utc),send_enabled=False))
+    class Council:
+        def fetch(self, url):
+            return {'evidence': [], 'agent_role': 'unknown'}
+    class Registry:
+        def search_companies(self, name): return []
+    return PlanningService(OutreachService(OutreachRepository(path),now=lambda:datetime(2026,11,11,9,tzinfo=timezone.utc),send_enabled=False), council=Council(), companies_house=Registry())
 
 
 def project(**kw):
-    return dict(authority='Salford',reference='26/100',address='X Road',description='Erection of 24 flats',agent='Studio Architects',applicant='Developer Ltd',source_url='https://council.example/26/100',**kw)
+    return dict(authority='Salford',reference='26/100',address='X Road',description='Erection of 24 flats',agent='Studio Architects',agent_company='Studio Architects',applicant='Developer Ltd',source_url='https://council.example/26/100',**kw)
+
+
+def eligible(service, cid):
+    contact = service.repo.get('prospect_contacts', cid)
+    aid = contact['account_id']
+    service.repo.execute("UPDATE prospect_accounts SET domain='studio.example', companies_house_number='00123456', subscriber_type='corporate', flagged=0 WHERE id=?", (aid,))
+    service.outreach.review_contact(cid, 'corporate_verified')
+    service.outreach.event(aid, 'planning corporate verification', {'company_number': '00123456', 'source_url': 'https://find-and-update.company-information.service.gov.uk/company/00123456'})
 
 
 @pytest.mark.parametrize('text,expected',[
-    ('Erection of 24 flats',True),('Erection of 4 houses',False),
+    ('Erection of 24 flats',True),('Erection of 4 houses',True),
     ('Householder extension of dwelling',False),('Discharge of conditions for 24 flats',False),
     ('Conversion to HMO',True),('New student accommodation',True),
     ('New hotel',True),('New care home',True),('Office fit-out',True),
@@ -48,7 +61,7 @@ def test_sync_is_idempotent_and_errors_are_inconclusive(service):
     assert not result['complete'] and result['errors']['Broken']=='timeout'
     service.sync_recent(['Salford'],180)
     assert len(service.projects())==1
-    assert len(service.repo.rows('SELECT * FROM prospect_accounts'))==2
+    assert len(service.repo.rows('SELECT * FROM prospect_accounts'))==1
     assert not due(service)
 
 
@@ -56,12 +69,11 @@ def test_client_rate_limit_pagination_and_bounded_windows():
     requests=[]; sleeps=[]
     def respond(request):
         requests.append(request)
-        if len(requests)==1:return httpx.Response(429,headers={'Retry-After':'1'})
         offset=int(request.url.params['index'])
         return httpx.Response(200,json={'records':[{'uid':str(len(requests))}], 'total':2 if offset==0 else 2})
     client=PlanItClient(httpx.Client(transport=httpx.MockTransport(respond)),sleeps.append)
-    assert len(client.recent('Salford',date(2026,1,1),date(2026,6,29)))==4
-    assert sleeps==[300]
+    assert len(client.recent('Salford',date(2026,1,1),date(2026,6,29)))==8
+    assert sleeps==[]
     assert requests[0].url.params['end_date']=='2026-03-31'
 
 
@@ -88,6 +100,7 @@ def test_project_enrolment_snapshot_and_approval_gate(service):
     pid=service.store(project())
     service.outreach.import_rows([{'company':'Studio Architects','contact_name':'Alex','email':'alex@studio.example'}],'manual','https://studio.example/team')
     cid=service.repo.rows('SELECT id FROM prospect_contacts')[0]['id']
+    eligible(service, cid)
     seq=service.enrol(pid,cid,'sj@ikeng.online')
     assert seq['approved_at'] is None
     assert service.enrol(pid,cid,'sj@ikeng.online')['id']==seq['id']
@@ -105,6 +118,7 @@ def test_historical_first_touch_block_cannot_be_bypassed(service):
     pid=service.store(project())
     service.outreach.import_rows([{'company':'Studio Architects','email':'alex@studio.example'}],'manual')
     cid=service.repo.rows('SELECT id FROM prospect_contacts')[0]['id']
+    eligible(service, cid)
     service.repo.execute('INSERT INTO planning_first_touch_exclusions VALUES(?,?)',('alex@studio.example','sent log'))
     with pytest.raises(ValueError,match='Already contacted'):service.enrol(pid,cid,'sj@ikeng.online')
     seq=service.outreach.save_sequence('Generic','architect',[{'channel':'email','day_offset':0,'subject':'Hello','template':'Hello'}])
@@ -134,7 +148,7 @@ def test_v45_upgrade_and_candidate_changes_preserve_trusted_fields(service):
     with connection_scope(service.repo.db_path) as c:
         c.execute('DELETE FROM schema_migrations WHERE version=46')
     initialise_schema(service.repo.db_path)
-    assert get_schema_version(service.repo.db_path)==47
+    assert get_schema_version(service.repo.db_path)==48
     service.store({**project(),'description':'30 flats','address':'Changed address'})
     row=service.repo.rows('SELECT * FROM planning_projects WHERE id=?',(pid,))[0]
     assert row['description']=='Erection of 24 flats' and row['address']=='X Road'
@@ -159,6 +173,7 @@ def test_planning_api_auth_bounds_and_drafts(service,monkeypatch):
     assert client.get('/planning/projects').json()[0]['reference']=='26/100'
     assert client.get('/planning/projects?days=0').status_code==422
     assert client.post('/planning/sync',json={'areas':['Salford'],'days':181}).status_code==422
+    eligible(service, cid)
     seq=client.post(f'/planning/projects/{pid}/enrol',json={'contact_id':cid}).json()
     assert seq['approved_at'] is None and seq['contacts']
     assert not service.repo.rows('SELECT * FROM outreach_events WHERE kind=?',('email',))

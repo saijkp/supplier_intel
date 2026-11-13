@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 47
+SCHEMA_VERSION = 48
 
 
 # ═══════════════════════════════════════════════════════════
@@ -966,6 +966,12 @@ from planning.schema import SQL as PLANNING_SQL, statements as planning_statemen
 SCHEMA_SQL += PLANNING_SQL
 
 MIGRATIONS: dict[int, dict] = {
+    48: {
+        "description": "Council identity evidence and asynchronous planning runs",
+        "columns": [("planning_projects", name, "TEXT") for name in
+                    ("agent_name", "agent_company", "agent_address", "agent_role", "identity_evidence")],
+        "statements": ["CREATE TABLE IF NOT EXISTS planning_council_cache (url TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at TEXT NOT NULL)"],
+    },
     47: {
         "description": "Snooze next actions without changing who owes a reply",
         "columns": [("customer_enquiries", "next_action_snoozed_until", "TEXT")],
