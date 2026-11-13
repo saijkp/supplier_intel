@@ -115,7 +115,8 @@ def test_five_day_totals(service):
     for day in ['2026-11-09','2026-11-13']:
         service.repo.execute("INSERT INTO planning_firm_daily(day,started_at,status,payload) VALUES(?,?,'completed',?)",(day,day,json.dumps({'counters':{'named_people':12,'reveals':6}})))
     h=health(service.repo,datetime(2026,11,13,9,tzinfo=UK))
-    assert h['five_day_totals']['named_people']==24 and h['people_remaining']==76
+    assert h['five_day_totals']['named_people_any']==24 and h['people_remaining']==100
+    assert h['five_day_totals']['verified_people']==0
     assert h['today']['counters']['reveals']==6
 
 
@@ -169,3 +170,69 @@ def test_schema_51_upgrade(service):
     initialise_schema(service.repo.db_path)
     assert get_schema_version(service.repo.db_path)==52
     assert service.repo.rows('SELECT * FROM planning_firm_daily')==[]
+
+
+def target_firm(service, key='ch:12345678', company_number='12345678', **changes):
+    data = dict(classification='architect', CH_verified=True, website_verified=True,
+                website='https://studio.example/', people=[dict(name='Alex Smith', role='Design Director', email='alex@studio.example', source='site')])
+    data.update(changes)
+    service.repo.execute("INSERT INTO planning_firm_trials(firm_key,company,company_number,attempted_at,payload) VALUES(?,?,?,?,?)",
+                         (key, 'Studio Architects', company_number, '2026-11-13T09:00:00+00:00', json.dumps(data)))
+
+
+@pytest.mark.parametrize('changes', [
+    {'classification':'design_build_contractor'}, {'CH_verified':False}, {'website_verified':False},
+    {'field_provenance':{'identity_review':{'reason':'mismatch'}}},
+    *[{'people':[dict(name=name, role=role, email=email, source='site')]} for name,role,email in [
+        ('Alex Smith','Finance Director','alex@studio.example'), ('Alex Smith','Operations Director','alex@studio.example'),
+        ('Alex Smith','Architect','info@studio.example'), ('Alex Smith','Architect','alex@other.example'),
+        ('Alex Smith','Architect',None), ('Our Team','Architect','team@studio.example')]],
+    {'people':[dict(name='SMITH, Alex',role='director',source='companies_house')]},
+])
+def test_target_requires_every_gate(service, changes):
+    target_firm(service, **changes)
+    h=health(service.repo, datetime(2026,11,13,10,tzinfo=UK))
+    assert h['people_remaining']==100
+    assert h['five_day_totals']['verified_people']==0
+
+
+def test_target_unique_and_export(service,tmp_path):
+    import csv
+    target_firm(service)
+    # A name-keyed alias row cannot repeat the CH number (UNIQUE column).
+    target_firm(service, 'name:alias', company_number=None, people=[dict(name=' ALEX  SMITH ',role='Partner',email='alex@studio.example',source='site')])
+    h=health(service.repo,datetime(2026,11,13,10,tzinfo=UK))
+    assert h['people_remaining']==99
+    assert h['today']['counters']['verified_people']==1
+    assert h['current_inventory']['verified_people']==1
+    output=tmp_path/'target.csv'; export_contacts(service.repo,output)
+    with output.open(encoding='utf-8-sig') as stream:
+        flags=[r['counts_toward_target'] for r in csv.DictReader(stream)]
+    # The same person via an alias row counts once toward the target.
+    assert flags.count('True')==1
+
+
+def test_late_enable_survives_restart_until_monday(service,monkeypatch):
+    monkeypatch.setenv('PLANNING_FIRM_TRIAL_SCHEDULE_ENABLED','true')
+    calls=[]
+    service.sync_recent=lambda **kw: calls.append(kw) or {'complete':True}
+    fake=lambda p: NS(run=lambda **kw: None)
+    service.outreach.now=lambda: datetime(2026,11,13,12,1,tzinfo=UK)
+    assert tick(service,fake)['first_run_at']=='2026-11-16T08:30:00+00:00'
+    service.outreach.now=lambda: datetime(2026,11,13,16,tzinfo=UK)
+    assert tick(service,fake)['status']=='outside_window'
+    assert not calls
+    service.outreach.now=lambda: datetime(2026,11,16,8,30,tzinfo=UK)
+    assert tick(service,fake)['status']=='completed'
+    assert tick(service,fake)['status']=='already_attempted'
+
+
+def test_qualification_improvement_dedup_across_days(service):
+    target_firm(service)
+    for day in ['2026-11-12','2026-11-13']:
+        service.repo.execute("INSERT INTO planning_firm_daily(day,started_at,status,payload) VALUES(?,?,'completed',?)",
+                             (day,day,json.dumps({'verified_people_keys':['12345678:alex smith'], 'counters':{'serp_calls':3,'reveals':2}})))
+    h=health(service.repo,datetime(2026,11,13,10,tzinfo=UK))
+    assert h['five_day_totals']['verified_people']==1
+    assert h['five_day_totals']['est_cost_gbp']==0.06
+    assert h['five_day_totals']['apollo_credits']==4
