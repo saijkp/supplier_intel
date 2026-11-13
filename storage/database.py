@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 51
+SCHEMA_VERSION = 52
 
 
 # ═══════════════════════════════════════════════════════════
@@ -972,8 +972,11 @@ from planning.agent_schema import SQL as AGENT_SQL, COLUMNS as AGENT_COLUMNS
 SCHEMA_SQL += AGENT_SQL
 from planning.firm_schema import SQL as FIRM_SQL
 SCHEMA_SQL += FIRM_SQL
+from planning.firm_daily import DAILY_SQL
+SCHEMA_SQL += DAILY_SQL
 
 MIGRATIONS: dict[int, dict] = {
+    52: {"description": "Durable review-only daily firm trial counters", "statements": [DAILY_SQL]},
     51: {"description": "PlanIt firm review route", "statements": [s for s in FIRM_SQL.split(";") if s.strip()]},
     50: {"description": "Council agent trial and polite HTTP budgets",
          "columns": [("planning_projects", n, "TEXT") for n in AGENT_COLUMNS],

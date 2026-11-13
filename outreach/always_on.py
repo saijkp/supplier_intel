@@ -461,7 +461,8 @@ class AlwaysOnService:
             if plan and sent<plan*.5 and not self.dry_run() and not self.paused():
                 reasons.append('Fewer than 50% of planned sends completed')
         from planning.portal_agents import trial_report
-        return {'planning': {'agent_trial': trial_report(self.repo)}, 'ok':not reasons,'reasons':reasons,'heartbeat':last,'dry_run':self.dry_run(),'paused':self.paused(),
+        from planning.firm_daily import health as firm_health
+        return {'planning': {'agent_trial': trial_report(self.repo), 'firm_trial': firm_health(self.repo, self.now())}, 'ok':not reasons,'reasons':reasons,'heartbeat':last,'dry_run':self.dry_run(),'paused':self.paused(),
                 'fix_url':'/outreach/always-on/status','mailboxes':{a:{'cap':self.cap(a),**self.mailbox_rates(a)} for a in mailbox_config()}}
 
     def summary(self,days=1):

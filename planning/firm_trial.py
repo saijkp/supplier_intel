@@ -64,7 +64,7 @@ def site_people(http, website, company=None, generic_contacts=None):
             content = card.get_text(' ', strip=True)
             if len(content) > 700:
                 continue
-            match = re.search(r'\b([A-Z][a-z]+(?:[ -][A-Z][a-z]+){1,3}?)\s*[,|:\u2013\u2014-]?\s+(Associate Director|Director|Partner|Principal|Founder|Associate|Architect|Interior Designer)\b', content)
+            match = re.search(r'\b([A-Z][a-z]+(?:[ -][A-Z][a-z]+){1,3}?)\s*[,|:\u2013\u2014-]?\s+(Associate Director|(?:Design |Managing |Finance |Operations |Marketing |HR |IT |Business Development |Accounts )?Director|Partner(?: and [A-Za-z ]{1,40}Director)?|Principal|Founder|Owner|Associate|Architect|Interior Designer)\b', content)
             if not match or not human_name(match[1], company):
                 continue
             emails = set(re.findall(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', content + ' ' + ' '.join(a['href'] for a in card.select('a[href^="mailto:"]'))))
@@ -101,9 +101,11 @@ def human_name(value, company=None):
 
 def role_priority(person):
     role = clean(person.get('role')).casefold()
+    if re.search(r'\b(?:financ\w*|operations?|hr|human resources|office manager|marketing|business development|accounts?|it|information technology|practice manager)\b', role):
+        return 99
     if 'associate director' in role:
         return 1
-    if any(t in role for t in ('director', 'partner', 'principal', 'founder')):
+    if any(t in role for t in ('director', 'partner', 'principal', 'founder', 'owner')):
         return 0
     return 2 if 'associate' in role else 3 if any(t in role for t in ('architect', 'interior designer')) else 99
 
@@ -146,6 +148,21 @@ def collect_reveal_candidates(data, found=()):
 
 def sanitize_contacts(data, company):
     collect_reveal_candidates(data)
+    non_design = next((p for p in data.get('people', [])
+                       if p.get('email_evidence') and role_priority(p) == 99), None)
+    if non_design:
+        data['review_status'] = 'needs_review'
+        note = ('revealed contact is finance role; consider design partner'
+                if 'financ' in clean(non_design.get('role')).casefold()
+                else 'revealed contact is non-design role; consider design decision-maker')
+        data.setdefault('field_provenance', {})['role_review'] = note
+    if data.get('review_status') == 'needs_review' and data.get('field_provenance', {}).get('identity_review'):
+        candidates = data['field_provenance'].setdefault('people_candidates', [])
+        for person in data.get('people', []):
+            if person not in candidates:
+                candidates.append(person)
+        data['people'] = []
+        data['website_verified'] = False
     people, generic = [], list(data.get('generic_contacts', []))
     rejected = data.setdefault('field_provenance', {}).setdefault('rejected_people', [])
     for original in data.get('people', []):
@@ -191,7 +208,27 @@ def match_company(registry, company):
              'ch_matches': evidence})
 
 
-def verify_site(http, url, company, profile=None):
+def site_identity_conflict(text, profile):
+    """Explicit legal identifiers override fuzzy name and UK signals."""
+    number = clean(getattr(profile, 'company_number', None)).upper()
+    numbers = re.findall(r'(?:company\s*(?:number|no\.?|registration number)|registered\s*(?:number|no\.?))\s*[:#]?\s*([A-Z]{2}\d{6}|\d{8})\b', text, re.I)
+    if number and numbers and any(n.upper() != number for n in numbers):
+        return True
+    address = str(getattr(profile, 'registered_office_address', '') or '')
+    offices = re.findall(r'registered office(?: address)?\s*:?\s*(.{0,220})', text, re.I)
+    expected = re.findall(r'\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b', address, re.I)
+    for office in offices:
+        expected_street = re.search(r'\b(\d+[A-Za-z]?)\s+([A-Za-z]+)', address)
+        actual_street = re.search(r'\b(\d+[A-Za-z]?)\s+([A-Za-z]+)', office)
+        if expected_street and actual_street and expected_street.group(0).casefold() != actual_street.group(0).casefold():
+            return True
+        actual = re.findall(r'\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b', office, re.I)
+        if actual and expected and not {re.sub(r'\s', '', p).upper() for p in actual}.intersection(re.sub(r'\s', '', p).upper() for p in expected):
+            return True
+    return False
+
+
+def verify_site(http, url, company, profile=None, rejection=None):
     parts = urlsplit(url if '://' in url else 'https://' + url)
     if parts.scheme != 'https' or not parts.hostname or parts.username or parts.password:
         return None
@@ -215,17 +252,21 @@ def verify_site(http, url, company, profile=None):
             parts = urlsplit(href)
             if (parts.scheme == 'https' and not parts.username and not parts.password
                     and domain(href) == domain(url)
-                    and re.search(r'contact|about', link.get_text(' ', strip=True) + ' ' + parts.path, re.I)
+                    and re.search(r'contact|about|legal|terms|privacy', link.get_text(' ', strip=True) + ' ' + parts.path, re.I)
                     and href not in queue and len(queue) < 4):
                 queue.append(href)
     text = ' '.join(p['text'] for p in pages)
+    if site_identity_conflict(text, profile):
+        if rejection is not None:
+            rejection.update(reason='Site legal identity conflicts with Companies House match', pages=pages, company_number=getattr(profile, 'company_number', None), registered_office_address=getattr(profile, 'registered_office_address', None))
+        return None
     if not firm_name(company) or not re.search(r'(?<!\w)' + re.escape(firm_name(company)) + r'(?!\w)', firm_name(text)):
         return None
     address = str(getattr(profile, 'registered_office_address', '') or '')
     postcodes = re.findall(r'\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b', address, re.I)
     postcode = any(re.sub(r'\s', '', p).lower() in re.sub(r'\s', '', text).lower() for p in postcodes)
     outward = any(re.search(r'(?<!\w)' + re.escape(p.split()[0] if ' ' in p else p[:-3]) + r'\s*\d[A-Z]{2}\b', text, re.I) for p in postcodes)
-    uk = bool(re.search(r'\b(?:London|Manchester|Birmingham|Bristol|Leeds|Liverpool|Sheffield|Nottingham|Leicester|Cardiff|Edinburgh|Glasgow|Belfast|Newcastle|Oxford|Cambridge|York|Southampton|Brighton|United Kingdom|UK)\b|(?:\+44\s*(?:\(0\))?|\b0)[1-9][\d ()-]{8,12}\d|\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b', text, re.I))
+    uk = bool(re.search(r'\b(?:London|Manchester|Birmingham|Bristol|Leeds|Liverpool|Sheffield|Nottingham|Leicester|Cardiff|Edinburgh|Glasgow|Belfast|Newcastle|Oxford|Cambridge|(?<!New )York|Southampton|Brighton|United Kingdom|UK)\b|(?:\+44\s*(?:\(0\))?|\b0)[1-9][\d ()-]{8,12}\d|\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b', text, re.I))
     if not uk:
         return None
     return {'website': url, 'website_verified': True, 'website_evidence': {'source_url': url, 'pages': pages, 'name_match': True, 'uk_signal': uk, 'postcode_match': postcode, 'outward_match': outward, 'score': 80 + 10 * uk + 10 * postcode + 5 * outward}}
@@ -391,7 +432,7 @@ class FirmTrial:
         # Classification is derived locally, not an extracted identity field.
         merged['classification'] = data.get('classification', old.get('classification'))
         merged['field_provenance'] = {**old.get('field_provenance', {}), **data.get('field_provenance', {}), **candidates}
-        for field in ('website_verified', 'website_evidence', 'classification'):
+        for field in ('website_verified', 'website_evidence', 'classification', 'review_status'):
             if field in data:
                 merged[field] = data[field]
         sanitize_contacts(merged, self.repo.rows('SELECT company FROM planning_firm_trials WHERE firm_key=?', (key,))[0]['company'])
@@ -404,7 +445,11 @@ class FirmTrial:
             if not url:
                 return None
             try:
-                verified = verify_site(self.http, url, company, profile)
+                rejection = {}
+                verified = verify_site(self.http, url, company, profile, rejection)
+                if rejection:
+                    data['review_status'] = 'needs_review'
+                    data.setdefault('field_provenance', {})['identity_review'] = rejection
             except Exception:
                 verified = None
             if verified:
@@ -414,6 +459,7 @@ class FirmTrial:
                 data.update(verified)
                 return verified['website']
             data.setdefault('field_provenance', {})['website_candidate'] = url
+            data['review_status'] = 'needs_review'
             return None
         verified_candidates = []
         original_website = data.get('website')
@@ -465,7 +511,7 @@ class FirmTrial:
 
     def retry(self, key, company, data, max_searches):
         from types import SimpleNamespace
-        profile = SimpleNamespace(company_status='active', sic_codes=data.get('sic_codes', []), registered_office_address=data.get('registered_office_address')) if data.get('CH_verified') else None
+        profile = SimpleNamespace(company_status='active', sic_codes=data.get('sic_codes', []), registered_office_address=data.get('registered_office_address'), company_number=key.removeprefix('ch:') if key.startswith('ch:') else None) if data.get('CH_verified') else None
         data['classification'] = classify(company, profile)
         sanitize_contacts(data, company)
         if not data.get('CH_verified'):
@@ -483,12 +529,18 @@ class FirmTrial:
             number = self.repo.rows('SELECT company_number FROM planning_firm_trials WHERE firm_key=?', (key,))[0]['company_number']
             if number:
                 profile = self.planning.companies_house.get_company_profile(number) or profile
+        if profile and not getattr(profile, 'company_number', None):
+            profile.company_number = self.repo.rows('SELECT company_number FROM planning_firm_trials WHERE firm_key=?', (key,))[0]['company_number']
         data['classification'] = classify(company, profile)
         if '71111' in data.get('sic_codes', []) and data['classification'] == 'design_build_contractor':
             data['classification'] = 'architect'
         if data.get('website'):
             try:
-                verified = verify_site(self.http, data['website'], company, profile)
+                rejection = {}
+                verified = verify_site(self.http, data['website'], company, profile, rejection)
+                if rejection:
+                    data['review_status'] = 'needs_review'
+                    data.setdefault('field_provenance', {})['identity_review'] = rejection
             except Exception:
                 verified = None
             data['website_verified'] = bool(verified)
