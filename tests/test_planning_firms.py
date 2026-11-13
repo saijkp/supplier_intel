@@ -26,7 +26,7 @@ class Apollo:
 
     def search(self, company, domain=None):
         self.searches += 1
-        return [{'id': str(i), 'first_name': 'Alex', 'title': 'Director', 'organization': {'name': company}} for i in range(4)]
+        return [{'id': str(i), 'first_name': 'Alex', 'last_name': 'Smith', 'title': 'Director', 'organization': {'name': company, 'primary_domain': 'studio.example'}} for i in range(4)]
 
     def reveal(self, person):
         self.reveals.append(person)
@@ -75,12 +75,13 @@ def test_site_people_published_only_and_parking():
     assert people[0]['email'] is None
 
 
-@pytest.mark.parametrize('enabled,cap,expected', [('false', 10, 0), ('true', 1, 1), ('true', 10, 2), ('true', 0, 0)])
+@pytest.mark.parametrize('enabled,cap,expected', [('false', 10, 0), ('true', 1, 1), ('true', 10, 1), ('true', 0, 0)])
 def test_reveal_gate_cap_idempotency_no_send(service, monkeypatch, enabled, cap, expected):
     seed(service)
     monkeypatch.setenv('OUTREACH_APOLLO_REVEAL_ENABLED', enabled)
     apollo = Apollo()
-    trial = FirmTrial(service, serp=SimpleNamespace(api_key=False), apollo=apollo)
+    apollo.organizations = lambda _: [{'name': 'Studio Architects', 'primary_domain': 'studio.example'}]
+    trial = FirmTrial(service, http=SimpleNamespace(get=lambda _: 'Studio Architects London'), serp=SimpleNamespace(api_key=False), apollo=apollo)
     before = {table: service.repo.rows('SELECT * FROM ' + table) for table in ('prospect_accounts', 'outreach_enrolments', 'rfq_messages')}
     result = trial.run(3, max_reveals=cap)
     assert result['firms_seen'] == result['CH_verified'] == 1

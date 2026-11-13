@@ -1,4 +1,4 @@
-﻿"""Finder regression contracts: fake APIs and pages only."""
+"""Finder regression contracts: fake APIs and pages only."""
 import json
 from types import SimpleNamespace as NS
 import pytest
@@ -34,9 +34,10 @@ def test_verification_and_published_fallback():
     http = NS(get=lambda _: '<h1>Studio Architects</h1>London SW1A 1AA +44 20 12345678 <a href="/people">People</a><article>Alex Smith Director <a href="mailto:alex@example.org">Email</a></article><a href="mailto:studio@example.org">Contact</a>')
     verified = verify_site(http, 'studio.example', 'Studio Architects', NS(registered_office_address='SW1A 1AA'))
     assert verified['website_evidence']['postcode_match']
-    people, _ = site_people(http, verified['website'])
+    contacts = []
+    people, _ = site_people(http, verified['website'], generic_contacts=contacts)
     assert any(p.get('name') == 'Alex Smith' and p['email'] == 'alex@example.org' for p in people)
-    assert any(p.get('generic') and p['email'] == 'studio@example.org' for p in people)
+    assert any(p.get('generic') and p['email'] == 'studio@example.org' for p in contacts)
     assert verify_site(http, 'studio.example', 'Different Architects') is None
     assert verify_site(NS(get=lambda _: 'This domain is for sale'), 'studio.example', 'Studio Architects') is None
 
@@ -64,16 +65,16 @@ def test_apollo_first_then_serp_and_retry_no_reveal(service, monkeypatch):
     seed(service)
     monkeypatch.setenv('OUTREACH_APOLLO_REVEAL_ENABLED', 'true')
     apollo, serp = Organizations(), Search()
-    http = NS(get=lambda _: '<h1>Studio Architects London</h1><article>Alex Smith Director alex@example.org</article>')
+    http = NS(get=lambda _: '<h1>Studio Architects London</h1><article>Alex Smith Director alex@studio.example</article>')
     trial = FirmTrial(service, http=http, apollo=apollo, serp=serp)
     trial.run(max_searches=0, max_reveals=1)
-    assert len(apollo.reveals) == 1 and not serp.calls
+    assert len(apollo.reveals) == 0 and not serp.calls
     result = trial.run(retry_incomplete=True, max_searches=1)
-    assert len(serp.calls) == 1 and len(apollo.reveals) == 1 and apollo.searches == 1
+    assert len(serp.calls) == 1 and len(apollo.reveals) == 0 and apollo.searches == 1
     assert result['website_verified'] == 1 and result['serp_calls'] == 1
     assert result['direct_email'] >= 1
     trial.run(retry_incomplete=True)
-    assert len(serp.calls) == 1 and len(apollo.reveals) == 1
+    assert len(serp.calls) == 1 and len(apollo.reveals) == 0
 
 
 def test_org_verified_skips_serp(service):
@@ -98,7 +99,9 @@ def test_unverified_not_extracted_and_cost_recorded(service):
 def test_retry_preserves_website_disagreement(service):
     seed(service)
     apollo, serp = Organizations('studio.example'), Search()
-    trial = FirmTrial(service, http=NS(get=lambda _: '<h1>Studio Architects London</h1>'), apollo=apollo, serp=serp)
+    # The trusted (but now unverifiable) site no longer shows the firm name.
+    pages = lambda url: '<h1>Unrelated Holding Page</h1>' if 'trusted.example' in url else '<h1>Studio Architects London</h1>'
+    trial = FirmTrial(service, http=NS(get=pages), apollo=apollo, serp=serp)
     trial.run(max_searches=0, max_reveals=0)
     key = 'ch:00123456'
     data = json.loads(service.repo.rows('SELECT payload FROM planning_firm_trials WHERE firm_key=?', (key,))[0]['payload'])

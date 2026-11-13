@@ -27,7 +27,7 @@ def agent_report():
 @click.option('--authorities', default='', help='Comma-separated council names.')
 @click.option('--max-reveals', type=click.IntRange(0, 100), default=10)
 @click.option('--max-searches', type=click.IntRange(0, 500), default=25)
-@click.option('--retry-incomplete', is_flag=True, help='Retry missing CH/site only; never repeat reveals.')
+@click.option('--retry-incomplete', is_flag=True, help='Recheck existing classification, sites and contacts; reveal at most once per firm.')
 def firm_trial(limit, authorities, max_reveals, max_searches, retry_incomplete):
     if not os.getenv('SUPPLIER_INTEL_DB_PATH'):
         raise click.ClickException('Set SUPPLIER_INTEL_DB_PATH to an isolated local trial database first.')
