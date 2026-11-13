@@ -272,6 +272,8 @@ class PlanningService:
         if not rows or not rows[0]['fit_score'] or not rows[0]['source_url']:
             raise ValueError('A fit project with a register source is required')
         p = rows[0]
+        if p.get('agent_lookup_attempted_at'):
+            raise ValueError('Council agent trial requires Sai review')
         if not fit(p['description'], p['application_type'] or '')[0]:
             raise ValueError('Project no longer fits current classification')
         contact = self.repo.get('prospect_contacts',contact_id)

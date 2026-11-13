@@ -2107,6 +2107,9 @@ def coverage(gaps_only: bool, group: str, tier: str, ddp_native: bool,
         )
 
 
+from planning.agent_cli import planning_cli
+cli.add_command(planning_cli)
+
 from rfq.cli import rfq
 cli.add_command(rfq)
 

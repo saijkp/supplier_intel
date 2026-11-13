@@ -38,7 +38,7 @@ def health(s=Depends(get_loop)):
 
 @router.get('/outreach/always-on/status')
 def status(s=Depends(get_loop)):
-    return {'health':s.health(),'daily':s.summary(),'weekly':s.summary(7),
+    return {'trial_decision_makers':s.trial_decision_makers(), 'health':s.health(),'daily':s.summary(),'weekly':s.summary(7),
             'runs':s.repo.rows('SELECT * FROM outreach_daily_runs ORDER BY day DESC LIMIT 7'),
             'queue':s.repo.rows('SELECT * FROM outreach_project_queue ORDER BY attempted_at LIMIT 100'),
             'identity_queue':s.repo.rows("SELECT key,payload FROM outreach_runtime WHERE key LIKE 'project:%' OR key LIKE 'identity:%' ORDER BY key LIMIT 100"),
