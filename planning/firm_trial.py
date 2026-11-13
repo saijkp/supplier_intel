@@ -272,6 +272,25 @@ def verify_site(http, url, company, profile=None, rejection=None):
     return {'website': url, 'website_verified': True, 'website_evidence': {'source_url': url, 'pages': pages, 'name_match': True, 'uk_signal': uk, 'postcode_match': postcode, 'outward_match': outward, 'score': 80 + 10 * uk + 10 * postcode + 5 * outward}}
 
 
+def person_key(firm, person):
+    """Stable trial target identity: registry company plus normalized human name."""
+    number = clean(firm.get('company_number')).upper()
+    name = ' '.join(re.findall(r"[^\W\d_]+", clean(person.get('name')).casefold()))
+    return number + ':' + name if number and name else None
+
+
+def counts_toward_target(firm, person):
+    data = firm['payload']
+    email = clean(person.get('email'))
+    return bool(person_key(firm, person) and data.get('classification') == 'architect'
+                and data.get('CH_verified') and data.get('website_verified')
+                and not data.get('field_provenance', {}).get('identity_review')
+                and human_name(person.get('name'), firm['company'])
+                and role_priority(person) < 99 and not person.get('generic')
+                and re.fullmatch(EMAIL, email) and email.split('@')[0].casefold() not in GENERIC
+                and domain(email.split('@')[-1]) == domain(data.get('website')))
+
+
 def firm_report(repo):
     counts = dict.fromkeys(('firms_seen', 'architect_firms', 'CH_verified', 'site_person', 'apollo_person', 'email_found', 'reveals_used'), 0)
     firms = []
@@ -294,12 +313,20 @@ def firm_report(repo):
         totals['design_build'] += d.get('classification') == 'design_build_contractor'
         totals['website_verified'] += bool(d.get('website_verified'))
         for generic in (False, True):
-            totals['generic_email' if generic else 'direct_email'] += len({p['email'] for p in d.get('people', []) + d.get('generic_contacts', []) if p.get('email') and bool(p.get('generic')) == generic})
+            totals['generic_email' if generic else 'direct_email'] += len({p['email'] for p in d.get('people', []) + d.get('generic_contacts', []) if p.get('email') and bool(p.get('generic') or p['email'].split('@')[0].casefold() in GENERIC) == generic})
         for field in ('serp_calls', 'apollo_searches'):
             totals[field] += sum(c.get('provider') == ('serpapi' if field == 'serp_calls' else 'apollo') for c in d.get('search_calls', []))
         totals['reveals'] += d.get('reveals_used', 0)
     counts['site_person'] = sum(sum(bool(p.get('name')) and p.get('source') == 'site' for p in f['payload'].get('people', [])) for f in firms)
     counts['apollo_person'] = sum(sum(p.get('source') == 'apollo' for p in f['payload'].get('people', [])) for f in firms)
+    keys = {person_key(f, p) for f in firms for p in f['payload'].get('people', []) if counts_toward_target(f, p)}
+    totals.update(verified_people=len(keys), verified_people_keys=sorted(keys),
+                  named_people_any=len({(f.get('company_number') or f['firm_key'], ' '.join(clean(p.get('name')).casefold().split()))
+                                        for f in firms for p in f['payload'].get('people', []) if human_name(p.get('name'), f['company'])}),
+                  ch_directors=sum(p.get('source') == 'companies_house' for f in firms for p in f['payload'].get('people', [])),
+                  needs_review=sum(f['payload'].get('review_status') == 'needs_review' for f in firms),
+                  direct_emails=totals['direct_email'], generic_emails=totals['generic_email'],
+                  est_cost_gbp=round(totals['serp_calls'] * 0.01, 2), apollo_credits=totals['reveals'])
     return {**counts, **totals, 'firms': totals['firms'], 'firm_records': firms, 'design_build_firms': [f for f in firms if f['payload'].get('classification') == 'design_build_contractor'], 'status': 'trial_review'}
 
 
