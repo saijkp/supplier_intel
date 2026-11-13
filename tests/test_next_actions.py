@@ -249,7 +249,7 @@ def test_snooze_migration_is_idempotent_and_preserves_enquiry(svc):
         conn.execute('DELETE FROM schema_migrations WHERE version=46')
     initialise_schema(svc.repo.db_path)
     initialise_schema(svc.repo.db_path)
-    assert get_schema_version(svc.repo.db_path) == 49
+    assert get_schema_version(svc.repo.db_path) == 50
     assert svc.get_enquiry(svc.e['id'])['title'] == svc.e['title']
 
 

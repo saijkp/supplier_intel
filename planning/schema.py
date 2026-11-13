@@ -2,6 +2,7 @@
 SQL = '''
 CREATE TABLE IF NOT EXISTS planning_projects (
  id INTEGER PRIMARY KEY, authority TEXT NOT NULL, reference TEXT NOT NULL,
+ agent_lookup_attempted_at TEXT, agent_lookup_status TEXT,
  address TEXT, postcode TEXT, description TEXT, application_type TEXT, units INTEGER,
  status TEXT, validated_date TEXT, decided_date TEXT, applicant TEXT, agent TEXT,
  source_url TEXT, fit_score INTEGER NOT NULL, fit_reasons TEXT NOT NULL,

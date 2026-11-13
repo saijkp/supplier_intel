@@ -101,7 +101,7 @@ class AlwaysOnService:
 
     def identity_pending(self,limit=3):
         deadline=time.monotonic()+90
-        for p in self.repo.rows("SELECT * FROM planning_projects WHERE fit_score>0 AND agent_account_id IS NULL ORDER BY first_seen_at,id LIMIT 100"):
+        for p in self.repo.rows("SELECT * FROM planning_projects WHERE fit_score>0 AND agent_account_id IS NULL AND agent_lookup_attempted_at IS NULL ORDER BY first_seen_at,id LIMIT 100"):
             if limit<=0 or time.monotonic()>deadline:
                 break
             key='identity:'+str(p['id'])
@@ -131,6 +131,8 @@ class AlwaysOnService:
 
     def queue_projects(self):
         for p in self.repo.rows('SELECT * FROM planning_projects ORDER BY first_seen_at,id'):
+            if p['agent_lookup_attempted_at']:
+                continue  # Trial identity requires Sai review, including pre-existing accounts.
             for role,key in [('architect','agent_account_id'),('developer','applicant_account_id')]:
                 if p[key]:
                     self.repo.execute('INSERT OR IGNORE INTO outreach_project_queue(project_id,account_id,role) VALUES(?,?,?)',(p['id'],p[key],role))
@@ -160,7 +162,15 @@ class AlwaysOnService:
             response.raise_for_status()
             return bool(response.text.strip()) and not parking_page_reason(BeautifulSoup(response.text,'html.parser').get_text(' ',strip=True))
 
+    def trial_decision_makers(self):
+        """Project-linked review handoff; these rows never enrol or enrich."""
+        return [{**json.loads(r['payload']), 'project_id': r['project_id'], 'status': 'trial_review'}
+                for r in self.repo.rows('SELECT * FROM planning_agent_trials')
+                if all(json.loads(r['payload']).get(k) for k in ('CH_verified','person_on_site','email_found'))]
+
     def quality(self,p,c,a,check_site=True):
+        if self.repo.rows('SELECT 1 FROM planning_agent_trials WHERE project_id=?', (p['id'],)):
+            raise ValueError('Council agent trial requires Sai review')
         if a['domain'] in {'gmail.com','hotmail.com','outlook.com','yahoo.com','icloud.com','live.com','aol.com','proton.me'}:
             raise ValueError('Personal email providers are not corporate domains')
         if not c['name'] or not c['source_url'] or not p['address'] or not p['description'] or not p['source_url']:
@@ -272,6 +282,8 @@ class AlwaysOnService:
                 break
             try:
                 p=self.repo.rows('SELECT * FROM planning_projects WHERE id=?',(row['project_id'],))[0]
+                if p['agent_lookup_attempted_at']:
+                    continue
                 a=self.repo.get('prospect_accounts',row['account_id'])
                 if not fit(p['description'],p['application_type'] or '')[0]:
                     self._retry(row,'Project outside furnishing scope',True);continue
@@ -448,7 +460,8 @@ class AlwaysOnService:
             sent=self.repo.rows("SELECT count(*) n FROM outreach_events WHERE kind='email' AND status='sent' AND created_at>=?",(local.date().isoformat(),))[0]['n']
             if plan and sent<plan*.5 and not self.dry_run() and not self.paused():
                 reasons.append('Fewer than 50% of planned sends completed')
-        return {'ok':not reasons,'reasons':reasons,'heartbeat':last,'dry_run':self.dry_run(),'paused':self.paused(),
+        from planning.portal_agents import trial_report
+        return {'planning': {'agent_trial': trial_report(self.repo)}, 'ok':not reasons,'reasons':reasons,'heartbeat':last,'dry_run':self.dry_run(),'paused':self.paused(),
                 'fix_url':'/outreach/always-on/status','mailboxes':{a:{'cap':self.cap(a),**self.mailbox_rates(a)} for a in mailbox_config()}}
 
     def summary(self,days=1):

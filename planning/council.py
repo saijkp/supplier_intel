@@ -34,7 +34,7 @@ LABELS = {
     'agent company': 'agent_company', 'agent company name': 'agent_company',
     'agent organisation': 'agent_company', 'agent organization': 'agent_company',
     'agent website': 'agent_website', 'agent address': 'agent_address', 'applicant': 'applicant',
-    'applicant name': 'applicant', 'applicant company': 'applicant',
+    'applicant name': 'applicant', 'applicant company': 'applicant_company', 'applicant company name': 'applicant_company',
     'architect': 'agent_company', 'architect name': 'agent_company',
     'agent role': 'role_evidence', 'agent profession': 'role_evidence',
 }
@@ -57,10 +57,14 @@ def parse(html, url):
     # NEC/Northgate pages also render labelled values as separate text lines.
     lines = [s.strip() for s in soup.get_text('\n', strip=True).splitlines() if s.strip()]
     pairs.extend(zip(lines, lines[1:]))
+    for line in lines:
+        if ':' in line:
+            pairs.append(line.split(':', 1))
     for label, value in pairs:
+        value = value.strip()
         normal = label.strip().rstrip(':').casefold()
         key = LABELS.get(normal)
-        if key and value and value.casefold() not in ('see company name', 'not available', 'n/a', 'redacted') and value.rstrip(':').casefold() not in LABELS:
+        if key and value and value.casefold() not in ('see source', 'see company name', 'not available', 'n/a', 'redacted') and value.rstrip(':').casefold() not in LABELS:
             result.setdefault(key, value)
             result['evidence'].append({'field': key, 'label': label, 'value': value, 'source_url': url})
             if normal.startswith('architect'):
