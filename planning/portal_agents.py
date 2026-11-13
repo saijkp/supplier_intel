@@ -102,9 +102,9 @@ def classify(company):
 
 
 def merge_trusted(original, extracted):
-    result, candidates = dict(original), {}
+    result, candidates = {k: (None if isinstance(v, str) and v.strip().casefold() == 'see source' else v) for k, v in original.items()}, {}
     for key, value in extracted.items():
-        if not value or key == 'evidence':
+        if not value or key == 'evidence' or (isinstance(value, str) and value.strip().casefold() == 'see source'):
             continue
         if result.get(key) and result[key] != value:
             candidates[key + '_candidate'] = value
@@ -173,6 +173,8 @@ class AgentTrial:
         self.website_finder = website_finder
 
     def attempt(self, project):
+        if os.getenv('PLANNING_COUNCIL_FETCH_ENABLED', '').lower() != 'true':
+            return {'status': 'trial_review', 'reason': 'Council fetching disabled'}
         with connection_scope(self.repo.db_path) as db:
             changed = db.execute("UPDATE planning_projects SET agent_lookup_attempted_at=?,agent_lookup_status='error' WHERE id=? AND agent_lookup_attempted_at IS NULL", (stamp(self.now()), project['id'])).rowcount
         if not changed:
@@ -251,4 +253,5 @@ def trial_report(repo):
             unique.add(key)
             if not data.get('generic_fallback', True):
                 direct.add(key)
-    return {'authorities': report, 'unique_verified_people': len(unique), 'unique_direct_email_people': len(direct), 'status': 'trial_review'}
+    from planning.firm_trial import firm_report
+    return {**firm_report(repo), 'authorities': report, 'unique_verified_people': len(unique), 'unique_direct_email_people': len(direct), 'status': 'trial_review'}

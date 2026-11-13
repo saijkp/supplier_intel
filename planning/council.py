@@ -3,6 +3,7 @@
 Only labelled values are extracted; an agent is not automatically an architect.
 """
 import json
+import os
 import re
 import threading
 import time
@@ -88,29 +89,18 @@ class CouncilClient:
         return parsed.scheme == 'https' and (parsed.hostname or '').endswith('.gov.uk') and not parsed.username and parsed.port in (None, 443)
 
     def _get(self, url):
-        for _ in range(5):
-            if not self.allowed(url):
-                raise ValueError('Council URL must be public HTTPS gov.uk')
-            host = urlsplit(url).hostname
-            with _LOCK:
-                if _PAUSED.get(host, 0) > time.monotonic():
-                    raise ValueError('Council rate-limit cooldown; no request made')
-                self.sleep(max(0, self.interval - (time.monotonic() - _LAST.get(host, 0))))
-                _LAST[host] = time.monotonic()
-            response = self.client.get(url, follow_redirects=False)
-            if response.is_redirect:
-                url = urljoin(url, response.headers['location'])
-                continue
-            if response.status_code == 429:
-                with _LOCK:
-                    _PAUSED[host] = time.monotonic() + 300
-            response.raise_for_status()
-            if len(response.content) > 2_000_000:
-                raise ValueError('Council page too large')
-            return response.text, url
-        raise ValueError('Council redirect limit')
+        if not self.allowed(url):
+            raise ValueError('Council URL must be public HTTPS gov.uk')
+        # The retained opt-in route obeys the same robots and cooldown gates.
+        from planning.portal_agents import TrialHTTP
+        if not hasattr(self, '_trial_http'):
+            self._trial_http = TrialHTTP(self.repo, self.now, client=self.client, sleep=self.sleep,
+                                         public_url=self.allowed)
+        return self._trial_http.get(url), url
 
     def fetch(self, url):
+        if os.getenv('PLANNING_COUNCIL_FETCH_ENABLED', '').lower() != 'true':
+            return {'evidence': [], 'agent_role': 'unknown', 'error': 'Council fetching disabled'}
         cached = self.repo.rows('SELECT * FROM planning_council_cache WHERE url=? AND fetched_at>=?',
                                 (url, stamp(self.now()-timedelta(days=7))))
         if cached:
