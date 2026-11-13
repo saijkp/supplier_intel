@@ -160,3 +160,31 @@ class ProspectContactService:
             self.outreach.repo.execute("UPDATE prospect_contacts SET email=?,email_status=? WHERE id=? AND (email IS NULL OR email='')",
                 (email,'corporate_verified' if corporate else 'unreviewed',contact_id))
         self.outreach.event(contact['account_id'],'paid reveal',{'contact_id':contact_id,'candidate':person,'automatic':True})
+
+class FirmTrialApollo:
+    """Review-only adapter: free people search, explicitly gated bounded match.
+
+    Does not create accounts, contacts, enrolments or messages.
+    """
+    def __init__(self, client=None, api_key=None):
+        self.client = client or httpx.Client(timeout=15)
+        self.api_key = cfg.APOLLO_API_KEY if api_key is None else api_key
+
+    def search(self, company, domain=None):
+        if not self.api_key:
+            return []
+        payload = {'person_titles': ['director', 'partner', 'principal', 'associate', 'architect', 'interior designer'], 'per_page': 10}
+        payload.update({'q_organization_domains_list': [domain]} if domain else {'q_organization_name': company})
+        response = self.client.post('https://api.apollo.io/api/v1/mixed_people/api_search', headers={'x-api-key': self.api_key}, json=payload)
+        response.raise_for_status()
+        return response.json().get('people') or []
+
+    def reveal(self, person_id):
+        import os
+        if os.getenv('OUTREACH_APOLLO_REVEAL_ENABLED', '').lower() != 'true':
+            raise ValueError('Paid Apollo reveal disabled')
+        if not self.api_key:
+            return {}
+        response = self.client.post('https://api.apollo.io/api/v1/people/match', headers={'x-api-key': self.api_key}, json={'id': person_id, 'reveal_personal_emails': False, 'reveal_phone_number': False})
+        response.raise_for_status()
+        return response.json().get('person') or {}

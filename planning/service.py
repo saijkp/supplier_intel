@@ -1,5 +1,6 @@
 """Planning ingestion and project-bound draft enrolment. No sending or enrichment."""
 import json
+import os
 import re
 import threading
 import time
@@ -30,7 +31,7 @@ class PlanningService:
         self.companies_house = companies_house or CompaniesHouseClient()
 
     def account(self, name, role, source_url, details=None):
-        if not name or not name.strip():
+        if not name or not name.strip() or name.strip().casefold() == 'see source':
             return None
         details = details or {}
         number = details.get('companies_house_number')
@@ -83,12 +84,13 @@ class PlanningService:
         for key in ('agent_name','agent_company','agent_address','role_evidence','agent_website','address','postcode','description','application_type','status','validated_date','decided_date','applicant','agent','source_url'):
             if raw.get(key) is not None and not isinstance(raw[key], str):
                 raise ValueError('Malformed register field: '+key)
+        raw = {k: (None if isinstance(v, str) and v.strip().casefold() == "see source" else v) for k, v in raw.items()}
         candidate = dict(raw)
         raw = dict(raw)
         trusted = self.repo.rows('SELECT * FROM planning_projects WHERE authority=? AND reference=?', (authority, reference))
         if trusted:
             for key in ('agent_company', 'agent_name', 'agent_address', 'description', 'application_type', 'source_url', 'applicant'):
-                if trusted[0][key]:
+                if trusted[0][key] and str(trusted[0][key]).strip().casefold() != 'see source':
                     raw[key] = trusted[0][key]
         description = raw.get('description') or ''
         score, reasons, units = fit(description, raw.get('application_type') or '', min_units)
@@ -121,7 +123,7 @@ class PlanningService:
                 if existing['description']:
                     values.update(fit_score=existing['fit_score'],fit_reasons=existing['fit_reasons'])
                 for key in fields:
-                    if existing[key] is not None and existing[key] != '':
+                    if existing[key] is not None and existing[key] != '' and str(existing[key]).strip().casefold() != 'see source':
                         values[key] = existing[key]
             c.execute('INSERT INTO planning_projects ('+','.join(fields)+') VALUES ('+','.join('?' for _ in fields)+') ON CONFLICT(authority,reference) DO UPDATE SET '+','.join(k+'=excluded.'+k for k in fields if k not in ('authority','reference','first_seen_at')), [values[k] for k in fields])
             pid = c.execute('SELECT id FROM planning_projects WHERE authority=? AND reference=?',(authority,reference)).fetchone()['id']
@@ -159,12 +161,12 @@ class PlanningService:
                                 'decided_date': r.get('decided_date') or r.get('date_decided') or other.get('date_decided'), 'applicant': r.get('applicant') or other.get('applicant_company'),
                                 'agent': r.get('agent') or other.get('agent_company'), 'source_url': r.get('url') or r.get('source_url')}
                     raw['register_payload'] = r
-                    raw['agent_name'] = other.get('agent_name')
-                    raw['agent_company'] = other.get('agent_company')
+                    raw['agent_name'] = r.get('agent_name') or other.get('agent_name')
+                    raw['agent_company'] = r.get('agent_company') or other.get('agent_company')
                     if statuses or raw['validated_date'] or raw['decided_date']:
                         if not in_window(raw, end-timedelta(days=days-1), end, statuses):
                             continue
-                    if fit(raw.get('description'), raw.get('application_type') or '', min_units)[0] and raw.get('source_url'):
+                    if os.getenv('PLANNING_COUNCIL_FETCH_ENABLED', '').lower() == 'true' and fit(raw.get('description'), raw.get('application_type') or '', min_units)[0] and raw.get('source_url'):
                         try:
                             identity = self.council.fetch(raw['source_url'])
                         except Exception as exc:

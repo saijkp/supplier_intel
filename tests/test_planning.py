@@ -148,7 +148,7 @@ def test_v45_upgrade_and_candidate_changes_preserve_trusted_fields(service):
     with connection_scope(service.repo.db_path) as c:
         c.execute('DELETE FROM schema_migrations WHERE version=46')
     initialise_schema(service.repo.db_path)
-    assert get_schema_version(service.repo.db_path)==50
+    assert get_schema_version(service.repo.db_path)==51
     service.store({**project(),'description':'30 flats','address':'Changed address'})
     row=service.repo.rows('SELECT * FROM planning_projects WHERE id=?',(pid,))[0]
     assert row['description']=='Erection of 24 flats' and row['address']=='X Road'
@@ -213,3 +213,8 @@ def test_nonresidential_unit_counts_do_not_qualify(text):
 def test_residential_counts_and_incidental_tree_work(text):
     assert fit(text)[0]>0
     assert all(r['evidence'] in text for r in fit(text)[1])
+
+
+@pytest.fixture(autouse=True)
+def reset_planit_cooldown(monkeypatch):
+    monkeypatch.setattr(PlanItClient, '_retry_at', 0)

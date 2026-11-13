@@ -157,3 +157,8 @@ def test_error_attempt_is_not_repeated(planning):
     trial.run(); trial.run()
     assert planning.repo.rows('SELECT agent_lookup_status FROM planning_projects')[0]['agent_lookup_status']=='error'
     assert len(planning.repo.rows('SELECT * FROM planning_agent_trials'))==1
+
+
+@pytest.fixture(autouse=True)
+def opt_in_legacy_portal_tests(monkeypatch):
+    monkeypatch.setenv('PLANNING_COUNCIL_FETCH_ENABLED', 'true')

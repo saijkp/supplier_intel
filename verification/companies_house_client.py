@@ -155,6 +155,22 @@ class CompaniesHouseClient:
             source_url=f"{COMPANIES_HOUSE_PUBLIC_URL}/{company_number}",
         )
 
+    def get_officers(self, company_number):
+        """Published current directors only; no email inferred."""
+        if not self.api_key or not company_number:
+            return []
+        try:
+            response = self._client.get(
+                f"{COMPANIES_HOUSE_BASE_URL}/company/{company_number}/officers",
+                params={"items_per_page": 100}, auth=(self.api_key, ""))
+            response.raise_for_status()
+            return [{"name": item["name"], "role": item["officer_role"],
+                     "source": "companies_house", "source_url": f"{COMPANIES_HOUSE_PUBLIC_URL}/{company_number}/officers"}
+                    for item in response.json().get("items", [])
+                    if item.get("name") and item.get("officer_role") in ("director", "corporate-director") and not item.get("resigned_on")]
+        except Exception:
+            return []
+
     def search_by_sic_codes(
         self, sic_codes: List[str], max_results: int = 100, company_status: str = "active",
     ) -> List[SicSearchMatch]:

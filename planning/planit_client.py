@@ -1,5 +1,7 @@
 """Free PlanIt client. An incomplete response is never an empty success."""
 import time
+import threading
+from email.utils import parsedate_to_datetime
 from datetime import timedelta
 import httpx
 
@@ -13,6 +15,9 @@ class RateLimited(Inconclusive):
 
 
 class PlanItClient:
+    _retry_at = 0
+    _rate_lock = threading.Lock()
+
     def __init__(self, client=None, sleep=time.sleep, retries=2):
         self.client = client or httpx.Client(timeout=httpx.Timeout(60, connect=15), headers={"User-Agent": "SupplierIntel/1.0 (+https://ikeng.co.uk)"})
         self.sleep, self.retries = sleep, retries
@@ -53,11 +58,23 @@ class PlanItClient:
         return list(rows.values())
 
     def _get(self, params):
+        if time.time() < PlanItClient._retry_at:
+            raise RateLimited("PlanIt global cooldown; Retry-After until " + str(PlanItClient._retry_at))
         for attempt in range(self.retries + 1):
             try:
                 response = self.client.get('https://www.planit.org.uk/api/applics/json', params=params)
                 if response.status_code == 429:
-                    raise RateLimited('PlanIt rate limited; batch stopped, retry later')
+                    value = response.headers.get('Retry-After', '300')
+                    try:
+                        retry_at = time.time() + max(0, int(value))
+                    except ValueError:
+                        try:
+                            retry_at = parsedate_to_datetime(value).timestamp()
+                        except (TypeError, ValueError, OverflowError):
+                            retry_at = time.time() + 300
+                    with PlanItClient._rate_lock:
+                        PlanItClient._retry_at = max(PlanItClient._retry_at, retry_at)
+                    raise RateLimited('PlanIt rate limited; global stop; Retry-After: ' + value)
                 response.raise_for_status()
                 data = response.json()
                 if not isinstance(data, dict):

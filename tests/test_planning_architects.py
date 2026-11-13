@@ -58,10 +58,13 @@ def test_idox_nec_labelled_fields(html):
     assert all(e['value'] in html for e in record['evidence'])
 
 
-def test_further_information_cache_and_failure(service):
+def test_further_information_cache_and_failure(service, monkeypatch):
+    monkeypatch.setenv("PLANNING_COUNCIL_FETCH_ENABLED", "true")
     requests = []; sleeps = []
     def respond(request):
         requests.append(str(request.url))
+        if request.url.path == '/robots.txt':
+            return httpx.Response(200, text='User-agent: *\nAllow: /')
         if request.url.path == '/bad':
             return httpx.Response(403)
         if request.url.path == '/summary':
@@ -72,10 +75,10 @@ def test_further_information_cache_and_failure(service):
     first = client.fetch('https://council.gov.uk/summary')
     assert first['agent_company'] == 'Test Architects Ltd'
     assert client.fetch('https://council.gov.uk/summary') == first
-    assert len(requests) == 2 and any(s > 0 for s in sleeps)
+    assert len(requests) == 3 and any(s > 0 for s in sleeps)
     assert client.fetch('https://council.gov.uk/bad')['error']
     assert client.fetch('https://localhost/')['error']
-    assert len(requests) == 3
+    assert len(requests) == 4
 
 
 @pytest.mark.parametrize('payload', [{'records': [], 'total': None}, {'records': []}])
@@ -187,7 +190,8 @@ def test_identity_import_is_grounded_and_preview_does_not_enrol(service):
     assert not service.repo.rows('SELECT * FROM outreach_enrolments')
 
 
-def test_council_exception_does_not_lose_next_project(service):
+def test_council_exception_does_not_lose_next_project(service, monkeypatch):
+    monkeypatch.setenv("PLANNING_COUNCIL_FETCH_ENABLED", "true")
     class Council:
         def fetch(self, url): raise RuntimeError('offline')
     class Client:
@@ -215,3 +219,8 @@ def test_background_api_returns_job_and_records_failure(service, monkeypatch):
     job = client.get(response.json()['status_url']).json()
     assert job['completed_at'] and json.loads(job['result'])['status'] == 'failed'
     assert client.get('/planning/runs/99999').status_code == 404
+
+
+@pytest.fixture(autouse=True)
+def reset_planit_cooldown(monkeypatch):
+    monkeypatch.setattr(PlanItClient, '_retry_at', 0)
