@@ -221,6 +221,8 @@ from api.whatsapp import router as whatsapp_router
 app.include_router(whatsapp_router)
 app.include_router(customers_router)
 app.include_router(outreach_router)
+from api.always_on import router as always_on_router
+app.include_router(always_on_router)
 app.include_router(planning_router)
 app.mount('/workspace', StaticFiles(directory=Path(__file__).resolve().parents[1] / 'frontend', html=True), name='workspace')
 

@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 48
+SCHEMA_VERSION = 49
 
 
 # ═══════════════════════════════════════════════════════════
@@ -965,7 +965,12 @@ SCHEMA_SQL += OUTREACH_SCHEMA_SQL
 from planning.schema import SQL as PLANNING_SQL, statements as planning_statements
 SCHEMA_SQL += PLANNING_SQL
 
+from outreach.always_on_schema import SQL as ALWAYS_ON_SQL, statements as always_on_statements
+SCHEMA_SQL += ALWAYS_ON_SQL
+
 MIGRATIONS: dict[int, dict] = {
+    49: {"description": "Durable daily outreach, reveal budget, seeds and shared Zoho token lease", "statements": always_on_statements(),
+         "columns": [("rfq_messages","zoho_retry_at","TEXT"),("rfq_messages","zoho_retry_attempts","INTEGER NOT NULL DEFAULT 0")]},
     48: {
         "description": "Council identity evidence and asynchronous planning runs",
         "columns": [("planning_projects", name, "TEXT") for name in

@@ -177,7 +177,11 @@ def test_sent_pagination_and_encoded_recipients():
         box.check_send(dict(recipient='new@example.test', subject='Re: Kitchen'), items[-1:])
 
 
-def test_customer_credentials_select_eu_account_without_primary_tokens(monkeypatch):
+def test_customer_credentials_select_eu_account_without_primary_tokens(monkeypatch,tmp_path):
+    from storage.database import initialise_schema
+    path=tmp_path/"tokens.db"
+    initialise_schema(path)
+    monkeypatch.setattr(cfg,"DB_PATH",path)
     from rfq.zoho_mail import ZohoSender
     for key, value in dict(REGION='eu', ACCOUNT_ID='987', CLIENT_ID='second-id', CLIENT_SECRET='second-secret', REFRESH_TOKEN='second-refresh').items():
         monkeypatch.setattr(cfg, 'CUSTOMER_ZOHO_' + key, value)

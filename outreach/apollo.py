@@ -95,7 +95,18 @@ class ProspectContactService:
                 if contact['email'] or contact['opted_out_at'] or contact['bounced_at'] or contact['reveal_attempted_at']:
                     results.append({'id':cid,'skipped':True});continue
                 with connection_scope(self.outreach.repo.db_path) as c:
+                    from customers.mailboxes import UK
+                    c.execute('BEGIN IMMEDIATE')
+                    day=self.outreach.now().astimezone(UK).date().isoformat()
+                    per=int(os.getenv('OUTREACH_APOLLO_CREDITS_PER_CONTACT','1'))
+                    used=c.execute('SELECT coalesce(sum(credits),0) FROM outreach_credit_ledger WHERE day=?',(day,)).fetchone()[0]
+                    if used+per>int(os.getenv('OUTREACH_APOLLO_DAILY_CREDITS','10')):
+                        results.append({'id':cid,'queued':True,'reason':'Daily credit budget reached'});continue
+                    if c.execute('SELECT 1 FROM outreach_credit_ledger WHERE contact_id=?',(cid,)).fetchone():
+                        results.append({'id':cid,'skipped':True});continue
                     claimed=c.execute('UPDATE prospect_contacts SET reveal_attempted_at=? WHERE id=? AND reveal_attempted_at IS NULL',(stamp(self.outreach.now()),cid)).rowcount
+                    if claimed:
+                        c.execute('INSERT INTO outreach_credit_ledger VALUES(?,?,?,?)',(cid,day,per,stamp(self.outreach.now())))
                 if not claimed:
                     results.append({'id':cid,'skipped':True});continue
                 def request(client):
@@ -118,3 +129,34 @@ class ProspectContactService:
             status='failed';results.append({'failed':True,'reason':'Stopped on first failure; never retry this batch blindly'})
         self.outreach.repo.execute('UPDATE outreach_reveal_batches SET status=?,result=? WHERE id=?',(status,json.dumps(results),batch_id))
         return {'status':status,'results':results}
+    def reveal_automatic(self, contact_id):
+        """One attempt, budget reserved by AlwaysOnService before this method.
+
+        Apollo's verified status is required; no guessed email or domain repair.
+        """
+        from storage.database import connection_scope
+        import re
+        contact=self.outreach.repo.get('prospect_contacts',contact_id)
+        if contact['email'] or contact['opted_out_at'] or contact['bounced_at'] or not (contact['source_url'] or '').startswith('apollo-free:'):
+            return
+        with connection_scope(self.outreach.repo.db_path) as c:
+            if not c.execute('UPDATE prospect_contacts SET reveal_attempted_at=? WHERE id=? AND reveal_attempted_at IS NULL',(stamp(self.outreach.now()),contact_id)).rowcount:
+                return
+        def request(client):
+            response=client.post('https://api.apollo.io/api/v1/people/match',headers={'x-api-key':self.api_key},json={
+                'id':contact['source_url'].removeprefix('apollo-free:'),'reveal_personal_emails':False,'reveal_phone_number':False})
+            response.raise_for_status()
+            return response.json().get('person') or {}
+        if self.client is None:
+            with httpx.Client(timeout=15) as client:
+                person=request(client)
+        else:
+            person=request(self.client)
+        email=(person.get('email') or '').strip().lower()
+        account=self.outreach.repo.get('prospect_accounts',contact['account_id'])
+        valid=bool(re.fullmatch(r'[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+',email))
+        corporate=valid and email.rpartition('@')[2]==account['domain'] and person.get('email_status')=='verified'
+        if valid:
+            self.outreach.repo.execute("UPDATE prospect_contacts SET email=?,email_status=? WHERE id=? AND (email IS NULL OR email='')",
+                (email,'corporate_verified' if corporate else 'unreviewed',contact_id))
+        self.outreach.event(contact['account_id'],'paid reveal',{'contact_id':contact_id,'candidate':person,'automatic':True})

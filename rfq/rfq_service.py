@@ -31,7 +31,7 @@ class RFQService:
         self.suppliers = supplier_repo if supplier_repo is not None else SupplierRepository(self.repo.db_path)
         if cfg.RFQ_MAIL_TRANSPORT=='zoho':
             from rfq.zoho_mail import ZohoClient, ZohoSender, ZohoInbox
-            zoho=ZohoClient()
+            zoho=ZohoClient(db_path=self.repo.db_path)
             self.sender=sender if sender is not None else ZohoSender(zoho)
             self.inbox=inbox if inbox is not None else ZohoInbox(zoho)
         else:
@@ -131,7 +131,7 @@ class RFQService:
         self.suppliers.record_procurement_outcome(supplier_id=message['supplier_id'], outcome=outcome, notes=f"RFQ campaign {message['campaign_id']}")
 
     def send_approved(self, campaign_id, limit=None, message_ids=None):
-        """Send only approved email rows. A conditional DB claim precedes every SMTP call; failures require human review and are never automatically retried."""
+        """Send approved rows under a DB claim; explicit Zoho rejections back off, while uncertain delivery requires human review."""
         result = {'sent': 0, 'skipped': 0, 'failed': 0, 'partial': False}
         ready = self.status()
         if not ready['ready']:
@@ -150,6 +150,9 @@ class RFQService:
             if limit is not None:
                 rows = rows[:limit]
             for message in rows:
+                if message.get('zoho_retry_at') and message['zoho_retry_at']>now():
+                    result['partial']=True
+                    continue
                 if attempted:
                     delay = cfg.RFQ_SEND_DELAY_SECONDS * random.uniform(1, 1.15)
                     if time.monotonic() - start + delay >= cfg.RFQ_SEND_JOB_MAX_SECONDS:
@@ -200,7 +203,14 @@ class RFQService:
                             result['skipped'] += 1
                             continue
                     smtp_id = self.sender.send({**message, 'subject': header(message['subject']), 'recipient': header(message['recipient']), 'body': body})
-                except Exception:
+                except Exception as exc:
+                    from rfq.zoho_mail import ZohoError
+                    if isinstance(exc,ZohoError) and exc.safe_to_retry and exc.category!='recipient':
+                        attempts=message.get('zoho_retry_attempts',0)+1
+                        retry_at=(datetime.now(timezone.utc)+timedelta(minutes=min(1440,5*2**min(attempts,9)))).strftime('%Y-%m-%d %H:%M:%S')
+                        self.repo.update('messages',message['id'],status='approved',status_reason='Zoho '+exc.category+'; queued for retry',zoho_retry_at=retry_at,zoho_retry_attempts=attempts)
+                        result['failed']+=1
+                        continue
                     self.repo.update('messages', message['id'], status='failed', status_reason='SMTP send failed; check delivery before any new outreach')
                     result['failed'] += 1
                     continue
@@ -210,6 +220,16 @@ class RFQService:
             return result
         finally:
             _SEND_LOCK.release()
+
+    def retry_pending(self,limit=10):
+        """Retry only explicit rejected sends already authorised by the buyer.
+
+        Approval alone is insufficient: retry_at is set only by an attempted send.
+        Unknown/ambiguous submissions retain failed state and require review.
+        """
+        rows=self.repo.rows('messages',"status='approved' AND zoho_retry_at IS NOT NULL AND zoho_retry_at<=?",(now(),))[:limit]
+        campaigns={m['campaign_id'] for m in rows}
+        return [self.send_approved(cid,message_ids=[m['id'] for m in rows if m['campaign_id']==cid]) for cid in campaigns]
 
     def mark_sent(self, message_id):
         message = self.repo.get('messages', message_id)

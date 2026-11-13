@@ -6,6 +6,7 @@ Credentials are server environment variables; never returned to the dashboard.
 from datetime import datetime, timedelta, timezone
 from email.utils import parseaddr
 import re
+import os
 import time
 
 import logging
@@ -24,43 +25,120 @@ REGIONS={'com':('mail.zoho.com','accounts.zoho.com'),
 
 
 def missing(prefix='RFQ_ZOHO_'):
-    return [prefix + key for key in ('REGION','CLIENT_ID','CLIENT_SECRET','REFRESH_TOKEN','ACCOUNT_ID') if not getattr(cfg, prefix + key, '').strip()]
+    return [prefix + key for key in ('REGION','CLIENT_ID','CLIENT_SECRET','REFRESH_TOKEN','ACCOUNT_ID') if not getattr(cfg, prefix + key, os.getenv(prefix+key,'')).strip()]
+
+
+class ZohoError(RuntimeError):
+    """Sanitised provider failure; only explicit rejections are safe to retry."""
+    def __init__(self, category, retryable=False, safe_to_retry=False):
+        self.category=category
+        self.retryable=retryable
+        self.safe_to_retry=safe_to_retry
+        super().__init__({'auth':'Zoho authorization failed; reconnect Zoho',
+            'rate_limit':'Zoho rate limit; retry later', 'recipient':'Zoho invalid recipient',
+            'transient':'Zoho temporarily unavailable; retry later',
+            'uncertain':'Zoho delivery uncertain; review Sent before retry'}.get(category, 'Zoho operation failed'))
 
 
 class ZohoClient:
-    def __init__(self,client=None, prefix='RFQ_ZOHO_'):
+    def __init__(self,client=None, prefix='RFQ_ZOHO_', db_path=None):
         self.prefix = prefix
         self.client=client
+        self.db_path=db_path or cfg.DB_PATH
         self.token=None;self.expires=0
 
     def _request(self,method,url,**kwargs):
+        refreshing=url.endswith('/oauth/v2/token')
         try:
-            if self.client is not None: response=self.client.request(method,url,**kwargs)
+            if self.client is not None:
+                response=self.client.request(method,url,**kwargs)
             else:
                 with httpx.Client(timeout=30,follow_redirects=False) as client:
                     response=client.request(method,url,**kwargs)
-            response.raise_for_status()
             data=response.json()
-            code=data.get('status',{}).get('code',200)
-            if code!=200: raise RuntimeError('Zoho operation failed')
+            status=getattr(response,'status_code',200)
+            code=data.get('status',{}).get('code',status)
+            if status>=400 or code!=200 or data.get('error'):
+                # Inspect provider text only here. Never persist or expose it.
+                text=str(data).lower()
+                if status==429 or 'too many' in text or 'rate limit' in text:
+                    raise ZohoError('rate_limit',True,True)
+                if status in (401,403) or refreshing:
+                    raise ZohoError('auth',False,True)
+                if status==400 and ('recipient' in text or 'invalid_address' in text):
+                    raise ZohoError('recipient',False,True)
+                raise ZohoError('transient',True,refreshing or method=='GET')
+            response.raise_for_status()
             return data
+        except ZohoError:
+            raise
         except Exception:
-            # Provider responses and request URLs must not leak refresh tokens.
-            raise RuntimeError('Zoho Mail connection failed; check OAuth authorization and account region') from None
+            raise ZohoError('transient' if refreshing or method=='GET' else 'uncertain',True,refreshing or method=='GET') from None
 
-    def request(self,method,path,**kwargs):
-        values = {k: getattr(cfg, self.prefix + k, '') for k in ('REGION','CLIENT_ID','CLIENT_SECRET','REFRESH_TOKEN','ACCOUNT_ID')}
-        if missing(self.prefix) or values['REGION'] not in REGIONS or not values['ACCOUNT_ID'].isdigit():
-            raise RuntimeError('Zoho Mail server configuration is incomplete')
-        mail,accounts=REGIONS[values['REGION']]
-        if not self.token or self.expires<=time.monotonic():
+    def _access_token(self, values, accounts):
+        import hashlib
+        import uuid
+        from storage.database import connection_scope
+        # Same OAuth identity shares across prefixes/processes; rotated credentials
+        # get a new key. No credential or token ever leaves this private table.
+        identity=hashlib.sha256(('|'.join(values[k] for k in
+            ('REGION','ACCOUNT_ID','CLIENT_ID','CLIENT_SECRET','REFRESH_TOKEN'))).encode()).hexdigest()
+        owner=uuid.uuid4().hex
+        deadline=time.monotonic()+35
+        while True:
+            now=time.time()
+            with connection_scope(self.db_path) as c:
+                c.execute('BEGIN IMMEDIATE')
+                c.execute('INSERT OR IGNORE INTO zoho_token_cache(identity) VALUES(?)',(identity,))
+                row=c.execute('SELECT * FROM zoho_token_cache WHERE identity=?',(identity,)).fetchone()
+                if row['token'] and row['expires']>now:
+                    return row['token']
+                if row['retry_at']>now:
+                    raise ZohoError(row['error_category'] or 'rate_limit',row['error_category']!='auth',True)
+                claimed=c.execute('UPDATE zoho_token_cache SET lock_owner=?,lock_until=? WHERE identity=? AND lock_until<=?',
+                    (owner,now+90,identity,now)).rowcount
+            if claimed:
+                break
+            if time.monotonic()>=deadline:
+                raise ZohoError('rate_limit',True,True)
+            time.sleep(.1)
+        try:
             result=self._request('POST','https://'+accounts+'/oauth/v2/token',data={
                 'grant_type':'refresh_token','refresh_token':values['REFRESH_TOKEN'],
                 'client_id':values['CLIENT_ID'],'client_secret':values['CLIENT_SECRET']})
-            if not result.get('access_token'): raise RuntimeError('Zoho Mail authorization failed')
-            self.token=result['access_token'];self.expires=time.monotonic()+max(0,int(result.get('expires_in',3600))-60)
-        return self._request(method,'https://'+mail+'/api/accounts/'+values['ACCOUNT_ID']+path,
-                             headers={'Authorization':'Zoho-oauthtoken '+self.token},**kwargs).get('data')
+            token=result.get('access_token')
+            if not token:
+                raise ZohoError('auth',False,True)
+            with connection_scope(self.db_path) as c:
+                c.execute('UPDATE zoho_token_cache SET token=?,expires=?,retry_at=0,error_category=NULL WHERE identity=? AND lock_owner=?',
+                    (token,time.time()+max(0,int(result.get('expires_in',3600))-60),identity,owner))
+            return token
+        except ZohoError as exc:
+            with connection_scope(self.db_path) as c:
+                c.execute('UPDATE zoho_token_cache SET retry_at=?,error_category=? WHERE identity=? AND lock_owner=?',
+                    (time.time()+(300 if exc.category=='rate_limit' else 60),exc.category,identity,owner))
+            raise
+        finally:
+            with connection_scope(self.db_path) as c:
+                c.execute('UPDATE zoho_token_cache SET lock_until=0,lock_owner=NULL WHERE identity=? AND lock_owner=?',(identity,owner))
+
+    def request(self,method,path,**kwargs):
+        values={k:getattr(cfg,self.prefix+k,os.getenv(self.prefix+k,'')) for k in ('REGION','CLIENT_ID','CLIENT_SECRET','REFRESH_TOKEN','ACCOUNT_ID')}
+        if missing(self.prefix) or values['REGION'] not in REGIONS or not values['ACCOUNT_ID'].isdigit():
+            raise ZohoError('auth',False,True)
+        mail,accounts=REGIONS[values['REGION']]
+        token=self._access_token(values,accounts)
+        # A 401 explicitly rejects the operation. Invalidate only this token;
+        # the next worker tick refreshes under the DB lease (no refresh storm).
+        try:
+            return self._request(method,'https://'+mail+'/api/accounts/'+values['ACCOUNT_ID']+path,
+                headers={'Authorization':'Zoho-oauthtoken '+token},**kwargs).get('data')
+        except ZohoError as exc:
+            if exc.category=='auth':
+                from storage.database import connection_scope
+                with connection_scope(self.db_path) as c:
+                    c.execute('UPDATE zoho_token_cache SET expires=0 WHERE token=?',(token,))
+            raise
 
 
 
@@ -92,8 +170,10 @@ class ZohoSender:
         sent=box.sent(2);current=datetime.now(timezone.utc)
         box.check_send(message,sent,current)
         if address.lower()=='sj@ikeng.online':
+            from outreach.always_on import mailbox_config
+            baseline=os.getenv('OUTREACH_WARMUP_START') or mailbox_config().get(address,{}).get('warmup_start','')
             try:
-                age=(current.astimezone(UK).date()-date.fromisoformat(os.getenv('OUTREACH_WARMUP_START',''))).days
+                age=(current.astimezone(UK).date()-date.fromisoformat(baseline)).days
             except ValueError:
                 raise ValueError('Configure outreach warm-up start before sending from sj') from None
             cap=0 if age<0 else (5,10,20,30)[min(age//7,3)]
@@ -130,7 +210,10 @@ class ZohoInbox:
             raise ValueError('Cannot locate Sent folder; sending is blocked')
         cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
         result = []
+        deadline=time.monotonic()+90
         for start in range(1, 20001, 200):
+            if time.monotonic()>deadline:
+                raise ZohoError('transient',True,True)
             page = self.client.request('GET', '/messages/view', params={
                 'folderId': sent['folderId'], 'start': start, 'limit': 200,
                 'sortBy': 'date', 'sortorder': 'false', 'status': 'all',
@@ -154,7 +237,10 @@ class ZohoInbox:
         cutoff=(datetime.now(timezone.utc)-timedelta(days=since_days)).timestamp()*1000
         meta=self.client.request('GET','/messages/view',params={'start':1,'limit':min(limit,200),'status':'all','sortBy':'date','sortorder':'false','includesent':'false'})
         result=[]
+        deadline=time.monotonic()+90
         for item in meta or []:
+            if time.monotonic()>deadline:
+                raise ZohoError('transient',True,True)
             mid=str(item.get('messageId',''))
             if not mid.isdigit(): continue
             try:

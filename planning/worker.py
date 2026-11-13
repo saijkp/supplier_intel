@@ -22,7 +22,7 @@ async def run(db_path):
         try:
             service = PlanningService(OutreachService(OutreachRepository(db_path())))
             service.expire_stalled()
-            if os.getenv('PLANNING_SCHEDULE_ENABLED','').lower() == 'true' and due(service):
+            if os.getenv('OUTREACH_ALWAYS_ON_ENABLED','true').lower() != 'true' and os.getenv('PLANNING_SCHEDULE_ENABLED','').lower() == 'true' and due(service):
                 areas = json.loads(os.environ['PLANNING_AREAS']) if os.getenv('PLANNING_AREAS') else None
                 await asyncio.to_thread(service.run_background, service.start_run(), areas=areas, days=90)
         except Exception:
