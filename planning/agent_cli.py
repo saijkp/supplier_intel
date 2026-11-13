@@ -33,3 +33,12 @@ def firm_trial(limit, authorities, max_reveals, max_searches, retry_incomplete):
         raise click.ClickException('Set SUPPLIER_INTEL_DB_PATH to an isolated local trial database first.')
     from planning.firm_trial import FirmTrial
     click.echo(json.dumps(FirmTrial(PlanningService()).run(limit, tuple(a.strip() for a in authorities.split(',') if a.strip()), max_reveals, max_searches, retry_incomplete), indent=2))
+
+
+@planning_cli.command('firm-export')
+@click.option('--output', required=True, type=click.Path(dir_okay=False))
+def firm_export(output):
+    """Export review contacts without enrichment or sending."""
+    from planning.firm_daily import export_contacts
+    export_contacts(PlanningService().repo, output)
+    click.echo(output)

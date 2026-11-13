@@ -76,7 +76,7 @@ class PlanningService:
         details['subscriber_type'] = 'unknown'
         return details, None
 
-    def store(self, raw, min_units=None):
+    def store(self, raw, min_units=None, trial_only=False):
         authority = str(raw.get('authority') or '').strip()
         reference = str(raw.get('reference') or '').strip()
         if not authority or not reference:
@@ -101,13 +101,13 @@ class PlanningService:
         role = role_for(firm, raw.get('role_evidence'))
         raw['agent_role'] = role if role != 'unknown' else None
         agent = None
-        if firm and role == 'architect' and score:
+        if firm and role == 'architect' and score and not trial_only:
             details, registry = self.corporate_details(firm, {**(raw.get('agent_details') or {}), **({'website': raw['agent_website']} if raw.get('agent_website') else {}), **({'address': raw['agent_address']} if raw.get('agent_address') else {})})
             agent = self.account(firm, 'architect', raw.get('source_url'), details)
             if registry:
                 self.outreach.event(agent, 'planning corporate verification', registry)
         # Consultants and unknown agents stay on the register record, never targets.
-        applicant = self.account(raw.get('applicant'), 'developer', raw.get('source_url'), raw.get('applicant_details'))
+        applicant = None if trial_only else self.account(raw.get('applicant'), 'developer', raw.get('source_url'), raw.get('applicant_details'))
         fields = ['authority','reference','address','postcode','description','application_type','units','status','validated_date','decided_date','applicant','agent','source_url','fit_score','fit_reasons','applicant_account_id','agent_account_id','first_seen_at','agent_name','agent_company','agent_address','agent_role','identity_evidence']
         values = {k: raw.get(k) for k in fields}
         values['identity_evidence'] = json.dumps(raw['identity_evidence']) if raw.get('identity_evidence') else None
@@ -127,11 +127,13 @@ class PlanningService:
                         values[key] = existing[key]
             c.execute('INSERT INTO planning_projects ('+','.join(fields)+') VALUES ('+','.join('?' for _ in fields)+') ON CONFLICT(authority,reference) DO UPDATE SET '+','.join(k+'=excluded.'+k for k in fields if k not in ('authority','reference','first_seen_at')), [values[k] for k in fields])
             pid = c.execute('SELECT id FROM planning_projects WHERE authority=? AND reference=?',(authority,reference)).fetchone()['id']
+            if trial_only:
+                c.execute("UPDATE planning_projects SET agent_lookup_attempted_at=COALESCE(agent_lookup_attempted_at,?),agent_lookup_status='trial_review' WHERE id=?", (stamp(self.outreach.now()), pid))
             c.execute('INSERT OR IGNORE INTO planning_project_observations(project_id,payload,observed_at) VALUES(?,?,?)',
                       (pid,json.dumps(candidate,sort_keys=True),stamp(self.outreach.now())))
             return pid
 
-    def sync_recent(self, areas=None, days=90, statuses=None, min_units=4, run_id=None):
+    def sync_recent(self, areas=None, days=90, statuses=None, min_units=4, run_id=None, trial_only=False):
         if not 1 <= days <= 180:
             raise ValueError('days must be between 1 and 180')
         areas = areas if areas is not None else LONDON + MANCHESTER
@@ -177,7 +179,7 @@ class PlanningService:
                                 raw[key] = identity[key]
                         if identity.get('error'):
                             result['identity_errors'][raw['reference']] = identity['error']
-                    self.store(raw, min_units)
+                    self.store(raw, min_units, trial_only=trial_only)
                     result['stored'] += 1
             except Exception as exc:
                 result['errors'][area] = str(exc)

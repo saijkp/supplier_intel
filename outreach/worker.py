@@ -30,6 +30,13 @@ async def run(db_path):
     while True:
         await asyncio.sleep(60)
         try:
+            if os.getenv('PLANNING_FIRM_TRIAL_SCHEDULE_ENABLED', '').lower() == 'true':
+                from planning.firm_daily import tick as firm_tick
+                from planning.service import PlanningService
+                await asyncio.to_thread(firm_tick, PlanningService(OutreachService(OutreachRepository(db_path()))))
+        except Exception:
+            logger.error('Firm trial worker failed; inspect daily trial health')
+        try:
             if os.getenv('OUTREACH_ALWAYS_ON_ENABLED','true').lower()=='true':
                 await asyncio.to_thread(tick,db_path())
             elif os.getenv('OUTREACH_SCHEDULE_ENABLED','').lower()=='true' and in_window(datetime.now(UK)):
