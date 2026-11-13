@@ -26,8 +26,10 @@ def agent_report():
 @click.option('--limit', type=click.IntRange(1, 500), default=3, help='Maximum new firms to attempt.')
 @click.option('--authorities', default='', help='Comma-separated council names.')
 @click.option('--max-reveals', type=click.IntRange(0, 100), default=10)
-def firm_trial(limit, authorities, max_reveals):
+@click.option('--max-searches', type=click.IntRange(0, 500), default=25)
+@click.option('--retry-incomplete', is_flag=True, help='Recheck existing classification, sites and contacts; reveal at most once per firm.')
+def firm_trial(limit, authorities, max_reveals, max_searches, retry_incomplete):
     if not os.getenv('SUPPLIER_INTEL_DB_PATH'):
         raise click.ClickException('Set SUPPLIER_INTEL_DB_PATH to an isolated local trial database first.')
     from planning.firm_trial import FirmTrial
-    click.echo(json.dumps(FirmTrial(PlanningService()).run(limit, tuple(a.strip() for a in authorities.split(',') if a.strip()), max_reveals), indent=2))
+    click.echo(json.dumps(FirmTrial(PlanningService()).run(limit, tuple(a.strip() for a in authorities.split(',') if a.strip()), max_reveals, max_searches, retry_incomplete), indent=2))
