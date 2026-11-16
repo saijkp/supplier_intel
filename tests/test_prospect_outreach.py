@@ -29,7 +29,8 @@ class FakeMail:
 
 
 @pytest.fixture
-def engine(tmp_path):
+def engine(tmp_path,monkeypatch):
+    monkeypatch.setenv('OUTREACH_MAILBOXES',json.dumps({'sj@ikeng.online':{'prefix':'OUTREACH_ZOHO_','cap':5,'warmup_start':'2026-11-11','ramp':[5,10,20,30]}}))
     path=tmp_path/'outreach.db'; initialise_schema(path)
     clock=[datetime(2026,11,11,9,tzinfo=timezone.utc)]
     mail=FakeMail(clock)

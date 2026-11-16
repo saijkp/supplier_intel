@@ -623,10 +623,15 @@ class CustomerService:
             self.repo.check_mailbox_ledger(message, box.address, sent)
         if not self.repo.claim_send(message_id, None if checked else cfg.CUSTOMER_DAILY_SEND_LIMIT, mailbox=box.address):
             raise ValueError('Daily customer send cap reached, or the message is already being sent')
-        sender = box.sender
+        from rfq.send_cap import SendCapError, send_reserved
         try:
-            provider_id = sender.send({'recipient': message['recipient'], 'subject': message['subject'],
-                                       'body': message['body']})
+            provider_id = send_reserved(box.sender, box.address,
+                                       {'recipient': message['recipient'], 'subject': message['subject'],
+                                        'body': message['body']}, self.repo.db_path,
+                                       sent=sent if checked else ())
+        except SendCapError:
+            self.repo.transition(message_id, 'sending', 'approved')
+            raise
         except Exception:
             # Ambiguous outcome: never retried automatically.
             self.repo.transition(message_id, 'sending', 'failed',

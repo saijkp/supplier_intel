@@ -220,6 +220,7 @@ def test_health_and_summaries_never_disappear(loop):
     target(loop);a.queue_projects()
     assert not a.health()['ok']
     a.put('heartbeat',{'at':clock[0].timestamp(),'failed':False})
+    a.put('last_tick_at',clock[0].timestamp())
     assert a.health()['ok']
     assert a.summary()['states'][0]['count']==1
     clock[0]+=timedelta(days=2)
@@ -362,4 +363,5 @@ def test_planning_failure_does_not_block_authorised_rfq_retry(loop,monkeypatch):
     a.identity_pending=lambda:None
     calls=[];a.rfq_retry=lambda **kwargs:calls.append(kwargs)
     result=a.tick()
-    assert result['failed'] and len(calls)==1
+    assert not result['failed'] and len(calls)==1
+    assert a.health()['planning']['status']=='retrying'

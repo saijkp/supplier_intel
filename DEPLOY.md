@@ -376,3 +376,24 @@ no automatic retry after ambiguous failures. Sent lookup failures block sends.
 This retains the application's documented single-instance limitation. Other
 tools can send concurrently after the check; no app can lock an external tool's
 mailbox send. The legacy SMTP transport retains its existing local ledger cap.
+
+### Outreach health fields
+
+`GET /health/outreach` is read-only. `last_tick_at` is a Unix timestamp for every
+scheduler attempt (including busy/failed attempts); the 24-hour heartbeat warning
+uses this field. `heartbeat.at` remains the legacy successful-tick timestamp.
+`components` separates status and ISO `last_success_at` from errors;
+`component_errors` lists component, last error and actual failure count in 24h.
+Planning includes `source`, original `result`, Unix `retry_at`, and status
+(`retrying`, `overdue`, `completed`); waiting does not increment failures.
+Mailbox `sent` is renamed `sent_30d` (engine events). `sent_today_uk` combines
+engine events and confirmed shared-ledger/Sent observations by provider ID;
+`metric_source` describes coverage. Existing `cap` is the UK-day effective cap.
+Health never fetches live Sent mail; manual mail predating ledger adoption is
+visible only after a guarded sender observes it.
+
+All senders must share the same database and `outreach_runtime` ledger. The
+`rfq.send_cap.send_with_cap` wrapper reserves transactionally, confirms provider
+acceptance, releases explicit rejections, and retains ambiguous outcomes for
+human review. It applies regardless of `OUTREACH_SEND_ENABLED`; sj is bounded
+at 5/day (possibly lower by policy), sai@ikeng.online at 30/day.

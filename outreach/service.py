@@ -497,7 +497,8 @@ class OutreachService:
                 except sqlite3.IntegrityError:
                     return False
             try:
-                provider = box.sender.send(payload)
+                from rfq.send_cap import send_with_cap
+                provider = send_with_cap(box, payload, self.repo.db_path, self.now(), cap)
                 self.repo.execute('UPDATE outreach_events SET provider_id=? WHERE id=?',(provider,event_id))
                 provider_id = str(provider).removeprefix('zoho:')
                 verified = box.sent(2)
@@ -506,6 +507,10 @@ class OutreachService:
                 self.repo.execute("UPDATE outreach_events SET status='sent',provider_id=?,updated_at=? WHERE id=?", (provider,stamp(self.now()),event_id))
                 return True
             except Exception as exc:
+                from rfq.send_cap import SendCapError
+                if isinstance(exc,SendCapError):
+                    self.repo.execute("UPDATE outreach_events SET status='retry',step_id=NULL,updated_at=? WHERE id=?",(stamp(self.now()),event_id))
+                    return False
                 from rfq.zoho_mail import ZohoError
                 if isinstance(exc,ZohoError) and exc.safe_to_retry:
                     # Explicit provider rejection: retain audit, release step claim.
