@@ -317,7 +317,7 @@ class AlwaysOnService:
         day=self.now().astimezone(UK).date().isoformat()
         retry=self.state('planning_retry',0)
         if retry>self.now().timestamp():
-            return {'complete':False,'backoff':True}
+            return {**self.state('planning_status',{}),'complete':False,'backoff':True,'status':'retrying','retry_at':retry}
         rows=self.repo.rows('SELECT * FROM outreach_daily_runs WHERE day=?',(day,))
         if rows and rows[0]['completed_at']:
             return
@@ -328,6 +328,7 @@ class AlwaysOnService:
         selected=[areas[(cursor+i)%len(areas)] for i in range(min(count,len(areas)))]
         result=self.planning.sync_recent(areas=selected,days=90)
         self.put('planning_retry',0 if result.get('complete') else self.now().timestamp()+3600)
+        self.put('planning_status',{'source':'planning.sync_recent','result':result,'retry_at':self.state('planning_retry'), 'status':'completed' if result.get('complete') else 'retrying'})
         if result.get('complete'):
             self.put('area_cursor',(cursor+len(selected))%len(areas))
         for source in self.sources:
@@ -370,8 +371,12 @@ class AlwaysOnService:
                     if not claimed:
                         continue
                     try:
-                        provider=box.sender.send(message)
+                        from rfq.send_cap import send_with_cap
+                        provider=send_with_cap(box,message,self.repo.db_path,self.now(),min(5,self.cap(address)))
                         self.repo.execute('UPDATE outreach_seed_results SET provider_id=? WHERE mailbox=? AND seed=?',(provider,address,seed))
+                    except ValueError:
+                        self.repo.execute("UPDATE outreach_seed_results SET placement='retry' WHERE mailbox=? AND seed=?",(address,seed))
+                        return
                     except ZohoError as exc:
                         # No blind retry of ambiguous seed delivery either.
                         self.repo.execute('UPDATE outreach_seed_results SET placement=? WHERE mailbox=? AND seed=?',('retry' if exc.safe_to_retry else 'uncertain',address,seed))
@@ -419,11 +424,17 @@ class AlwaysOnService:
             (mailbox,seed,placement,confirmed_by,stamp(self.now())))
 
     def mailbox_rates(self,mailbox):
-        rows=self.repo.rows("SELECT kind,status,payload FROM outreach_events WHERE created_at>=? AND (json_extract(payload,'$.mailbox')=? OR enrolment_id IN (SELECT id FROM outreach_enrolments WHERE mailbox=?))",
+        rows=self.repo.rows("SELECT kind,status,payload,created_at,provider_id FROM outreach_events WHERE created_at>=? AND (json_extract(payload,'$.mailbox')=? OR enrolment_id IN (SELECT id FROM outreach_enrolments WHERE mailbox=?))",
             (stamp(self.now()-timedelta(days=30)),mailbox,mailbox))
         sent=sum(r['kind']=='email' and r['status']=='sent' for r in rows)
         replies=[json.loads(r['payload']).get('classification') for r in rows if r['kind']=='reply']
-        return {'sent':sent,'bounces':replies.count('bounce'),'complaints':replies.count('complaint'),'replies':len(replies),
+        today=sum(r['kind']=='email' and r['status']=='sent' and datetime.fromisoformat(r['created_at']).replace(tzinfo=timezone.utc).astimezone(UK).date()==self.now().astimezone(UK).date() for r in rows)
+        day=self.now().astimezone(UK).date().isoformat()
+        ledger=self.state('send_cap:'+mailbox.lower()+':'+day,{})
+        event_ids={str(r['provider_id']).removeprefix('zoho:') for r in rows if r['kind']=='email' and r['status']=='sent' and datetime.fromisoformat(r['created_at']).replace(tzinfo=timezone.utc).astimezone(UK).date().isoformat()==day and r['provider_id']}
+        ledger_ids={e['provider_id'] for e in ledger.values() if e['status']=='sent'}
+        today+=len(ledger_ids-event_ids)
+        return {'sent_30d':sent,'sent_today_uk':today,'metric_source':{'sent_30d':'outreach_events','sent_today_uk':'outreach_events + shared send ledger (provider ID deduplicated)'},'bounces':replies.count('bounce'),'complaints':replies.count('complaint'),'replies':len(replies),
                 'bounce_rate':replies.count('bounce')/max(1,sent)}
 
     def cap(self,mailbox):
@@ -432,7 +443,7 @@ class AlwaysOnService:
             return 0
         age=(self.now().astimezone(UK).date()-datetime.fromisoformat(conf['warmup_start']).date()).days
         ramp=conf.get('ramp',[5,10,20,30])
-        target=min(int(conf.get('cap',5)),ramp[min(max(0,age)//7,len(ramp)-1)]) if age>=0 else 0
+        target=min(5 if mailbox=='sj@ikeng.online' else 30,int(conf.get('cap',5)),ramp[min(max(0,age)//7,len(ramp)-1)]) if age>=0 else 0
         seeds=json.loads(setting('OUTREACH_SEED_ADDRESSES','[]'))
         passed={r['seed'] for r in self.repo.rows("SELECT * FROM outreach_seed_results WHERE mailbox=? AND placement='inbox' AND checked_at>=?",(mailbox,stamp(self.now()-timedelta(days=30))))}
         # Every new mailbox starts with seeds only; sj's existing 5/day is allowed
@@ -447,13 +458,19 @@ class AlwaysOnService:
     def health(self):
         last=self.state('heartbeat')
         reasons=[]
-        if not last or self.now().timestamp()-last['at']>86400:
-            reasons.append('No successful outreach heartbeat in 24 hours')
+        last_tick=self.state('last_tick_at',0)
+        if not last_tick or self.now().timestamp()-last_tick>86400:
+            reasons.append('No outreach heartbeat in 24 hours')
         days=self.repo.rows('SELECT * FROM outreach_daily_runs ORDER BY day DESC LIMIT 2')
         if len(days)==2 and all(r['completed_at'] and json.loads(r['result']).get('stored',0)==0 for r in days):
             reasons.append('No projects found for two runs')
-        if last and last.get('failed'):
-            reasons.append('Outreach error rate elevated; inspect fix queue / reconnect Zoho')
+        components=self.state('components',{})
+        errors=[{'component':name,'last_error':v.get('last_error'),'count_24h':sum(t>=self.now().timestamp()-86400 for t in v.get('errors',[]))} for name,v in components.items() if v.get('last_error')]
+        reasons.extend(e['component']+': '+e['last_error'] for e in errors if components[e['component']].get('status')=='failed')
+        planning=self.state('planning_status',{})
+        if planning.get('status')=='retrying' and planning.get('retry_at',0)<=self.now().timestamp():
+            planning={**planning,'status':'overdue'}
+            reasons.append('planning: retry overdue')
         local=self.now().astimezone(UK)
         if local.hour>=17:
             plan=self.state('plan:'+local.date().isoformat(),0)
@@ -462,8 +479,8 @@ class AlwaysOnService:
                 reasons.append('Fewer than 50% of planned sends completed')
         from planning.portal_agents import trial_report
         from planning.firm_daily import health as firm_health
-        return {'planning': {'agent_trial': trial_report(self.repo), 'firm_trial': firm_health(self.repo, self.now())}, 'ok':not reasons,'reasons':reasons,'heartbeat':last,'dry_run':self.dry_run(),'paused':self.paused(),
-                'fix_url':'/outreach/always-on/status','mailboxes':{a:{'cap':self.cap(a),**self.mailbox_rates(a)} for a in mailbox_config()}}
+        return {'last_tick_at':last_tick,'components':components,'component_errors':errors,'planning': {**planning,'agent_trial': trial_report(self.repo), 'firm_trial': firm_health(self.repo, self.now())}, 'ok':not reasons,'reasons':reasons,'heartbeat':last,'dry_run':self.dry_run(),'paused':self.paused(),
+                'fix_url':'/outreach/always-on/status','mailboxes':{a:{'cap':30 if a=='sai@ikeng.online' else self.cap(a),**self.mailbox_rates(a)} for a in dict.fromkeys([*mailbox_config(),'sai@ikeng.online'])}}
 
     def summary(self,days=1):
         since=stamp(self.now()-timedelta(days=days))
@@ -488,16 +505,32 @@ class AlwaysOnService:
                 continue
             try:
                 self.outreach.poll_replies(mailbox=address)
+                self.component('inbox:'+address)
                 self.put(key,{'attempts':0,'retry_at':0,'attempted_at':stamp(self.now())})
             except Exception as exc:
                 blocked.add(address);failures.append('inbox:'+address+':'+type(exc).__name__)
+                self.component('inbox:'+address,getattr(exc,'category',type(exc).__name__))
                 attempts=previous['attempts']+1
                 self.put(key,{'attempts':attempts,'retry_at':self.now().timestamp()+min(3600,60*2**min(attempts,6)),
                               'attempted_at':stamp(self.now()),'category':getattr(exc,'category',type(exc).__name__)})
         self.outreach._blocked_mailboxes=blocked
         return failures
 
+    def component(self,name,error=None,retrying=False):
+        values=self.state('components',{})
+        item=values.get(name,{'errors':[]})
+        item['errors']=[t for t in item['errors'] if t>=self.now().timestamp()-86400]
+        item['status']='retrying' if retrying else ('failed' if error else 'ok')
+        if error:
+            item['last_error']=error
+            item['errors'].append(self.now().timestamp())
+        elif not retrying:
+            item.update(last_success_at=stamp(self.now()))
+        values[name]=item
+        self.put('components',values)
+
     def tick(self,limit=10):
+        self.put('last_tick_at',self.now().timestamp())
         if not GATE.acquire(False):
             return {'busy':True}
         owner=None
@@ -516,12 +549,16 @@ class AlwaysOnService:
                 try:
                     sync=self.sync_daily()
                     if sync and not sync.get("complete"):
-                        failures.append("planning:incomplete")
+                        self.component('planning',None if sync.get('backoff') else json.dumps(sync.get('errors') or {'result':'incomplete'}),retrying=True)
+                    elif sync:
+                        self.component('planning')
                 except Exception as exc:
                     failures.append('planning:'+type(exc).__name__)
+                    self.component('planning',type(exc).__name__)
                 self.identity_pending()
                 self.queue_projects()
                 self.enrich_pending(limit)
+                self.component('enrichment')
                 day=local.date().isoformat()
                 if self.state('plan:'+day) is None:
                     self.put('plan:'+day,min(self.summary()['followups_due'],sum(self.cap(a) for a in mailbox_config())))
@@ -532,9 +569,11 @@ class AlwaysOnService:
                 from config import settings as cfg
                 if self.rfq_retry and not self.dry_run() and cfg.RFQ_FROM_ADDRESS not in self.outreach._blocked_mailboxes and (8,30)<=(local.hour,local.minute)<(17,0):
                     self.rfq_retry(limit=limit)
+                self.component('sending','Send failed; inspect outreach events' if sent_result.get('failed') else None)
                 if sent_result.get('failed'):
                     failures.append('sending')
             self.refresh_queue()
+            self.component('tick')
             previous=self.state('heartbeat',{'at':0})
             self.put('heartbeat',{'at':previous['at'] if failures else self.now().timestamp(),'failed':bool(failures),'errors':failures})
             self.put('daily_summary',self.summary())
@@ -542,6 +581,7 @@ class AlwaysOnService:
             self.alert_health()
             return {**self.summary(),'failed':bool(failures)}
         except Exception as exc:
+            self.component('tick',type(exc).__name__)
             self.put('last_error',{'at':stamp(self.now()),'category':type(exc).__name__})
             old=self.state('heartbeat',{'at':0})
             old['failed']=True

@@ -33,6 +33,8 @@ class Client:
         self.calls.append((method,url,kwargs))
         if self.fail:raise RuntimeError('fake-refresh-token fake-client-secret')
         if url.endswith('/oauth/v2/token'):return Response({'access_token':'fake-access-token','expires_in':3600})
+        if url.endswith('/folders'):return Response({'status':{'code':200},'data':[{'folderType':'Sent','folderId':'1'}]})
+        if method=='GET':return Response({'status':{'code':200},'data':[]})
         return Response({'status':{'code':200},'data':{'messageId':'654321'}})
 
 
@@ -43,9 +45,10 @@ def test_zoho_uses_correct_regional_oauth_and_no_smtp(zoho):
     assert client.calls[0][1]=='https://accounts.zoho.eu/oauth/v2/token'
     assert client.calls[0][2]['data']['refresh_token']=='fake-refresh-token'
     assert 'fake-refresh-token' not in client.calls[0][1]
-    assert client.calls[1][1]=='https://mail.zoho.eu/api/accounts/12345/messages'
-    assert client.calls[1][2]['headers']['Authorization']=='Zoho-oauthtoken fake-access-token'
-    assert client.calls[1][2]['json']['mailFormat']=='plaintext'
+    post=next(c for c in client.calls if c[0]=='POST' and c[1].endswith('/messages'))
+    assert post[1]=='https://mail.zoho.eu/api/accounts/12345/messages'
+    assert post[2]['headers']['Authorization']=='Zoho-oauthtoken fake-access-token'
+    assert post[2]['json']['mailFormat']=='plaintext'
     transport.request('GET','/messages/view')
     assert len([c for c in client.calls if c[1].endswith('/oauth/v2/token')])==1
 
@@ -56,7 +59,10 @@ def test_zoho_missing_confirmation_and_failures_are_safe(zoho):
     assert 'fake-refresh-token' not in str(error.value)
     assert 'fake-client-secret' not in str(error.value)
     class NoConfirmation:
-        def request(self,*args,**kwargs):return {}
+        def request(self,method,path,**kwargs):
+            if path=='/folders':return [{'folderType':'Sent','folderId':'1'}]
+            if method=='GET':return []
+            return {}
     with pytest.raises(RuntimeError,match='review delivery'):ZohoSender(NoConfirmation()).send({'recipient':'supplier@test.test','subject':'RFQ','body':'Details'})
 
 
