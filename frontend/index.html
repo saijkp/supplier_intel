@@ -1261,7 +1261,23 @@ function statusEditMode(edit) {
   $('statusRead').classList.toggle('hidden', edit);
   $('statusEdit').disabled = edit || !statusDoc;
 }
+async function loadDealCloser() {
+  let panel = $('dealCloser');
+  if (!panel) {
+    panel = document.createElement('section'); panel.id = 'dealCloser';
+    $('statusNotice').after(panel);
+  }
+  try {
+    const result = await api('/deal-closer/summary');
+    panel.replaceChildren();
+    const title = document.createElement('h3'); title.textContent = 'Deal closer'; panel.append(title);
+    const body = document.createElement('pre'); body.style.whiteSpace = 'pre-wrap'; body.textContent = result.content; panel.append(body);
+    const button = document.createElement('button'); button.className = 'btn'; button.textContent = 'Email digest to Sai';
+    button.onclick = async () => { button.disabled = true; try { const r = await api('/deal-closer/digest', {method:'POST'}); button.textContent = r.status; } catch(e) { button.textContent = e.message; } }; panel.append(button);
+  } catch(e) { panel.textContent = 'Deal closer unavailable: '+e.message; }
+}
 async function loadStatus(force = false) {
+  loadDealCloser();
   if (statusEditing && !force) return;
   try {
     const doc = await api('/status/live');

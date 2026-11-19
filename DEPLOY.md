@@ -397,3 +397,56 @@ All senders must share the same database and `outreach_runtime` ledger. The
 acceptance, releases explicit rejections, and retains ambiguous outcomes for
 human review. It applies regardless of `OUTREACH_SEND_ENABLED`; sj is bounded
 at 5/day (possibly lower by policy), sai@ikeng.online at 30/day.
+
+## Deal closer (cloud, schema migration 53)
+
+The FastAPI lifespan starts the review-only DealCloserService on Railway, every
+15 minutes (the first tick is after the initial interval). Keep one application replica and
+the existing persistent SQLite volume. No laptop process is required.
+
+Environment:
+- DEAL_CLOSER_ENABLED=true (default true; false disables the new worker).
+- DEAL_CLOSER_INTERVAL_MINUTES=15 (default 15).
+- DEAL_CLOSER_DIGEST_TO=sai@ikeng.co.uk (default; internal digest recipient only).
+- Existing CUSTOMER_ZOHO_CLIENT_ID, CUSTOMER_ZOHO_CLIENT_SECRET,
+  CUSTOMER_ZOHO_REFRESH_TOKEN, CUSTOMER_ZOHO_ACCOUNT_ID, CUSTOMER_ZOHO_REGION,
+  CUSTOMER_ZOHO_ADDRESS=sai@ikeng.co.uk must be configured for the customer mailbox.
+- Keep existing RFQ_ZOHO_* / RFQ_FROM_ADDRESS=sai@ikeng.online for the other inbox.
+- Keep NETLIFY_FORM_WEBHOOK_SECRET and NETLIFY_FORM_NAMES for signed webhook intake.
+  CUSTOMER_FORM_SENDERS, if set, must allow the actual website alert sender.
+
+Authenticated endpoints (existing Bearer API token):
+- GET /deal-closer/summary: ordered digest text, review groups and counts.
+- GET /health/deal-closer: last tick/digest, counts and sanitized errors.
+- POST /deal-closer/digest: on-demand internal email (one attempt per UK minute).
+- POST /enquiries/{id}/promises: text, due_at (ISO datetime), optional made_on/channel.
+- PATCH /promises/{id}: status open|kept|missed|renegotiated, or confirmed=true
+  to accept an automatically detected suggestion.
+- GET /deal-closer/triage: existing new inbox cards.
+- POST /deal-closer/triage/{id}/convert: optional name/title.
+- POST /deal-closer/triage/{id}/dismiss.
+
+Website submissions now automatically create/link enquiries. Unknown business mail
+stays in triage. Existing customer facts remain in the activity timeline; extraction
+only fills empty form fields. Test names starting with the word TEST (including 'TEST ...please ignore') are skipped.
+Promise suggestions from email_out and manually logged whatsapp_out activities are
+unconfirmed until a human accepts them. No WhatsApp transport is added.
+
+Daily digest slots are 07:30 and 16:30 Europe/London, on the first tick at/after
+the slot. Startup catches missed slots from the current UK day only. A durable
+attempt marker prevents duplicate sends across restarts/concurrent workers.
+An ambiguous/failed send is marked for manual review, never automatically retried;
+check Zoho Sent before requesting a new manual digest. digest_sent_at is only set
+on confirmed acceptance. Digests use the shared Zoho send-cap ledger.
+
+Supplier chases use three Monday-Friday working days (no bank-holiday calendar),
+linked via enquiry rfq_campaign_ids; unlinked campaigns cannot identify an enquiry.
+Unsent linked RFQ drafts are also surfaced for review. The worker never approves,
+sends or creates customer/supplier messages. Status -> Deal closer shows the same
+content as the digest. Review triage in the existing Customers inbox UI.
+
+Operational limits: Zoho customer intake paginates recent messages over 14 days,
+with a 90-second fetch budget. Monitor mailbox volume and health; an outage longer
+than 14 days needs a deliberate historical import. A saturated mailbox can exhaust
+the fetch budget and will surface a mailbox error rather than claim successful intake. Worker health is only available while the Railway app is reachable; use
+an external uptime monitor to detect a stopped Railway service.

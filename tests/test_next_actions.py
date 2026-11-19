@@ -77,10 +77,11 @@ def test_november_form_poll_and_one_click_conversion(svc):
     # Subject only, auto-generated notification, with folded whitespace and casing.
     svc._inbox.raw = [mail('no-reply@forms.example', 'Form submission from sourcing-brief FORM:', FORM, '<nov11>', Auto_Submitted='auto-generated')]
     result = svc.poll_inbox()
-    assert result['possible_new_enquiries'] == 1 and result['ignored'] == 0
-    lead = svc.list_leads()[0]
+    # Form notifications now auto-create the customer + enquiry (deal closer).
+    assert result['logged'] == 1 and result['possible_new_enquiries'] == 0 and result['ignored'] == 0
+    lead = svc.list_leads('added')[0]
     assert lead['form_fields']['units'] == '56'
-    enquiry = svc.convert_lead(lead['id'])
+    enquiry = svc.get_enquiry(lead['enquiry_id'])
     assert enquiry['customer']['company'] == 'Example Homes'
     assert enquiry['customer']['email'] == 'alex@example.test'
     for value in ['56', 'Standard', 'Beds', '2027-04-01', '50000 GBP']:
@@ -249,7 +250,7 @@ def test_snooze_migration_is_idempotent_and_preserves_enquiry(svc):
         conn.execute('DELETE FROM schema_migrations WHERE version=46')
     initialise_schema(svc.repo.db_path)
     initialise_schema(svc.repo.db_path)
-    assert get_schema_version(svc.repo.db_path) == 52
+    assert get_schema_version(svc.repo.db_path) == 53
     assert svc.get_enquiry(svc.e['id'])['title'] == svc.e['title']
 
 

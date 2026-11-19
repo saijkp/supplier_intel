@@ -4,7 +4,8 @@ import re
 
 # Include unused labels as boundaries so their values never leak into another field.
 LABELS = {
-    'Lead Source': 'lead_source', 'Full name': 'name', 'Company (optional)': 'company',
+    'Lead Source': 'lead_source', 'Full name': 'name', 'Name': 'name', 'Company (optional)': 'company',
+    'Email address': 'email', 'Message': 'requirement',
     'Email': 'email', 'Phone / WhatsApp': 'phone', 'Property developer': None,
     'Project name': 'project_name', 'Location': 'location', 'Number of units': 'units',
     'Finish level': 'finish_level', 'New build': None, 'Cat': 'categories',

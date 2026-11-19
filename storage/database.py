@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 52
+SCHEMA_VERSION = 53
 
 
 # ═══════════════════════════════════════════════════════════
@@ -975,7 +975,11 @@ SCHEMA_SQL += FIRM_SQL
 from planning.firm_daily import DAILY_SQL
 SCHEMA_SQL += DAILY_SQL
 
+DEAL_CLOSER_SQL = "CREATE TABLE IF NOT EXISTS customer_promises (id INTEGER PRIMARY KEY, enquiry_id INTEGER NOT NULL REFERENCES customer_enquiries(id), text TEXT NOT NULL, due_at TEXT NOT NULL, made_on TEXT NOT NULL, channel TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','kept','missed','renegotiated')), confirmed_at TEXT, source_activity_id INTEGER UNIQUE, closed_at TEXT);\nCREATE TABLE IF NOT EXISTS deal_closer_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS deal_closer_digests (slot TEXT PRIMARY KEY, attempted_at TEXT NOT NULL, digest_sent_at TEXT, error TEXT);"
+SCHEMA_SQL += DEAL_CLOSER_SQL
+
 MIGRATIONS: dict[int, dict] = {
+    53: {"description": "Deal closer promises and digest markers", "statements": [s for s in DEAL_CLOSER_SQL.split(";") if s.strip()]},
     52: {"description": "Durable review-only daily firm trial counters", "statements": [DAILY_SQL]},
     51: {"description": "PlanIt firm review route", "statements": [s for s in FIRM_SQL.split(";") if s.strip()]},
     50: {"description": "Council agent trial and polite HTTP budgets",

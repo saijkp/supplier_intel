@@ -4,7 +4,7 @@ import json
 from storage.database import connection_scope
 from config import settings as cfg
 
-TABLES = {'customers', 'customer_enquiries', 'customer_activities', 'customer_messages', 'customer_inbox_leads', 'customer_quotes'}
+TABLES = {'customers', 'customer_enquiries', 'customer_activities', 'customer_messages', 'customer_inbox_leads', 'customer_quotes', 'customer_promises'}
 JSON_FIELDS = {'rfq_campaign_ids', 'qualification', 'form_fields'}
 
 
@@ -122,6 +122,8 @@ class CustomerRepository:
             if conn.execute('SELECT 1 FROM suppliers WHERE lower(primary_email)=? LIMIT 1', (email,)).fetchone():
                 return True
             if conn.execute('SELECT 1 FROM rfq_messages WHERE lower(recipient)=? LIMIT 1', (email,)).fetchone():
+                return True
+            if domain not in FREE_MAIL and conn.execute("SELECT 1 FROM rfq_messages WHERE lower(recipient) LIKE ? LIMIT 1", ('%@' + domain,)).fetchone():
                 return True
             if domain in FREE_MAIL:
                 return False

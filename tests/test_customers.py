@@ -608,13 +608,13 @@ def test_form_parser_minimal_and_malformed():
 def test_form_poll_before_filters_and_convert(svc):
     svc._inbox.raw = [mail('no-reply@forms.example', 'Form submission: sourcing-brief', MAHMOOD_FORM,
                            '<form-1>', Auto_Submitted='auto-generated', Precedence='bulk')]
-    assert svc.poll_inbox()['possible_new_enquiries'] == 1
-    lead = svc.list_leads()[0]
+    assert svc.poll_inbox()['logged'] == 1
+    lead = svc.list_leads('added')[0]
     assert lead['from_address'] == 'mahmood@example.com'
     assert lead['form_fields']['location'] == 'Leicester'
-    assert len(svc.repo.rows('customer_enquiries')) == 1  # human click required
+    assert len(svc.repo.rows('customer_enquiries')) == 2  # genuine form creates another enquiry
     assert svc.poll_inbox()['duplicates'] == 1
-    e = svc.convert_lead(lead['id'])
+    e = svc.get_enquiry(lead['enquiry_id'])
     c = svc.repo.get('customers', e['customer_id'])
     assert c['name'] == 'Mahmood Akbar' and c['phone'] == '+44 7700 900111'
     assert e['qualification']['timeline'] == '2027-01-08'
@@ -631,8 +631,8 @@ def test_form_netlify_marker_in_subject_only(svc):
             'Phone / WhatsApp:\n+44 7700 900222\nLocation *:\nLeicester\n'
             'Approximate budget:\n£5,000 – £15,000\nAnything else:\n')
     svc._inbox.raw = [mail('formresponses@netlify.com', 'Form submission from sourcing-brief form:', body, '<netlify-1>')]
-    assert svc.poll_inbox()['possible_new_enquiries'] == 1
-    lead = svc.list_leads()[0]
+    assert svc.poll_inbox()['logged'] == 1
+    lead = svc.list_leads('added')[0]
     assert lead['from_address'] == 'nia@example.com'
     assert lead['form_fields']['name'] == 'Nia Patel'
     assert lead['form_fields']['budget'] == '£5,000 – £15,000'
@@ -655,11 +655,11 @@ def test_form_existing_open_enquiry_fills_only_blanks(svc):
 def test_form_malformed_is_reviewable_not_notifier_customer(svc):
     svc._inbox.raw = [mail('no-reply@forms.example', 'Form submission',
         'Form submission from sourcing-brief form: Full name *: Ann Email *: invalid', '<bad-form>')]
-    assert svc.poll_inbox()['possible_new_enquiries'] == 1
-    lead = svc.list_leads()[0]
+    assert svc.poll_inbox()['logged'] == 1
+    lead = svc.list_leads('added')[0]
     assert lead['from_address'] == ''
-    with pytest.raises(ValueError, match='valid customer email'):
-        svc.convert_lead(lead['id'])
+    assert svc.get_enquiry(lead['enquiry_id'])['title']
+
 
 
 @pytest.mark.parametrize('address', ['news.smith@gmail.com', 'support.jones@outlook.com'])
@@ -677,14 +677,13 @@ def test_form_sender_allowlist_and_plain_newsletter(svc, monkeypatch):
 
 
 def test_form_redelivery_new_message_id_and_conversion_reuses_customer(svc):
+    existing = svc.create_customer(name='Existing name', email='mahmood@example.com', phone='trusted')
+    enquiry = svc.create_enquiry(existing['id'], title='Existing project', qualification={'location': 'Salford'})
     svc._inbox.raw = [mail('no-reply@forms.example', 'Form submission', MAHMOOD_FORM, '<first>'),
                       mail('no-reply@forms.example', 'Form submission', MAHMOOD_FORM, '<redelivery>')]
     result = svc.poll_inbox()
-    assert result['possible_new_enquiries'] == result['duplicates'] == 1
-    existing = svc.create_customer(name='Existing name', email='mahmood@example.com', phone='trusted')
-    enquiry = svc.create_enquiry(existing['id'], title='Existing project', qualification={'location': 'Salford'})
-    converted = svc.convert_lead(svc.list_leads()[0]['id'])
-    assert converted['id'] == enquiry['id']
+    assert result['logged'] == result['duplicates'] == 1
+    converted = svc.get_enquiry(enquiry['id'])
     assert converted['qualification']['location'] == 'Salford'
     assert svc.get_customer(existing['id'])['name'] == 'Existing name'
     assert svc.get_customer(existing['id'])['phone'] == 'trusted'
