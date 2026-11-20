@@ -212,13 +212,38 @@ class ZohoInbox:
         # Standalone legacy poll remains available; filtering is tighter when
         # the linked workflow provides its exact campaign recipient list.
         return self.fetch_for_campaign(since_days,limit,None)
-    def fetch_for_campaign(self,since_days,limit,messages):
+    def fetch_recent_all(self,since_days=14,limit=200):
+        return self.fetch_for_campaign(since_days,limit,None,paginate=True)
+
+    def fetch_for_campaign(self,since_days,limit,messages,paginate=False):
         recipients={m['recipient'].strip().lower() for m in messages or [] if m['channel']=='email'}
         references=[m['reference'] for m in messages or []]
         cutoff=(datetime.now(timezone.utc)-timedelta(days=since_days)).timestamp()*1000
         meta=self.client.request('GET','/messages/view',params={'start':1,'limit':min(limit,200),'status':'all','sortBy':'date','sortorder':'false','includesent':'false'})
-        result=[]
         deadline=time.monotonic()+90
+        if paginate:
+            seen={str(m.get('messageId')) for m in meta or []}
+            page=meta or []
+            start=1
+            size=min(limit,200)
+            while len(page)==size:
+                if time.monotonic()>deadline:
+                    raise ZohoError('transient',True,True)
+                try:
+                    if all(float(m.get('receivedTime',m.get('sentDateInGMT',0)))<cutoff for m in page):
+                        break
+                except (TypeError,ValueError):
+                    pass
+                start+=size
+                page=self.client.request('GET','/messages/view',params={'start':start,'limit':size,'status':'all','sortBy':'date','sortorder':'false','includesent':'false'})
+                if not isinstance(page,list):
+                    raise RuntimeError('Inbox pagination incomplete')
+                ids={str(m.get('messageId')) for m in page}
+                if ids & seen:
+                    raise RuntimeError('Inbox pagination repeated messages; retry intake')
+                seen.update(ids)
+                meta.extend(page)
+        result=[]
         for item in meta or []:
             if time.monotonic()>deadline:
                 raise ZohoError('transient',True,True)

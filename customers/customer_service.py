@@ -691,7 +691,7 @@ class CustomerService:
             self.repo.update('customer_inbox_leads', lead['id'], mailbox=box.address,
                 already_replied=int(bool(lead['already_replied']) or replied(sent, lead['from_address'], lead['subject'], lead['received_at'] or now(), lead.get('thread_id'))) if checked_at else lead['already_replied'],
                 reply_checked_at=checked_at)
-        for raw in inbox.fetch_recent(since_days, limit):
+        for raw in getattr(inbox, 'fetch_recent_all', inbox.fetch_recent)(since_days, limit):
             mail = BytesParser(policy=policy.default).parsebytes(raw)
             # Transport metadata must not change legacy hash dedup for ID-less MIME.
             original = re.sub(br'^X-SupplierIntel-Thread:[^\r\n]*\r?\n', b'', raw, count=1, flags=re.I)
@@ -727,9 +727,9 @@ class CustomerService:
                             pass
                         break
             try:
-                is_form = (bool(re.search(cfg.CUSTOMER_FORM_SUBJECT_PATTERN, subject))
+                is_form = ((bool(re.search(cfg.CUSTOMER_FORM_SUBJECT_PATTERN, subject)) or bool(re.match(r'New (?:lead|enquiry):', subject, re.I)))
                            # Netlify puts the marker in the subject; the body starts at the fields.
-                           and ' '.join(cfg.CUSTOMER_FORM_BODY_MARKER.split()).casefold() in ' '.join((subject + '\n' + text).split()).casefold()
+                           and (' '.join(cfg.CUSTOMER_FORM_BODY_MARKER.split()).casefold() in ' '.join((subject + '\n' + text).split()).casefold() or bool(re.match(r'New (?:lead|enquiry):', subject, re.I)))
                            and (not cfg.CUSTOMER_FORM_SENDERS or sender in cfg.CUSTOMER_FORM_SENDERS))
             except re.error:
                 is_form = False  # invalid deployment config must not stop ordinary email
@@ -783,12 +783,14 @@ class CustomerService:
         return result
 
     def store_form_submission(self, fields, text, external_id, subject, received_at=None):
-        """Shared email/webhook intake. No sends or automatic enquiry creation.
+        """Shared email/webhook intake. Genuine forms create enquiries; never sends.
 
         Serialize the check/write on this single-instance service. Match IDs first;
         across transports only, compare canonical parsed fields, retaining original
         evidence on the first record. Distinct IDs on the same transport stay distinct.
         """
+        if re.match(r'\s*TEST\b', fields.get('name', ''), re.I):
+            return 'ignored'
         with _FORM_INTAKE_LOCK:
             for table in ('customer_activities', 'customer_inbox_leads'):
                 if self.repo.rows(table, 'external_id=?', (external_id,)):
@@ -825,12 +827,14 @@ class CustomerService:
                     self.log(enquiry['id'], 'email_in', text, occurred_at=received_at, external_id=external_id)
                     self.repo.remember_form(external_id, fingerprint)
                     return 'logged'
-            self.repo.insert('customer_inbox_leads', external_id=external_id,
+            lead = self.repo.insert('customer_inbox_leads', external_id=external_id,
                              from_address=email, from_name=fields.get('name') or None,
                              subject=subject[:300], excerpt=text[:1500], full_text=text,
                              form_fields=fields, received_at=received_at or now())
             self.repo.remember_form(external_id, fingerprint)
-            return 'possible_new_enquiries'
+            lead_id = lead['id'] if isinstance(lead, dict) else lead
+            self.convert_lead(lead_id, name=fields.get('name') or fields.get('email') or 'Website enquiry')
+            return 'logged'
 
     # -- possible new enquiries (from the inbox) -----------------------------------
     def list_leads(self, status='new'):
@@ -864,12 +868,12 @@ class CustomerService:
         if lead['status'] != 'new':
             raise ValueError('Lead already handled')
         fields = lead.get('form_fields') or {}
-        if fields and not EMAIL_RE.fullmatch(lead['from_address'] or ''):
+        if fields and lead['from_address'] and not EMAIL_RE.fullmatch(lead['from_address']):
             raise ValueError('Form has no valid customer email; review the original submission')
         name = (name or lead['from_name'] or ('' if fields else lead['from_address'].split('@')[0])).strip()
         if not name:
             raise ValueError('Customer name is required to add this submission')
-        existing = self.repo.rows('customers', 'lower(email)=?', (lead['from_address'].lower(),))
+        existing = self.repo.rows('customers', 'lower(email)=?', (lead['from_address'].lower(),)) if lead['from_address'] else []
         customer = existing[0] if existing else self.create_customer(
             name=name, email=lead['from_address'], source='Website form' if fields else 'Email enquiry',
             **{k: fields[k] for k in ('phone', 'company', 'location') if fields.get(k)})

@@ -168,7 +168,7 @@ def test_schema_51_upgrade(service):
     service.repo.execute('DELETE FROM schema_migrations WHERE version=52')
     initialise_schema(service.repo.db_path)
     initialise_schema(service.repo.db_path)
-    assert get_schema_version(service.repo.db_path)==52
+    assert get_schema_version(service.repo.db_path)==53
     assert service.repo.rows('SELECT * FROM planning_firm_daily')==[]
 
 

@@ -68,8 +68,8 @@ def post(client, payload, **claims):
 
 def test_valid_public_webhook_card_and_conversion(setup, payload):
     client, service = setup
-    assert post(client, payload).json() == {'status': 'possible_new_enquiries'}
-    lead = service.list_leads()[0]
+    assert post(client, payload).json() == {'status': 'logged'}
+    lead = service.list_leads('added')[0]
     assert lead['external_id'] == 'cust:netlify:' + payload['id']
     assert lead['from_address'] == 'alex@example.com'
     assert lead['form_fields'] == {
@@ -80,11 +80,11 @@ def test_valid_public_webhook_card_and_conversion(setup, payload):
         'materials': 'Oak', 'dimensions': '600mm', 'anything_else': 'Narrow access',
         'lead_source': 'direct', 'project_name': 'Example House', 'units': '1'}
     assert json.loads(lead['full_text']) == payload
-    assert service.repo.rows('customers') == service.repo.rows('customer_enquiries') == []
+    assert len(service.repo.rows('customers')) == len(service.repo.rows('customer_enquiries')) == 1
     assert service.repo.rows('customer_messages') == []
     assert post(client, payload).json()['status'] == 'duplicates'
-    assert len(service.list_leads()) == 1
-    enquiry = service.convert_lead(lead['id'])
+    assert len(service.list_leads('added')) == 1
+    enquiry = service.get_enquiry(lead['enquiry_id'])
     assert enquiry['qualification']['timeline'] == '2027-04-01'
     assert post(client, payload).json()['status'] == 'duplicates'
 
@@ -190,16 +190,16 @@ def test_cross_transport_dedupe_in_both_orders(setup, payload, email_first, know
         return service.store_form_submission(parse_form(body), body, 'cust:form:fakehash', 'Form submission')
     outcomes = [email(), post(client, payload).json()['status']] if email_first else [
         post(client, payload).json()['status'], email()]
-    assert outcomes == ['logged' if known else 'possible_new_enquiries', 'duplicates']
-    assert len(service.list_leads()) == (0 if known else 1)
+    assert outcomes == ['logged', 'duplicates']
+    assert len(service.list_leads('added')) == (0 if known else 1)
 
 
 def test_different_submission_ids_same_transport_stay_distinct(setup, payload):
     client, service = setup
-    assert post(client, payload).json()['status'] == 'possible_new_enquiries'
+    assert post(client, payload).json()['status'] == 'logged'
     payload['id'] = 'bbbbbbbbbbbbbbbbbbbbbbbb'
-    assert post(client, payload).json()['status'] == 'possible_new_enquiries'
-    assert len(service.list_leads()) == 2
+    assert post(client, payload).json()['status'] == 'logged'
+    assert len(service.repo.rows('customer_activities', "kind='email_in'")) == 2
 
 
 def test_duplicate_receipt_id_remembered_after_cross_transport_match(setup, payload):
@@ -210,13 +210,12 @@ def test_duplicate_receipt_id_remembered_after_cross_transport_match(setup, payl
     assert post(client, payload).json()['status'] == 'duplicates'
     payload['data']['description'] = 'Redelivered with changed text'
     assert post(client, payload).json()['status'] == 'duplicates'
-    assert len(service.list_leads()) == 1
+    assert len(service.list_leads('added')) == 1
 
 
 def test_email_with_submission_id_after_conversion(setup, payload):
     client, service = setup
     post(client, payload)
-    service.convert_lead(service.list_leads()[0]['id'])
     m = EmailMessage()
     m['From'] = 'formresponses@netlify.com'
     m['Subject'] = 'Form submission from sourcing-brief form: [netlify:' + payload['id'] + ']'
@@ -231,11 +230,11 @@ def test_email_with_submission_id_after_conversion(setup, payload):
     assert len([a for a in service.repo.rows('customer_activities') if a['kind'] == 'email_in']) == 1
 
 
-def test_existing_customer_without_open_enquiry_gets_review_card(setup, payload):
+def test_existing_customer_without_open_enquiry_creates_enquiry(setup, payload):
     client, service = setup
     service.create_customer(name='Alex', email='alex@example.com')
-    assert post(client, payload).json()['status'] == 'possible_new_enquiries'
-    assert service.repo.rows('customer_enquiries') == []
+    assert post(client, payload).json()['status'] == 'logged'
+    assert len(service.repo.rows('customer_enquiries')) == 1
     assert len(service.repo.rows('customers')) == 1
 
 
