@@ -5,7 +5,7 @@
   const host = document.createElement('div'); document.body.append(host);
   const root = host.attachShadow({mode:'open'});
   root.innerHTML = `<style>
-  :host{font:15px system-ui;color-scheme:light dark}*{box-sizing:border-box}button,input{font:inherit}button{cursor:pointer;min-height:44px}button:focus-visible,input:focus-visible{outline:3px solid #ce8c25}
+  :host{font:15px system-ui;color-scheme:light dark}*{box-sizing:border-box}button,input{font:inherit}button{cursor:pointer;min-height:44px}#details.primary{background:#b8862f;color:#fff;border:0;border-radius:6px;font-weight:600;width:100%;margin:6px 0}button:focus-visible,input:focus-visible{outline:3px solid #ce8c25}
   #launch{position:fixed;right:20px;bottom:20px;border:0;border-radius:28px;background:#173b36;color:white;padding:14px 22px;z-index:99999}
   #panel{position:fixed;right:16px;bottom:82px;width:min(390px,calc(100vw - 32px));max-height:calc(100dvh - 100px);overflow:auto;background:Canvas;color:CanvasText;border:1px solid #888;border-radius:16px;padding:16px;box-shadow:0 8px 40px #0004;z-index:99999}
   [hidden]{display:none!important}header{display:flex;justify-content:space-between;align-items:center}h2{font-size:20px}p{line-height:1.5}label{display:block;margin:10px 0}input:not([type=checkbox]){width:100%;padding:10px;border:1px solid #888;border-radius:6px}#log{max-height:220px;overflow:auto}.tiles{display:grid;grid-template-columns:1fr 1fr;gap:5px}.tiles button[aria-pressed=true]{outline:2px solid #298471}.trap{position:absolute;left:-9999px}small{line-height:1.4;display:block}
@@ -14,7 +14,7 @@
   <small>IK ENG’s AI assistant. Sai confirms commercial details personally. Please avoid sensitive information.</small>
   <div id="log" role="log" aria-live="polite"></div><p id="error" role="status"></p>
   <form id="chat"><label>Your message<input id="text" required maxlength="2000" autocomplete="off"></label><label class="trap" aria-hidden="true">Leave blank<input id="trap" tabindex="-1" autocomplete="off"></label><button>Send</button></form>
-  <button id="details">Request a quote / callback</button><button id="upload">Upload plans or photos</button>
+  <button id="details" class="primary">Get a quote or callback: leave your details</button><button id="upload">Upload plans or photos</button>
   <form id="registration" hidden><h3>Your details</h3><label>Name<input name="name" required maxlength="200" autocomplete="name"></label><label>UK mobile<input name="mobile" type="tel" required autocomplete="tel"></label><label>Email<input name="email" type="email" required autocomplete="email"></label><label>Postcode<input name="postcode" required maxlength="12" autocomplete="postal-code"></label><label>Full address (optional)<input name="address" maxlength="500" autocomplete="street-address"></label><p id="privacy"></p><label><input name="consent" type="checkbox" required> I have read the privacy notice and consent to IK ENG contacting me about this enquiry.</label><button>Register details</button></form>
   <label id="filelabel" hidden>Plans, photos or PDFs (jpg/png/pdf/heic, 15 MB each; ten maximum)<input id="files" type="file" accept=".jpg,.png,.pdf,.heic" multiple></label>
   <h3>Styles you like (optional)</h3><div class="tiles"></div></section>`;

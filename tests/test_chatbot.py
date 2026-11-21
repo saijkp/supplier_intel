@@ -174,3 +174,15 @@ def test_currency_symbol_reply_blocked(chat):
     s,sid,_=chat
     s.client.answer='Kitchens start around £ ten thousand.'
     assert s.message(sid,'Tell me about kitchens')['reply']==HANDOFF
+
+def test_yes_after_offer_opens_registration(chat):
+    s,sid,_=chat
+    s.client.answer='We can help with that. Would you like a quote or a visit?'
+    assert s.message(sid,'Do you do loft wardrobes?')['register'] is False
+    s.client.answer='Great, Sai will follow up personally.'
+    assert s.message(sid,'Yes please')['register'] is True
+
+def test_plain_question_does_not_force_registration(chat):
+    s,sid,_=chat
+    s.client.answer='Yes, we do kitchens and wardrobes. What style do you like?'
+    assert s.message(sid,'What do you make?')['register'] is False
