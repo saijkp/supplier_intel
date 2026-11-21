@@ -126,7 +126,7 @@ def test_supplier_working_days_link_and_waiting(service):
 def test_migration_is_idempotent(service):
     from storage.database import get_schema_version
     initialise_schema(service.repo.db_path)
-    assert get_schema_version(service.repo.db_path)==53
+    assert get_schema_version(service.repo.db_path)==54
 
 def test_zoho_customer_pagination_fake_only():
     from rfq.zoho_mail import ZohoInbox

@@ -450,3 +450,90 @@ with a 90-second fetch budget. Monitor mailbox volume and health; an outage long
 than 14 days needs a deliberate historical import. A saturated mailbox can exhaust
 the fetch budget and will surface a mailbox error rather than claim successful intake. Worker health is only available while the Railway app is reachable; use
 an external uptime monitor to detect a stopped Railway service.
+
+
+## Ask IK ENG website chat (no deployment performed)
+
+The separate public `/chat` router accepts only exact browser origins listed in
+`CHATBOT_ALLOWED_ORIGINS` (comma separated, no wildcard; e.g.
+`https://ikeng.co.uk,https://www.ikeng.co.uk`). Administrative review and file
+retrieval still require the existing bearer token. Never put this token in the
+widget. Configure these Railway environment variables before enabling the embed:
+
+| Variable | Default / purpose |
+| --- | --- |
+| OPENAI_API_KEY | Optional; missing key or provider failure uses a polite handoff and still captures leads |
+| CHATBOT_MODEL | `gpt-4o-mini` |
+| CHATBOT_ALLOWED_ORIGINS | Empty, fails closed; exact website origins |
+| CHATBOT_DAILY_TURN_CAP | `300`; durable reservation per UK calendar day; zero disables AI calls |
+
+The caps are twelve replies per session, 400 output tokens, six message attempts
+per session per minute, twenty per IP per minute, twenty new sessions per IP per
+hour, and sixty mutations per session per minute. Daily reservations include
+fallback attempts, so they err towards less spend. Limits persist in SQLite and
+are atomically claimed. The application uses its existing single-instance model;
+peer-IP limits may group visitors behind a reverse proxy. Do not trust arbitrary
+forwarded-IP headers. Origin/honeypot/two-second checks deter basic abuse; origins
+are not authentication for non-browser clients. Session IDs are random bearer
+capabilities kept in browser memory, with no personal details in URLs or storage.
+
+Conversation context sent to OpenAI is limited to 6,000 UTF-8 bytes plus at most
+6,000 bytes of system/knowledge text; an oversized edited knowledge file fails
+closed. Files and registration details are never attached to model requests.
+Visitor-written chat text is sent to OpenAI, as stated in the notice.
+
+No paid calls were made during development. Planning estimate only (pricing
+assumption, not a live quote): at USD 0.15/million input and USD 0.60/million output
+tokens, 100 fully capped twelve-turn chats cost at most about USD 2.60 using the
+conservative 12,500 input-token allowance per call and 400 output tokens.
+Typical short chats cost less. Recheck provider pricing before launch, especially
+if changing the model. The 300 daily turn cap is a turn guard, not a dollar meter.
+
+Serve `frontend/chat-widget.js` as `/chat-widget.js` on the customer Netlify site,
+then paste this just before `</body>` on each customer-facing page:
+
+```html
+<script src="/chat-widget.js"
+  data-api="https://supplierintel-production.up.railway.app" defer></script>
+```
+
+Repository/disk searches found the Supplier Intel Netlify frontend and customer
+record HTML files, but did not identify the ikeng.co.uk customer website source.
+Do not add the widget to the internal Supplier Intel application. The operator
+should copy the script and snippet into the customer site's source branch.
+
+Local preview (PowerShell, a temporary database; leave OPENAI_API_KEY empty):
+
+```powershell
+$env:SUPPLIER_INTEL_DB_PATH = "$PWD/data/chat-demo.db"
+$env:CHATBOT_ALLOWED_ORIGINS = 'http://localhost:8080'
+$env:OPENAI_API_KEY = ''
+uvicorn api.app:app --host 127.0.0.1 --port 8000
+# In another terminal:
+python -m http.server 8080 --directory frontend
+# Open http://localhost:8080/chat-demo.html
+python -m pytest tests/test_chatbot.py -q
+```
+
+Edit `chatbot/knowledge.md` to maintain business facts, without changing Python.
+Commercial questions are referred to Sai, including the visit/design fees; the
+explicit prohibition on price figures takes precedence over listing those fees.
+Files are restricted by extension, signature, size (15 MB) and count (ten), saved
+under random names in `COLLECTION_ARTIFACTS_DIR/chat`, outside public static
+serving. They are not executed, parsed or rendered server-side. Downloads require
+admin auth and force attachment/octet-stream/nosniff. Signature checks are not
+malware scanning; treat downloads as untrusted documents.
+
+Privacy and retention: registration records the notice/contact consent timestamp
+on the session. Transcript/style/file evidence is logged in the existing enquiry
+timeline so the deal-closer worker and digest pick it up without sending a customer
+message. Review via `GET /chat/sessions?since=<Unix timestamp>` (maximum 200 results).
+File references in activities are token-protected `/chat/files/<random id>` links.
+No transcripts are written to application logs or artifact files. The operator
+must implement the stated retention schedule operationally: remove unregistered
+sessions after 30 days; review registered chat/enquiry evidence and files twelve
+months after last contact, retaining only records needed for orders/legal duties.
+Include linked customer activities, inbox-lead evidence and backups when fulfilling
+access/deletion requests. Automatic retention deletion is deliberately not enabled.
+Ask Sai to approve the notice/retention period and OpenAI processing arrangement
+before production launch.

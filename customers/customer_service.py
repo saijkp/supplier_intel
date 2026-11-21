@@ -861,6 +861,29 @@ class CustomerService:
         self.repo.update('customer_inbox_leads', lead_id, status='dismissed')
         return self.repo.get('customer_inbox_leads', lead_id)
 
+    def capture_chat(self, session_id, name, phone, email, postcode, address, transcript):
+        """Website chat uses the existing lead conversion/digest path, without sending."""
+        external = 'cust:chat:' + session_id
+        previous = self.repo.rows('customer_inbox_leads', 'external_id=?', (external,))
+        if previous and previous[0].get('enquiry_id'):
+            return self.get_enquiry(previous[0]['enquiry_id'])
+        fields = dict(name=name, phone=phone, email=email, location=postcode,
+                      project_name='Website chat: ' + next((line[6:] for line in transcript.splitlines() if line.startswith('user: ')), 'New enquiry')[:200])
+        lead_id = previous[0]['id'] if previous else self.repo.insert('customer_inbox_leads',
+            external_id=external, from_address=email, from_name=name, subject=fields['project_name'],
+            excerpt=transcript[:1500], full_text=transcript + ('\nOffered address: '+address if address else ''),
+            form_fields=fields, received_at=now())
+        enquiry = self.convert_lead(lead_id, name=name)
+        from zoneinfo import ZoneInfo
+        today = datetime.now(ZoneInfo('Europe/London')).date().isoformat()
+        self.update_enquiry(enquiry['id'], next_action='Review website chat lead', next_action_due=today, waiting_on='us')
+        if not enquiry.get('source_ref'):
+            self.repo.update('customer_enquiries',enquiry['id'],source_ref='website chat')
+        customer = self.repo.get('customers', enquiry['customer_id'])
+        if not customer.get('source') or customer['source']=='Website form':
+            self.repo.update('customers',customer['id'],source='website chat')
+        return self.get_enquiry(enquiry['id'])
+
     def convert_lead(self, lead_id, name=None, title=None):
         """Create the customer (email = the sender, which is grounded: they wrote to us) and
         an enquiry, with the email itself as the first timeline entry."""
@@ -874,6 +897,17 @@ class CustomerService:
         if not name:
             raise ValueError('Customer name is required to add this submission')
         existing = self.repo.rows('customers', 'lower(email)=?', (lead['from_address'].lower(),)) if lead['from_address'] else []
+        if not existing and lead['external_id'].startswith('cust:chat:'):
+            from chatbot.service import mobile
+            for candidate in self.repo.rows('customers'):
+                for key in ('phone','whatsapp'):
+                    try:
+                        if mobile(candidate.get(key) or '') == fields.get('phone'):
+                            existing = [candidate]
+                            break
+                    except ValueError:
+                        pass
+                if existing: break
         customer = existing[0] if existing else self.create_customer(
             name=name, email=lead['from_address'], source='Website form' if fields else 'Email enquiry',
             **{k: fields[k] for k in ('phone', 'company', 'location') if fields.get(k)})

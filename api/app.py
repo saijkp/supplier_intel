@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
@@ -221,6 +222,8 @@ app = FastAPI(
 
 app.include_router(rfq_workflow_router)
 app.include_router(rfq_router)
+from api.chat import router as chat_router
+app.include_router(chat_router)
 app.include_router(form_webhook_router)
 from api.whatsapp import router as whatsapp_router
 app.include_router(whatsapp_router)
@@ -235,7 +238,7 @@ app.mount('/workspace', StaticFiles(directory=Path(__file__).resolve().parents[1
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=list(dict.fromkeys(ALLOWED_ORIGINS + [x.strip() for x in os.getenv('CHATBOT_ALLOWED_ORIGINS', '').split(',') if x.strip()])),
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "PATCH"],
     allow_headers=["Authorization", "Content-Type"],
