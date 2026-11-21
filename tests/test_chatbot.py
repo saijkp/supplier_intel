@@ -164,3 +164,13 @@ def test_identity_and_words_for_money(chat):
     assert not s.client.calls
     s.client.answer='It is two hundred pounds.'
     assert s.message(sid,'Hello')['reply']==HANDOFF
+
+def test_ai_question_reply_passes_guard(chat):
+    s,sid,_=chat
+    s.client.answer='Yes, we do made to measure kitchens. Is it a new build or a renovation?'
+    assert s.message(sid,'Do you do kitchens?')['reply']==s.client.answer
+
+def test_currency_symbol_reply_blocked(chat):
+    s,sid,_=chat
+    s.client.answer='Kitchens start around £ ten thousand.'
+    assert s.message(sid,'Tell me about kitchens')['reply']==HANDOFF
