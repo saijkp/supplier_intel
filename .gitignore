@@ -41,6 +41,9 @@ photos/
 
 # Local test and browser-check scratch files
 /tmp/
+/.chat-*/
+/pytest-cache-files-*/
+/chatbot-full-test.log
 
 # Planning batches hold named contacts; never commit them
 planning/*batch*.json

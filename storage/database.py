@@ -27,7 +27,7 @@ from config.settings import DB_PATH
 logger = logging.getLogger(__name__)
 
 # Bump this and add a migration function below whenever the schema changes.
-SCHEMA_VERSION = 53
+SCHEMA_VERSION = 54
 
 
 # ═══════════════════════════════════════════════════════════
@@ -64,6 +64,13 @@ CREATE INDEX IF NOT EXISTS idx_rfq_sent ON rfq_messages(status,sent_at);
 """
 
 SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS chat_sessions (
+ id TEXT PRIMARY KEY, ip_hash TEXT NOT NULL, created_at REAL NOT NULL,
+ transcript TEXT NOT NULL DEFAULT '[]', styles TEXT NOT NULL DEFAULT '[]',
+ files TEXT NOT NULL DEFAULT '[]', turns INTEGER NOT NULL DEFAULT 0,
+ consent_at TEXT, enquiry_id INTEGER REFERENCES customer_enquiries(id));
+CREATE TABLE IF NOT EXISTS chat_usage (key TEXT PRIMARY KEY, count INTEGER NOT NULL);
+
 -- ═══════════════════════════════════════
 -- RAW LAYER: Preserve everything as-is
 -- ═══════════════════════════════════════
@@ -978,7 +985,10 @@ SCHEMA_SQL += DAILY_SQL
 DEAL_CLOSER_SQL = "CREATE TABLE IF NOT EXISTS customer_promises (id INTEGER PRIMARY KEY, enquiry_id INTEGER NOT NULL REFERENCES customer_enquiries(id), text TEXT NOT NULL, due_at TEXT NOT NULL, made_on TEXT NOT NULL, channel TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','kept','missed','renegotiated')), confirmed_at TEXT, source_activity_id INTEGER UNIQUE, closed_at TEXT);\nCREATE TABLE IF NOT EXISTS deal_closer_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS deal_closer_digests (slot TEXT PRIMARY KEY, attempted_at TEXT NOT NULL, digest_sent_at TEXT, error TEXT);"
 SCHEMA_SQL += DEAL_CLOSER_SQL
 
+CHAT_SCHEMA_SQL = "\nCREATE TABLE IF NOT EXISTS chat_sessions (\n id TEXT PRIMARY KEY, ip_hash TEXT NOT NULL, created_at REAL NOT NULL,\n transcript TEXT NOT NULL DEFAULT '[]', styles TEXT NOT NULL DEFAULT '[]',\n files TEXT NOT NULL DEFAULT '[]', turns INTEGER NOT NULL DEFAULT 0,\n consent_at TEXT, enquiry_id INTEGER REFERENCES customer_enquiries(id));\nCREATE TABLE IF NOT EXISTS chat_usage (key TEXT PRIMARY KEY, count INTEGER NOT NULL);\n"
+
 MIGRATIONS: dict[int, dict] = {
+    54: {"description": "Website chat sessions and durable usage limits", "statements": [s for s in CHAT_SCHEMA_SQL.split(";") if s.strip()]},
     53: {"description": "Deal closer promises and digest markers", "statements": [s for s in DEAL_CLOSER_SQL.split(";") if s.strip()]},
     52: {"description": "Durable review-only daily firm trial counters", "statements": [DAILY_SQL]},
     51: {"description": "PlanIt firm review route", "statements": [s for s in FIRM_SQL.split(";") if s.strip()]},
