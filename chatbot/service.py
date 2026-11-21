@@ -1,3 +1,4 @@
+import logging
 """Private persistent chat state; no customer text is logged or sent as telemetry."""
 import hashlib
 import json
@@ -87,7 +88,7 @@ class ChatbotService:
             if re.search(r'ignore|system prompt|other customers|internal data|developer message|reveal.*prompt',text,re.I):
                 reply = "I cannot share internal information or change my rules. I can help with your IK ENG enquiry."
             elif re.search(r'are you (?:a )?(?:human|bot|robot|real person)|are you ai', text, re.I):
-                reply = "I am IK ENG?s assistant. Sai and the team follow up personally."
+                reply = "I am IK ENG’s assistant. Sai and the team follow up personally."
             elif re.search(r'price|cost|budget|discount|estimate|when|date|lead.?time|supplier|factor(?:y|ies)|margin|payment|tax|legal|how much|how long',text,re.I):
                 reply = HANDOFF
             elif allowed:
@@ -114,10 +115,11 @@ class ChatbotService:
                         # Fail closed on commercial output and question/sentence overflow.
                         if (candidate and len(candidate)<=1800 and candidate.count('?')<=2 and not candidate.lstrip().startswith(('-', '*', '?'))
                             and len(re.findall(r'[.!?](?:\s|$)',candidate))<=3
-                            and not re.search(r'\d|[?$?]|supplier|factory|payment|discount|budget|pounds?|GBP|USD|CNY|yuan|cost|price|estimate|guarantee|legal|tax|tomorrow|weeks?|months?|monday|tuesday|wednesday|thursday|friday|saturday|sunday',candidate,re.I)):
+                            and not re.search(r'\d|[£$€]|supplier|factory|payment|discount|budget|pounds?|GBP|USD|CNY|yuan|cost|price|estimate|guarantee|legal|tax|tomorrow|weeks?|months?|monday|tuesday|wednesday|thursday|friday|saturday|sunday',candidate,re.I)):
                             reply = candidate
                         else: reply = HANDOFF
-                except Exception:
+                except Exception as exc:
+                    logging.getLogger(__name__).warning('chatbot AI call failed: %s', type(exc).__name__)
                     reply = FALLBACK
             history.append({'role':'assistant','content':reply})
             self.save(sid, transcript=history, turns=s['turns']+1)
