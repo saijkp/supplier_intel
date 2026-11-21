@@ -124,7 +124,11 @@ class ChatbotService:
             history.append({'role':'assistant','content':reply})
             self.save(sid, transcript=history, turns=s['turns']+1)
             self.sync(sid)
-            return {'reply':reply, 'register':reply in (HANDOFF,FALLBACK) or bool(re.search(r'quote|visit|callback|upload|register',text,re.I))}
+            prev = next((m['content'] for m in reversed(s['transcript']) if m['role']=='assistant'), '')
+            offered = bool(re.search(r'quote|visit|call|your details|register', prev, re.I))
+            agreed = bool(re.match(r'\s*(yes|yeah|yep|sure|ok|okay|please|go ahead|that would be)', text, re.I))
+            wants = bool(re.search(r'quote|visit|callback|call me|call back|upload|register|contact me|measure|price', text, re.I))
+            return {'reply':reply, 'register':reply in (HANDOFF,FALLBACK) or wants or (agreed and offered) or bool(re.search(r'your details|register', reply, re.I))}
 
     def register(self, sid, values):
         with LOCK:
