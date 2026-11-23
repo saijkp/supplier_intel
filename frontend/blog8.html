@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>One Factory, Five Storefronts: The Duplicate-Listing Problem — Supplier Intel</title>
+<meta name="description" content="A single factory or trading company can run several storefronts under different names on the same marketplace. Here's what that does to a shortlist, and what an evidence-based check looks like.">
+<link rel="canonical" href="https://supplierintel.co/blog8.html">
+<style>
+  :root {
+    --ink: #14181f;
+    --ink-soft: #4a5265;
+    --paper: #ffffff;
+    --paper-soft: #f4f6f9;
+    --line: #e3e7ee;
+    --accent: #1f6f5c;
+    --accent-soft: #e8f3f0;
+    --amber: #b8721b;
+    --amber-soft: #fbf1e2;
+    --radius: 10px;
+    --maxw: 760px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+  header.site {
+    border-bottom: 1px solid var(--line);
+    background: rgba(255,255,255,0.92);
+  }
+  header.site .wrap {
+    display: flex; align-items: center; justify-content: space-between;
+    padding-top: 16px; padding-bottom: 16px;
+    max-width: 1080px;
+  }
+  .brand { font-weight: 700; font-size: 15px; text-decoration: none; color: var(--ink); }
+  .brand .dot { display:inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-right: 8px; }
+  header.site nav a {
+    font-size: 13.5px; font-weight: 600; text-decoration: none; color: var(--ink-soft);
+    margin-left: 22px;
+  }
+  header.site nav a:hover { color: var(--accent); }
+
+  main { padding: 48px 0 80px; }
+
+  .kicker {
+    font-size: 13px; font-weight: 700; color: var(--accent);
+    text-transform: uppercase; letter-spacing: .06em; margin-bottom: 14px;
+  }
+  h1 {
+    font-size: clamp(26px, 4vw, 36px);
+    line-height: 1.25;
+    margin: 0 0 16px;
+    letter-spacing: -0.01em;
+  }
+  .byline {
+    font-size: 13.5px; color: var(--ink-soft);
+    padding-bottom: 28px; margin-bottom: 32px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  article h2 {
+    font-size: 20px; margin: 40px 0 14px;
+    letter-spacing: -0.005em;
+  }
+  article p { margin: 0 0 18px; font-size: 16.5px; color: var(--ink); }
+  article ul { margin: 0 0 18px; padding-left: 22px; }
+  article li { margin-bottom: 10px; font-size: 16.5px; }
+  article strong { color: var(--ink); }
+
+  .stat-callout {
+    background: var(--accent-soft);
+    border: 1px solid #cfe4dd;
+    border-radius: var(--radius);
+    padding: 20px 22px;
+    margin: 24px 0;
+    font-size: 17px;
+    color: var(--ink);
+  }
+  .stat-callout strong { color: var(--accent); }
+
+  .cta-box {
+    margin-top: 44px;
+    padding: 24px;
+    background: var(--paper-soft);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+  }
+  .cta-box p { margin: 0; font-size: 15.5px; color: var(--ink-soft); }
+
+  footer.site {
+    border-top: 1px solid var(--line);
+    padding: 28px 0;
+    margin-top: 40px;
+  }
+  footer.site .wrap { max-width: 1080px; }
+  footer.site p { font-size: 12.5px; color: var(--ink-soft); margin: 0; }
+
+  @media (max-width: 480px) {
+    main { padding: 32px 0 56px; }
+    article h2 { font-size: 18px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="/"><span class="dot"></span>Supplier Intel</a>
+    <nav>
+      <a href="/">Home</a>
+      <a href="/blog.html">Blog</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+    <article>
+      <p class="kicker">Field notes</p>
+      <h1>One Factory, Five Storefronts: The Duplicate-Listing Problem Your Shortlist Doesn't Account For</h1>
+      <p class="byline">Supplier Intel</p>
+
+      <p>When you pull candidate suppliers from a B2B marketplace — or hand a sourcing brief to an AI tool trained on one — you're implicitly assuming each listing represents a distinct company. That assumption breaks more often than most shortlists account for.</p>
+
+      <p>It's an open pattern in B2B sourcing that a single factory, or a single trading company, can run several storefronts under different registered names on the same marketplace, sometimes across more than one marketplace at once. Buyers describe near-identical factory photos turning up under different company names, and wildly inconsistent quotes for what turns out to be the same production line. None of this is necessarily fraud in the legal sense — multi-storefront selling is a known, even platform-acknowledged, pattern. But it quietly breaks something a buyer relies on without realizing it: the assumption that five quotes represent five independent options.</p>
+
+      <h2>Why it matters for a shortlist</h2>
+      <p>A list of ten "different" suppliers that's actually three underlying companies isn't giving you price competition or capacity redundancy — it's giving you the illusion of both. If a sourcing brief calls for split-sourcing across unrelated suppliers for risk reasons, duplicate storefronts can quietly defeat that requirement without a single listing ever reading as a red flag on its own.</p>
+
+      <h2>What an evidence-based check looks like</h2>
+      <p>Domain registration records, physical address matches, phone-number reuse across listings, and overlapping factory photography are all checkable signals that two "different" storefronts might trace back to the same underlying entity — the same kind of cross-referencing that catches a distributor using manufacturer language, just applied across listings instead of within one. No single signal proves common ownership on its own; taken together, they're evidence worth having before treating a shortlist as more diverse than it actually is.</p>
+
+      <h2>Related reading</h2>
+      <p>We've written before about what happens when AI-generated supplier names go unchecked on a real sourcing brief — <a href="/blog1.html">that validation run is here</a>. Storefront duplication is a related failure mode: it doesn't surface as a wrong company, just as fewer real, independent options than the shortlist implies.</p>
+
+      <div class="cta-box">
+        <p>Doing supplier verification for clients? <a href="/">Supplier Intel</a> is built for exactly this workflow — get in touch if you'd like to compare notes.</p>
+      </div>
+    </article>
+  </div>
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <p>&copy; Supplier Intel</p>
+  </div>
+</footer>
+
+</body>
+</html>
